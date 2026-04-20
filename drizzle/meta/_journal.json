@@ -29,6 +29,13 @@
       "when": 1776644280196,
       "tag": "0003_yummy_jane_foster",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "5",
+      "when": 1776651583669,
+      "tag": "0004_curious_george_stacy",
+      "breakpoints": true
     }
   ]
 }

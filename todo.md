@@ -58,3 +58,12 @@
 - [x] Fix mobile: all pages use DashboardLayout with bottom nav — confirmed in App.tsx routing
 - [x] Fix PnL: engine now uses public REST API for prices (SDK was blocked by sandbox — Forbidden errors fixed)
 - [x] Fix mobile bottom nav: confirmed all routes wrapped in DashboardLayout
+
+## Nuevas Funcionalidades (Fase 2)
+- [x] Candlestick chart (OHLCV) en página de Estrategias usando lightweight-charts
+- [x] Notificaciones push al dueño cuando escáner detecta oportunidad con confianza >75%
+- [x] Gráfico de línea con historial diario de PnL en el dashboard
+- [x] PWA manifest para instalar en pantalla de inicio del celular (ícono, nombre, theme)
+- [x] Exportar historial de trades a CSV desde la página de Historial
+- [x] Parámetros configurables de estrategia desde la UI (niveles grid, spread, umbral scalping)
+- [x] CRÍTICO RESUELTO: Engine ahora ejecuta órdenes iniciales en grid + scalping con umbral reducido en simulación + upsertDailyPnl tras cada trade

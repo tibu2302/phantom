@@ -1,6 +1,6 @@
 import { eq, desc, and, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
-import { InsertUser, users, botState, apiKeys, strategies, trades, opportunities, aiAnalyses } from "../drizzle/schema";
+import { InsertUser, users, botState, apiKeys, strategies, trades, opportunities, aiAnalyses, pnlHistory } from "../drizzle/schema";
 import { ENV } from './_core/env';
 
 let _db: ReturnType<typeof drizzle> | null = null;
@@ -178,6 +178,38 @@ export async function insertAnalysis(data: typeof aiAnalyses.$inferInsert) {
   const db = await getDb();
   if (!db) return;
   await db.insert(aiAnalyses).values(data);
+}
+
+// ─── PnL History ───
+export async function upsertDailyPnl(userId: number, pnl: number, balance: number, tradesCount: number) {
+  const db = await getDb();
+  if (!db) return;
+  const today = new Date().toISOString().slice(0, 10);
+  const existing = await db.select().from(pnlHistory).where(
+    and(eq(pnlHistory.userId, userId), eq(pnlHistory.date, today))
+  ).limit(1);
+  if (existing.length > 0) {
+    await db.update(pnlHistory).set({
+      pnl: pnl.toFixed(2),
+      balance: balance.toFixed(2),
+      trades: tradesCount,
+    }).where(and(eq(pnlHistory.userId, userId), eq(pnlHistory.date, today)));
+  } else {
+    await db.insert(pnlHistory).values({
+      userId, date: today,
+      pnl: pnl.toFixed(2),
+      balance: balance.toFixed(2),
+      trades: tradesCount,
+    });
+  }
+}
+export async function getPnlHistory(userId: number, days = 30) {
+  const db = await getDb();
+  if (!db) return [];
+  return db.select().from(pnlHistory)
+    .where(eq(pnlHistory.userId, userId))
+    .orderBy(desc(pnlHistory.date))
+    .limit(days);
 }
 
 // ─── Strategy Stats ───

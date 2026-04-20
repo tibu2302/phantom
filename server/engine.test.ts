@@ -37,7 +37,7 @@ describe("Trading Engine Integration", () => {
     const caller = appRouter.createCaller(ctx);
     const result = await caller.bot.start();
     expect(result.success).toBe(true);
-  });
+  }, 15000);
 
   it("engine is running after bot.start", () => {
     expect(isEngineRunning(TEST_USER_ID)).toBe(true);

@@ -85,6 +85,17 @@ export const opportunities = mysqlTable("opportunities", {
   createdAt: timestamp("createdAt").defaultNow().notNull(),
 });
 
+export const pnlHistory = mysqlTable("pnl_history", {
+  id: int("id").autoincrement().primaryKey(),
+  userId: int("userId").notNull(),
+  date: varchar("date", { length: 10 }).notNull(), // YYYY-MM-DD
+  pnl: decimal("pnl", { precision: 18, scale: 2 }).default("0").notNull(),
+  balance: decimal("balance", { precision: 18, scale: 2 }).default("0").notNull(),
+  trades: int("trades").default(0).notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+export type PnlHistory = typeof pnlHistory.$inferSelect;
+
 export const aiAnalyses = mysqlTable("ai_analyses", {
   id: int("id").autoincrement().primaryKey(),
   userId: int("userId").notNull(),

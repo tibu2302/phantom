@@ -1,7 +1,10 @@
 import { trpc } from "@/lib/trpc";
 import { Badge } from "@/components/ui/badge";
-import { History, Activity } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { History, Activity, Download } from "lucide-react";
 import { useIsMobile } from "@/hooks/useMobile";
+import { useState } from "react";
+import { toast } from "sonner";
 
 const fmtPrice = (n: number) => {
   if (n >= 1000) return n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -12,6 +15,26 @@ const fmtPrice = (n: number) => {
 export default function Trades() {
   const { data: trades, isLoading } = trpc.trades.list.useQuery({ limit: 100 });
   const isMobile = useIsMobile();
+  const [exporting, setExporting] = useState(false);
+  const exportCsv = trpc.trades.exportCsv.useQuery(undefined, { enabled: false });
+
+  const handleExport = async () => {
+    setExporting(true);
+    try {
+      const result = await exportCsv.refetch();
+      if (result.data?.csv) {
+        const blob = new Blob([result.data.csv], { type: 'text/csv;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `phantom-trades-${new Date().toISOString().slice(0,10)}.csv`;
+        a.click();
+        URL.revokeObjectURL(url);
+        toast.success(`Exportado: ${result.data.count} operaciones`);
+      }
+    } catch { toast.error('Error al exportar'); }
+    setExporting(false);
+  };
 
   if (isLoading) return (
     <div className="space-y-3 animate-pulse">
@@ -22,11 +45,19 @@ export default function Trades() {
 
   return (
     <div className="space-y-4">
-      <div>
-        <h1 className="text-xl font-bold tracking-tight flex items-center gap-2">
-          <History className="h-5 w-5 text-primary" /> Historial de Operaciones
-        </h1>
-        <p className="text-xs text-muted-foreground mt-1">Todas las operaciones ejecutadas</p>
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-xl font-bold tracking-tight flex items-center gap-2">
+            <History className="h-5 w-5 text-primary" /> Historial de Operaciones
+          </h1>
+          <p className="text-xs text-muted-foreground mt-1">Todas las operaciones ejecutadas</p>
+        </div>
+        {trades && trades.length > 0 && (
+          <Button variant="outline" size="sm" onClick={handleExport} disabled={exporting} className="gap-1.5 text-xs">
+            <Download className="h-3.5 w-3.5" />
+            {exporting ? 'Exportando...' : 'CSV'}
+          </Button>
+        )}
       </div>
 
       {!trades || trades.length === 0 ? (

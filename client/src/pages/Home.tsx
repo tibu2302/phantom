@@ -7,7 +7,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
+import { AreaChart, Area, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
 import { toast } from "sonner";
 import { useState, useMemo, useEffect, useCallback } from "react";
 import { useIsMobile } from "@/hooks/useMobile";
@@ -30,6 +30,7 @@ export default function Home() {
   const publicPrices = trpc.prices.live.useQuery(undefined, { refetchInterval: 8000 });
   const strategiesQuery = trpc.strategies.list.useQuery(undefined, { retry: false });
   const tradesQuery = trpc.trades.list.useQuery({ limit: 50 }, { retry: false });
+  const pnlHistory = trpc.pnl.history.useQuery({ days: 14 }, { retry: false, staleTime: 60_000 });
   const utils = trpc.useUtils();
 
   const startBot = trpc.bot.start.useMutation({
@@ -324,6 +325,33 @@ export default function Home() {
             )}
           </div>
         </div>
+
+        {/* Mobile PnL History Chart */}
+        {pnlHistory.data && pnlHistory.data.length > 0 && (
+          <div className="glass-card p-4">
+            <div className="flex items-center gap-2 mb-3">
+              <BarChart3 className="h-4 w-4 text-primary" />
+              <h3 className="font-semibold text-sm">Historial PnL (14 días)</h3>
+            </div>
+            <ResponsiveContainer width="100%" height={120}>
+              <AreaChart data={[...pnlHistory.data].reverse()} margin={{ top: 4, right: 4, left: -20, bottom: 0 }}>
+                <defs>
+                  <linearGradient id="pnlGrad" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="oklch(0.72 0.19 160)" stopOpacity={0.3} />
+                    <stop offset="95%" stopColor="oklch(0.72 0.19 160)" stopOpacity={0} />
+                  </linearGradient>
+                </defs>
+                <XAxis dataKey="date" tick={{ fontSize: 9, fill: 'rgba(255,255,255,0.4)' }} tickFormatter={(v) => v?.slice(5)} />
+                <YAxis tick={{ fontSize: 9, fill: 'rgba(255,255,255,0.4)' }} />
+                <Tooltip
+                  contentStyle={{ background: 'rgba(0,0,0,0.8)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8, fontSize: 11 }}
+                  formatter={(v: any) => [fmt(parseFloat(v)), 'PnL']}
+                />
+                <Area type="monotone" dataKey="pnl" stroke="oklch(0.72 0.19 160)" fill="url(#pnlGrad)" strokeWidth={2} dot={false} />
+              </AreaChart>
+            </ResponsiveContainer>
+          </div>
+        )}
 
         {/* Mobile Risk Management */}
         <div className="glass-card p-4">

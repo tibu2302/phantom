@@ -148,11 +148,72 @@ export const appRouter = router({
       await db.upsertStrategy(ctx.user.id, input);
       return { success: true };
     }),
+    updateConfig: protectedProcedure.input(z.object({
+      id: z.number(),
+      config: z.object({
+        gridLevels: z.number().min(2).max(50).optional(),
+        gridSpreadPct: z.number().min(0.1).max(20).optional(),
+        scalpingThresholdPct: z.number().min(0.1).max(5).optional(),
+        allocationPct: z.number().min(1).max(100).optional(),
+      }),
+    })).mutation(async ({ input }) => {
+      const dbConn = await db.getDb();
+      if (!dbConn) return { success: false };
+      const { eq } = await import("drizzle-orm");
+      const { strategies: strategiesTable } = await import("../drizzle/schema");
+      const rows = await dbConn.select().from(strategiesTable).where(eq(strategiesTable.id, input.id)).limit(1);
+      if (rows.length === 0) return { success: false };
+      const existing = rows[0];
+      const mergedConfig = { ...(existing.config as object ?? {}), ...input.config };
+      const updateData: Record<string, unknown> = { config: mergedConfig };
+      if (input.config.allocationPct !== undefined) updateData.allocationPct = input.config.allocationPct;
+      await dbConn.update(strategiesTable).set(updateData as any).where(eq(strategiesTable.id, input.id));
+      return { success: true };
+    }),
+    klines: protectedProcedure.input(z.object({
+      symbol: z.string(),
+      interval: z.string().default("15"),
+      limit: z.number().default(100),
+    })).query(async ({ input }) => {
+      try {
+        const url = `https://api.bybit.com/v5/market/kline?category=linear&symbol=${input.symbol}&interval=${input.interval}&limit=${input.limit}`;
+        const res = await fetch(url);
+        const data = await res.json() as any;
+        if (data.retCode !== 0) return [];
+        // Each item: [startTime, open, high, low, close, volume, turnover]
+        return (data.result?.list ?? []).map((k: string[]) => ({
+          time: Math.floor(parseInt(k[0]) / 1000),
+          open: parseFloat(k[1]),
+          high: parseFloat(k[2]),
+          low: parseFloat(k[3]),
+          close: parseFloat(k[4]),
+          volume: parseFloat(k[5]),
+        })).reverse();
+      } catch {
+        return [];
+      }
+    }),
+  }),
+
+  pnl: router({
+    history: protectedProcedure.input(z.object({ days: z.number().default(30) }).optional()).query(async ({ ctx, input }) => {
+      return db.getPnlHistory(ctx.user.id, input?.days ?? 30);
+    }),
   }),
 
   trades: router({
     list: protectedProcedure.input(z.object({ limit: z.number().optional() }).optional()).query(async ({ ctx, input }) => {
       return db.getUserTrades(ctx.user.id, input?.limit ?? 50);
+    }),
+    exportCsv: protectedProcedure.query(async ({ ctx }) => {
+      const tradeList = await db.getUserTrades(ctx.user.id, 1000);
+      const header = "ID,Par,Lado,Precio,Cantidad,PnL,Estrategia,Simulado,Fecha";
+      const rows = tradeList.map((t: any) => [
+        t.id, t.symbol, t.side, t.price, t.qty, t.pnl ?? "0",
+        t.strategy, t.simulated ? "Si" : "No",
+        new Date(t.createdAt).toISOString(),
+      ].join(","));
+      return { csv: [header, ...rows].join("\n"), count: tradeList.length };
     }),
   }),
 

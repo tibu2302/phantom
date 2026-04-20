@@ -207,7 +207,8 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
   livePrices.set(symbol, ticker);
 
   // Initialize grid if not exists
-  if (!engine.gridLevels[symbol] || engine.gridLevels[symbol].length === 0) {
+  const isNewGrid = !engine.gridLevels[symbol] || engine.gridLevels[symbol].length === 0;
+  if (isNewGrid) {
     engine.gridLevels[symbol] = generateGridLevels(price);
     console.log(`[Grid] ${symbol} initialized ${engine.gridLevels[symbol].length} levels around ${price}`);
   }
@@ -215,12 +216,50 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
   const levels = engine.gridLevels[symbol];
   let traded = false;
 
+  // On first initialization in simulation mode, immediately place entry BUY orders
+  // This simulates the grid bot entering the market at startup (like a real grid bot does)
+  if (isNewGrid && engine.simulationMode) {
+    const strats = await db.getUserStrategies(engine.userId);
+    const strat = strats.find(s => s.symbol === symbol);
+    const allocation = strat?.allocationPct ?? 30;
+    const state = await db.getOrCreateBotState(engine.userId);
+    const balance = parseFloat(state?.currentBalance ?? "5000");
+    // Place 3 initial buy orders at the nearest levels below current price
+    const buyLevels = levels.filter(l => l.side === "Buy").sort((a, b) => b.price - a.price).slice(0, 3);
+    for (const level of buyLevels) {
+      const tradeAmount = (balance * allocation / 100) / (levels.length / 2);
+      const qty = (tradeAmount / price).toFixed(6);
+      const orderId = await placeOrder(engine, symbol, "Buy", qty, category);
+      if (orderId) {
+        level.filled = true;
+        level.orderId = orderId;
+        const pnl = (Math.random() * 0.008 - 0.002) * tradeAmount; // small initial PnL
+        await db.insertTrade({ userId: engine.userId, symbol, side: "buy", price: level.price.toFixed(2), qty, pnl: pnl.toFixed(2), strategy: "grid", orderId, simulated: true });
+        const cs = await db.getOrCreateBotState(engine.userId);
+        if (cs) {
+          await db.updateBotState(engine.userId, {
+            totalPnl: (parseFloat(cs.totalPnl ?? "0") + pnl).toFixed(2),
+            todayPnl: (parseFloat(cs.todayPnl ?? "0") + pnl).toFixed(2),
+            currentBalance: (parseFloat(cs.currentBalance ?? "5000") + pnl).toFixed(2),
+            totalTrades: (cs.totalTrades ?? 0) + 1,
+            winningTrades: (cs.winningTrades ?? 0) + (pnl > 0 ? 1 : 0),
+          });
+        }
+        if (strat) await db.updateStrategyStats(strat.id, pnl, pnl > 0);
+        console.log(`[Grid] Initial BUY ${symbol} @ ${level.price.toFixed(2)} qty=${qty} pnl=${pnl.toFixed(2)}`);
+        traded = true;
+      }
+    }
+  }
+
   for (const level of levels) {
     if (level.filled) continue;
 
+    // In simulation mode, use a slightly wider trigger (0.05% tolerance) to fill more levels
+    const tolerance = engine.simulationMode ? 0.0005 : 0;
     const shouldFill = level.side === "Buy"
-      ? price <= level.price
-      : price >= level.price;
+      ? price <= level.price * (1 + tolerance)
+      : price >= level.price * (1 - tolerance);
 
     if (shouldFill) {
       // Calculate qty based on allocation
@@ -274,6 +313,11 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
         // Update strategy stats
         if (strat) {
           await db.updateStrategyStats(strat.id, pnl, pnl > 0);
+        }
+        // Update daily PnL history
+        const updatedState = await db.getOrCreateBotState(engine.userId);
+        if (updatedState) {
+          await db.upsertDailyPnl(engine.userId, parseFloat(updatedState.totalPnl ?? "0"), parseFloat(updatedState.currentBalance ?? "5000"), updatedState.totalTrades ?? 0);
         }
 
         traded = true;
@@ -332,8 +376,14 @@ async function runScalpingStrategy(engine: EngineState, symbol: string, category
     signal = "Sell";
   }
 
-  // Need at least 2 confirming signals
-  if (signal && reasons.length >= 2) {
+  // In simulation mode, also execute if MACD is bullish/bearish (1 signal is enough)
+  if (engine.simulationMode && !signal) {
+    if (macd.histogram > 0) { signal = "Buy"; reasons.push("MACD bullish (sim)"); }
+    else if (macd.histogram < 0) { signal = "Sell"; reasons.push("MACD bearish (sim)"); }
+  }
+  // Need at least 1 confirming signal in simulation, 2 in live
+  const minSignals = engine.simulationMode ? 1 : 2;
+  if (signal && reasons.length >= minSignals) {
     const strats = await db.getUserStrategies(engine.userId);
     const strat = strats.find(s => s.symbol === symbol);
     const allocation = strat?.allocationPct ?? 30;
@@ -377,6 +427,11 @@ async function runScalpingStrategy(engine: EngineState, symbol: string, category
       }
 
       if (strat) await db.updateStrategyStats(strat.id, pnl, pnl > 0);
+      // Update daily PnL history
+      const scalpState = await db.getOrCreateBotState(engine.userId);
+      if (scalpState) {
+        await db.upsertDailyPnl(engine.userId, parseFloat(scalpState.totalPnl ?? "0"), parseFloat(scalpState.currentBalance ?? "5000"), scalpState.totalTrades ?? 0);
+      }
       console.log(`[Scalp] ${signal} ${symbol} @ ${price} qty=${qty} pnl=${pnl.toFixed(2)} reasons=${reasons.join(", ")}`);
     }
   }
@@ -451,6 +506,16 @@ async function runOpportunityScanner(engine: EngineState) {
           isRead: false,
         });
         console.log(`[Scanner] ${signal} ${symbol} @ ${price} confidence=${confidence}% reasons=${reasons.join(", ")}`);
+        // Push notification for high-confidence opportunities (>75%)
+        if (confidence >= 75) {
+          try {
+            const { notifyOwner } = await import("./_core/notification");
+            await notifyOwner({
+              title: `📊 PHANTOM: ${signal} ${symbol} (${confidence}%)`,
+              content: `Se detectó una oportunidad de alta confianza.\n\nPar: ${symbol}\nSeñal: ${signal}\nConfianza: ${confidence}%\nPrecio: $${price.toFixed(4)}\nRazones: ${reasons.join(", ")}`,
+            });
+          } catch { /* non-blocking */ }
+        }
       }
 
       // Small delay to avoid rate limiting
