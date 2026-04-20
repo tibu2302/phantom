@@ -315,7 +315,7 @@ function calcNetPnl(grossPnl: number, tradeAmount: number, category: "spot" | "l
 }
 
 // ─── Grid Trading Strategy ───
-function generateGridLevels(currentPrice: number, gridCount: number = 10, gridSpread: number = 0.02): GridLevel[] {
+function generateGridLevels(currentPrice: number, gridCount: number = 10, gridSpread: number = 0.003): GridLevel[] {
   const levels: GridLevel[] = [];
   const step = currentPrice * gridSpread / (gridCount / 2);
   for (let i = -gridCount / 2; i <= gridCount / 2; i++) {
@@ -337,11 +337,18 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
   engine.lastPrices[symbol] = price;
   livePrices.set(symbol, ticker);
 
-  // Initialize grid if not exists
+  // Initialize grid if not exists — use strategy config for spread/levels if available
   const isNewGrid = !engine.gridLevels[symbol] || engine.gridLevels[symbol].length === 0;
   if (isNewGrid) {
-    engine.gridLevels[symbol] = generateGridLevels(price);
-    console.log(`[Grid] ${symbol} initialized ${engine.gridLevels[symbol].length} levels around ${price}`);
+    // Read strategy config for custom grid parameters
+    const strats = await db.getUserStrategies(engine.userId);
+    const strat = strats.find(s => s.symbol === symbol);
+    const config = strat?.config as any;
+    const gridLevels = config?.gridLevels ?? 10;
+    // gridSpreadPct is stored as percentage (e.g. 0.3 means 0.3%), convert to decimal
+    const gridSpread = config?.gridSpreadPct ? config.gridSpreadPct / 100 : 0.003;
+    engine.gridLevels[symbol] = generateGridLevels(price, gridLevels, gridSpread);
+    console.log(`[Grid] ${symbol} initialized ${engine.gridLevels[symbol].length} levels around ${price} (spread=${(gridSpread * 100).toFixed(2)}%, levels=${gridLevels})`);
   }
 
   const levels = engine.gridLevels[symbol];
@@ -479,8 +486,14 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
   // Regenerate grid if >60% filled
   const filledCount = levels.filter(l => l.filled).length;
   if (filledCount > levels.length * 0.6) {
-    engine.gridLevels[symbol] = generateGridLevels(price);
-    console.log(`[Grid] ${symbol} regenerated grid around ${price}`);
+    // Use strategy config for regeneration too
+    const regenStrats = await db.getUserStrategies(engine.userId);
+    const regenStrat = regenStrats.find(s => s.symbol === symbol);
+    const regenConfig = regenStrat?.config as any;
+    const regenLevels = regenConfig?.gridLevels ?? 10;
+    const regenSpread = regenConfig?.gridSpreadPct ? regenConfig.gridSpreadPct / 100 : 0.003;
+    engine.gridLevels[symbol] = generateGridLevels(price, regenLevels, regenSpread);
+    console.log(`[Grid] ${symbol} regenerated grid around ${price} (spread=${(regenSpread * 100).toFixed(2)}%)`);
   }
 }
 

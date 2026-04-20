@@ -102,3 +102,6 @@
 - [x] Grid Trading: agregada tolerancia 0.02% en modo real para que las órdenes se ejecuten
 - [x] Corregido calcNetPnl para usar exchange correcto (KuCoin vs Bybit)
 - [x] Agregado logging de debug del grid (precio actual vs niveles)
+## Ajuste: Reducir spread del grid trading
+- [ ] Reducir spread del grid de 0.8% a 0.3% para BTC y ETH para ejecutar órdenes más rápido
+- [ ] Reinicializar niveles del grid alrededor del precio actual con el nuevo spread

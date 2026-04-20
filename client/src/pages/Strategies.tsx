@@ -93,7 +93,7 @@ function CandleChart({ symbol, category }: { symbol: string; category: string })
 function StrategyConfig({ strategy, onClose }: { strategy: any; onClose: () => void }) {
   const utils = trpc.useUtils();
   const [gridLevels, setGridLevels] = useState(strategy.config?.gridLevels ?? 10);
-  const [gridSpread, setGridSpread] = useState(strategy.config?.gridSpreadPct ?? 2);
+  const [gridSpread, setGridSpread] = useState(strategy.config?.gridSpreadPct ?? 0.3);
   const [scalpThreshold, setScalpThreshold] = useState(strategy.config?.scalpingThresholdPct ?? 0.5);
   const [allocation, setAllocation] = useState(strategy.allocationPct ?? 30);
 
@@ -145,7 +145,7 @@ function StrategyConfig({ strategy, onClose }: { strategy: any; onClose: () => v
               <Slider
                 value={[gridSpread]}
                 onValueChange={([v]) => setGridSpread(v)}
-                min={0.5} max={10} step={0.5}
+                min={0.1} max={5} step={0.1}
                 className="w-full"
               />
             </div>
