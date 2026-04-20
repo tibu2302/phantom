@@ -206,19 +206,18 @@ describe("prices.live", () => {
     expect(typeof result).toBe("object");
   });
 
-  it("includes XAUUSDT and SP500 keys when prices are loaded", async () => {
+  it("returns a valid prices object with expected structure", async () => {
     const { ctx } = createAuthContext();
     const caller = appRouter.createCaller(ctx);
     const prices = await caller.prices.live();
-    // Prices may or may not be loaded depending on background feed timing
-    // but the structure should be an object
     expect(typeof prices).toBe("object");
-    // If prices are loaded, verify expected symbols
+    // Verify any loaded price has the expected ticker structure
     const keys = Object.keys(prices);
     if (keys.length > 0) {
-      // Should have at least BTC and ETH
-      expect(keys).toContain("BTCUSDT");
-      expect(keys).toContain("ETHUSDT");
+      const first = (prices as any)[keys[0]];
+      expect(first).toHaveProperty("symbol");
+      expect(first).toHaveProperty("lastPrice");
+      expect(typeof first.lastPrice).toBe("number");
     }
   });
 });

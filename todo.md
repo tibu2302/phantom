@@ -15,7 +15,7 @@
 - [x] Bot controls: Start / Stop / Emergency Stop
 - [x] Notification bell with unread count
 - [x] TradFi support: XAUUSDT (Gold) for scalping, SP500 via Yahoo Finance as reference
-- [x] Vitest tests (23 tests passing)
+- [x] Vitest tests (33 tests passing)
 - [x] Real Bybit API V5 connection with user's API keys
 - [x] Trading engine: Grid Trading strategy for BTC/USDT and ETH/USDT
 - [x] Trading engine: Scalping strategy for XAUUSDT (Gold) with technical indicators
@@ -33,16 +33,16 @@
 - [x] Translate Settings page to Spanish
 - [x] Fix live price ticker showing "Waiting..." — now shows real BTC, ETH, SP500 prices
 - [x] Background price feed active — prices show without login
-- [ ] Verify bot.start executes trades for authenticated user
+- [x] Verify bot.start executes trades for authenticated user
 - [x] Replace SPXUSDT with XAUUSDT (Gold) for scalping strategy
-- [ ] Translate BUY/SELL badges in Trades page to COMPRA/VENTA
+- [x] Translate BUY/SELL badges in Trades page to COMPRA/VENTA
 - [x] Auto-seed default strategies on bot.start (code implemented)
 - [x] Add cycle counter to engine (code implemented)
 - [x] Translate Risk Management section to Spanish (code done)
-- [ ] Verify bot.start executes cycles for authenticated user
-- [ ] Verify Grid Trading places simulated orders
-- [ ] Verify Scalping produces trades
-- [ ] Verify scanner saves opportunities to DB
+- [x] Verify bot.start executes cycles for authenticated user
+- [x] Verify Grid Trading places simulated orders
+- [x] Verify Scalping produces trades
+- [x] Verify scanner saves opportunities to DB
 - [x] SP500 reference price via Yahoo Finance API (^GSPC)
 - [x] Live price ticker shows 4 assets: BTC, ETH, Gold (XAUUSDT), SP500
 - [x] Auto-seed strategies use XAUUSDT instead of SPXUSDT
