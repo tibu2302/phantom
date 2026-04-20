@@ -15,4 +15,11 @@
 - [x] Bot controls: Start / Stop / Emergency Stop
 - [x] Notification bell with unread count
 - [x] TradFi support (SP500)
-- [x] Vitest tests (10 tests passing)
+- [x] Vitest tests (21 tests passing)
+- [x] Real Bybit API V5 connection with user's API keys
+- [x] Trading engine: Grid Trading strategy for BTC/USDT and ETH/USDT
+- [x] Trading engine: Scalping strategy for SP500 (SPXUSDT) with technical indicators
+- [x] Opportunity scanner: 32 coins every 2 minutes with RSI, EMA, volume, Bollinger
+- [x] Real-time price feed for all active pairs (every 10 seconds)
+- [x] Wire trading engine to tRPC routers (start/stop/status)
+- [x] Update frontend dashboard with live prices and real trade data

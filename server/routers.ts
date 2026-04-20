@@ -5,6 +5,7 @@ import { publicProcedure, protectedProcedure, router } from "./_core/trpc";
 import { z } from "zod";
 import * as db from "./db";
 import { invokeLLM } from "./_core/llm";
+import { startEngine, stopEngine, emergencyStopEngine, getLivePrices, isEngineRunning } from "./tradingEngine";
 
 export const appRouter = router({
   system: systemRouter,
@@ -22,18 +23,29 @@ export const appRouter = router({
       const state = await db.getOrCreateBotState(ctx.user.id);
       const unread = await db.getUnreadOpportunityCount(ctx.user.id);
       const recentOpps = await db.getUserOpportunities(ctx.user.id, 10);
-      return { state, unreadNotifications: unread, recentOpportunities: recentOpps };
+      const prices = getLivePrices();
+      const engineRunning = isEngineRunning(ctx.user.id);
+      return {
+        state,
+        unreadNotifications: unread,
+        recentOpportunities: recentOpps,
+        livePrices: prices,
+        engineRunning,
+      };
     }),
     start: protectedProcedure.mutation(async ({ ctx }) => {
-      await db.updateBotState(ctx.user.id, { isRunning: true, startedAt: new Date() });
+      const result = await startEngine(ctx.user.id);
+      if (!result.success) {
+        return { success: false, error: result.error };
+      }
       return { success: true };
     }),
     stop: protectedProcedure.mutation(async ({ ctx }) => {
-      await db.updateBotState(ctx.user.id, { isRunning: false });
+      await stopEngine(ctx.user.id);
       return { success: true };
     }),
     emergencyStop: protectedProcedure.mutation(async ({ ctx }) => {
-      await db.updateBotState(ctx.user.id, { isRunning: false, dailyLoss: "0" });
+      await emergencyStopEngine(ctx.user.id);
       return { success: true };
     }),
     updateSettings: protectedProcedure.input(z.object({
@@ -53,6 +65,9 @@ export const appRouter = router({
       await db.markOpportunitiesRead(ctx.user.id);
       return { success: true };
     }),
+    livePrices: protectedProcedure.query(async () => {
+      return getLivePrices();
+    }),
   }),
 
   apiKeys: router({
@@ -67,18 +82,34 @@ export const appRouter = router({
       label: z.string().optional(),
     })).mutation(async ({ ctx, input }) => {
       await db.saveApiKey(ctx.user.id, input);
-      // Auto-create default strategies when API keys are saved
       const existingStrategies = await db.getUserStrategies(ctx.user.id);
       if (existingStrategies.length === 0) {
         await db.upsertStrategy(ctx.user.id, { symbol: "BTCUSDT", strategyType: "grid", market: "crypto", category: "spot", allocationPct: 40 });
         await db.upsertStrategy(ctx.user.id, { symbol: "ETHUSDT", strategyType: "grid", market: "crypto", category: "spot", allocationPct: 30 });
-        await db.upsertStrategy(ctx.user.id, { symbol: "SP500USDT", strategyType: "scalping", market: "tradfi", category: "linear", allocationPct: 30 });
+        await db.upsertStrategy(ctx.user.id, { symbol: "SPXUSDT", strategyType: "scalping", market: "tradfi", category: "linear", allocationPct: 30 });
       }
       return { success: true };
     }),
     delete: protectedProcedure.mutation(async ({ ctx }) => {
       await db.deleteApiKey(ctx.user.id);
       return { success: true };
+    }),
+    testConnection: protectedProcedure.mutation(async ({ ctx }) => {
+      const keys = await db.getApiKey(ctx.user.id);
+      if (!keys) return { success: false, error: "No API keys configured" };
+      try {
+        const { RestClientV5 } = await import("bybit-api");
+        const client = new RestClientV5({ key: keys.apiKey, secret: keys.apiSecret });
+        const res = await client.getWalletBalance({ accountType: "UNIFIED" });
+        if (res.retCode === 0) {
+          const coins = (res.result as any)?.list?.[0]?.coin ?? [];
+          const totalUsd = (res.result as any)?.list?.[0]?.totalEquity ?? "0";
+          return { success: true, balance: totalUsd, coins: coins.length };
+        }
+        return { success: false, error: res.retMsg || "Connection failed" };
+      } catch (e: any) {
+        return { success: false, error: e.message || "Connection failed" };
+      }
     }),
   }),
 

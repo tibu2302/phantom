@@ -179,3 +179,20 @@ export async function insertAnalysis(data: typeof aiAnalyses.$inferInsert) {
   if (!db) return;
   await db.insert(aiAnalyses).values(data);
 }
+
+// ─── Strategy Stats ───
+export async function updateStrategyStats(strategyId: number, pnl: number, isWin: boolean) {
+  const db = await getDb();
+  if (!db) return;
+  const rows = await db.select().from(strategies).where(eq(strategies.id, strategyId)).limit(1);
+  if (rows.length === 0) return;
+  const s = rows[0];
+  const newPnl = parseFloat(s.pnl ?? "0") + pnl;
+  const newTrades = (s.trades ?? 0) + 1;
+  const newWinning = (s.winningTrades ?? 0) + (isWin ? 1 : 0);
+  await db.update(strategies).set({
+    pnl: newPnl.toFixed(2),
+    trades: newTrades,
+    winningTrades: newWinning,
+  }).where(eq(strategies.id, strategyId));
+}

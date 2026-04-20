@@ -1,11 +1,11 @@
 import { trpc } from "@/lib/trpc";
-import { Bell, Play, Square, AlertTriangle, TrendingUp, TrendingDown, Wallet, Target, Trophy, Activity, BarChart3, Shield, Wifi, WifiOff, Clock } from "lucide-react";
+import { Bell, Play, Square, AlertTriangle, TrendingUp, TrendingDown, Wallet, Target, Trophy, Activity, BarChart3, Shield, Wifi, WifiOff, Clock, Zap, ArrowUpRight, ArrowDownRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { LineChart, Line, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
+import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
 import { toast } from "sonner";
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 
 const fmt = (n: number) => {
   const abs = Math.abs(n);
@@ -13,15 +13,35 @@ const fmt = (n: number) => {
 };
 const fmtUsd = (n: number) => "$" + n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const fmtPct = (n: number) => (n >= 0 ? "+" : "") + n.toFixed(2) + "%";
+const fmtPrice = (n: number) => {
+  if (n >= 1000) return n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  if (n >= 1) return n.toFixed(4);
+  return n.toFixed(6);
+};
 
 export default function Home() {
   const { data, isLoading } = trpc.bot.status.useQuery(undefined, { refetchInterval: 5000 });
+  const strategiesQuery = trpc.strategies.list.useQuery();
+  const tradesQuery = trpc.trades.list.useQuery({ limit: 50 });
   const utils = trpc.useUtils();
-  const startBot = trpc.bot.start.useMutation({ onSuccess: () => { utils.bot.status.invalidate(); toast.success("Bot started"); } });
-  const stopBot = trpc.bot.stop.useMutation({ onSuccess: () => { utils.bot.status.invalidate(); toast.success("Bot stopped"); } });
-  const emergencyStop = trpc.bot.emergencyStop.useMutation({ onSuccess: () => { utils.bot.status.invalidate(); toast.error("Emergency stop executed"); } });
+  const startBot = trpc.bot.start.useMutation({
+    onSuccess: (res: any) => {
+      utils.bot.status.invalidate();
+      if (res.success) toast.success("PHANTOM engine started");
+      else toast.error(res.error || "Failed to start");
+    },
+    onError: () => toast.error("Failed to start engine"),
+  });
+  const stopBot = trpc.bot.stop.useMutation({ onSuccess: () => { utils.bot.status.invalidate(); toast.success("Engine stopped"); } });
+  const emergencyStop = trpc.bot.emergencyStop.useMutation({ onSuccess: () => { utils.bot.status.invalidate(); toast.error("EMERGENCY STOP executed"); } });
   const markRead = trpc.bot.markNotificationsRead.useMutation({ onSuccess: () => utils.bot.status.invalidate() });
   const [bellOpen, setBellOpen] = useState(false);
+  const [currentTime, setCurrentTime] = useState(new Date());
+
+  useEffect(() => {
+    const timer = setInterval(() => setCurrentTime(new Date()), 1000);
+    return () => clearInterval(timer);
+  }, []);
 
   const state = data?.state;
   const totalPnl = parseFloat(String(state?.totalPnl ?? "0"));
@@ -32,11 +52,12 @@ export default function Home() {
   const winningTrades = state?.winningTrades ?? 0;
   const winRate = totalTrades > 0 ? (winningTrades / totalTrades) * 100 : 0;
   const pnlPct = initial > 0 ? (totalPnl / initial) * 100 : 0;
-  const isRunning = state?.isRunning ?? false;
+  const isRunning = data?.engineRunning ?? false;
   const maxDrawdown = parseFloat(String(state?.maxDrawdown ?? "0"));
   const dailyLoss = parseFloat(String(state?.dailyLoss ?? "0"));
   const unread = data?.unreadNotifications ?? 0;
   const notifications = data?.recentOpportunities ?? [];
+  const livePrices = data?.livePrices ?? {};
 
   const uptime = useMemo(() => {
     if (!state?.startedAt || !isRunning) return "0m";
@@ -49,10 +70,24 @@ export default function Home() {
   const pnlColor = totalPnl >= 0 ? "text-[oklch(0.72_0.19_160)]" : "text-[oklch(0.63_0.24_25)]";
   const pnlGlow = totalPnl >= 0 ? "glow-green" : "glow-red";
 
-  const barData = [
-    { pair: "BTC", pnl: 0 },
-    { pair: "ETH", pnl: 0 },
-    { pair: "SP500", pnl: 0 },
+  // Build PnL by pair from strategies
+  const strategies = strategiesQuery.data ?? [];
+  const barData = strategies.length > 0
+    ? strategies.map((s: any) => ({
+        pair: s.symbol.replace("USDT", ""),
+        pnl: parseFloat(String(s.pnl ?? "0")),
+      }))
+    : [
+        { pair: "BTC", pnl: 0 },
+        { pair: "ETH", pnl: 0 },
+        { pair: "SPX", pnl: 0 },
+      ];
+
+  // Price ticker data
+  const tickerPairs = [
+    { symbol: "BTCUSDT", label: "BTC/USDT", icon: "₿" },
+    { symbol: "ETHUSDT", label: "ETH/USDT", icon: "Ξ" },
+    { symbol: "SPXUSDT", label: "SP500", icon: "📈" },
   ];
 
   if (isLoading) {
@@ -89,14 +124,14 @@ export default function Home() {
               <div className="p-3 border-b"><h4 className="font-semibold text-sm">Notifications</h4></div>
               <div className="max-h-64 overflow-y-auto">
                 {notifications.length === 0 ? (
-                  <p className="text-sm text-muted-foreground p-4 text-center">No notifications yet</p>
+                  <p className="text-sm text-muted-foreground p-4 text-center">No notifications yet. Start the bot to scan opportunities.</p>
                 ) : notifications.map((n: any) => (
                   <div key={n.id} className="p-3 border-b last:border-0 hover:bg-accent/50">
                     <div className="flex items-center justify-between">
                       <span className="font-medium text-sm">{n.symbol}</span>
-                      <Badge variant={n.signal === "BUY" ? "default" : "destructive"} className="text-[10px]">{n.signal}</Badge>
+                      <Badge variant={String(n.signal).includes("BUY") ? "default" : "destructive"} className="text-[10px]">{n.signal}</Badge>
                     </div>
-                    <p className="text-xs text-muted-foreground mt-1">Confidence: {n.confidence}%</p>
+                    <p className="text-xs text-muted-foreground mt-1">Confidence: {n.confidence}% — ${fmtPrice(parseFloat(String(n.price ?? "0")))}</p>
                   </div>
                 ))}
               </div>
@@ -104,17 +139,47 @@ export default function Home() {
           </Popover>
           {!isRunning ? (
             <Button onClick={() => startBot.mutate()} className="bg-primary text-primary-foreground hover:bg-primary/90 gap-2" disabled={startBot.isPending}>
-              <Play className="h-4 w-4" /> Start
+              <Play className="h-4 w-4" /> {startBot.isPending ? "Starting..." : "Start"}
             </Button>
           ) : (
             <Button onClick={() => stopBot.mutate()} variant="secondary" className="gap-2" disabled={stopBot.isPending}>
               <Square className="h-4 w-4" /> Stop
             </Button>
           )}
-          <Button onClick={() => emergencyStop.mutate()} variant="ghost" size="icon" className="text-destructive hover:bg-destructive/10" disabled={emergencyStop.isPending}>
+          <Button onClick={() => emergencyStop.mutate()} variant="ghost" size="icon" className="text-destructive hover:bg-destructive/10" disabled={emergencyStop.isPending} title="Emergency Stop">
             <AlertTriangle className="h-5 w-5" />
           </Button>
         </div>
+      </div>
+
+      {/* Live Price Ticker */}
+      <div className="grid grid-cols-3 gap-3">
+        {tickerPairs.map(({ symbol, label, icon }) => {
+          const p = livePrices[symbol];
+          const price = p?.lastPrice ?? 0;
+          const change = p?.price24hPcnt ? p.price24hPcnt * 100 : 0;
+          const isUp = change >= 0;
+          return (
+            <div key={symbol} className="glass-card p-4 flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <span className="text-xl">{icon}</span>
+                <div>
+                  <p className="text-xs font-semibold tracking-wider text-muted-foreground">{label}</p>
+                  <p className="text-lg font-bold tabular-nums">{price > 0 ? "$" + fmtPrice(price) : "—"}</p>
+                </div>
+              </div>
+              {price > 0 && (
+                <div className={`flex items-center gap-1 text-sm font-semibold ${isUp ? "text-[oklch(0.72_0.19_160)]" : "text-[oklch(0.63_0.24_25)]"}`}>
+                  {isUp ? <ArrowUpRight className="h-4 w-4" /> : <ArrowDownRight className="h-4 w-4" />}
+                  {fmtPct(change)}
+                </div>
+              )}
+              {price === 0 && (
+                <span className="text-xs text-muted-foreground">Waiting...</span>
+              )}
+            </div>
+          );
+        })}
       </div>
 
       {/* Unified PnL */}
@@ -141,17 +206,8 @@ export default function Home() {
         ))}
       </div>
 
-      {/* Charts */}
+      {/* Charts + Recent Trades */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <div className="glass-card p-5">
-          <div className="flex items-center gap-2 mb-4">
-            <TrendingUp className="h-4 w-4 text-primary" />
-            <h3 className="font-semibold text-sm">PnL Over Time</h3>
-          </div>
-          <div className="h-48 flex items-center justify-center text-muted-foreground text-sm">
-            <TrendingUp className="h-8 w-8 opacity-20 mr-2" /> No data yet
-          </div>
-        </div>
         <div className="glass-card p-5">
           <div className="flex items-center gap-2 mb-4">
             <BarChart3 className="h-4 w-4 text-[oklch(0.75_0.14_200)]" />
@@ -162,10 +218,44 @@ export default function Home() {
               <CartesianGrid strokeDasharray="3 3" stroke="oklch(0.25 0.008 260)" />
               <XAxis dataKey="pair" tick={{ fontSize: 11, fill: "oklch(0.6 0.01 260)" }} />
               <YAxis tick={{ fontSize: 10, fill: "oklch(0.6 0.01 260)" }} />
-              <Tooltip contentStyle={{ background: "oklch(0.18 0.008 260)", border: "1px solid oklch(0.25 0.008 260)", borderRadius: 8 }} />
+              <Tooltip contentStyle={{ background: "oklch(0.18 0.008 260)", border: "1px solid oklch(0.25 0.008 260)", borderRadius: 8, color: "oklch(0.9 0.01 260)" }} />
               <Bar dataKey="pnl" fill="oklch(0.72 0.19 160)" radius={[4, 4, 0, 0]} />
             </BarChart>
           </ResponsiveContainer>
+        </div>
+
+        <div className="glass-card p-5">
+          <div className="flex items-center gap-2 mb-4">
+            <Zap className="h-4 w-4 text-primary" />
+            <h3 className="font-semibold text-sm">Recent Trades</h3>
+          </div>
+          <div className="space-y-2 max-h-[192px] overflow-y-auto">
+            {(!tradesQuery.data || tradesQuery.data.length === 0) ? (
+              <div className="flex items-center justify-center h-[160px] text-muted-foreground text-sm">
+                <Activity className="h-6 w-6 opacity-20 mr-2" /> No trades yet. Start the bot.
+              </div>
+            ) : (
+              tradesQuery.data.slice(0, 8).map((t: any) => {
+                const pnl = parseFloat(String(t.pnl ?? "0"));
+                return (
+                  <div key={t.id} className="flex items-center justify-between py-1.5 border-b border-border/50 last:border-0">
+                    <div className="flex items-center gap-2">
+                      <Badge variant={t.side === "buy" ? "default" : "destructive"} className="text-[9px] w-10 justify-center">
+                        {t.side?.toUpperCase()}
+                      </Badge>
+                      <span className="text-sm font-medium">{t.symbol?.replace("USDT", "")}</span>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <span className="text-xs text-muted-foreground tabular-nums">${fmtPrice(parseFloat(String(t.price ?? "0")))}</span>
+                      <span className={`text-xs font-semibold tabular-nums ${pnl >= 0 ? "text-[oklch(0.72_0.19_160)]" : "text-[oklch(0.63_0.24_25)]"}`}>
+                        {fmt(pnl)}
+                      </span>
+                    </div>
+                  </div>
+                );
+              })
+            )}
+          </div>
         </div>
       </div>
 
@@ -176,7 +266,9 @@ export default function Home() {
             <Shield className="h-4 w-4 text-[oklch(0.8_0.15_85)]" />
             <h3 className="font-semibold text-sm">Risk Management</h3>
           </div>
-          <Badge variant="outline" className="border-primary/30 text-primary text-xs">SAFE TO TRADE</Badge>
+          <Badge variant="outline" className={`text-xs ${dailyLoss > 200 ? "border-destructive/50 text-destructive" : "border-primary/30 text-primary"}`}>
+            {dailyLoss > 200 ? "⚠ HIGH RISK" : "SAFE TO TRADE"}
+          </Badge>
         </div>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           <div>
@@ -185,7 +277,7 @@ export default function Home() {
               <span className="tabular-nums">{(maxDrawdown * 100).toFixed(2)}% / 10%</span>
             </div>
             <div className="h-2 bg-secondary rounded-full overflow-hidden">
-              <div className="h-full bg-primary rounded-full transition-all" style={{ width: `${Math.min((maxDrawdown * 100) / 10 * 100, 100)}%` }} />
+              <div className="h-full bg-primary rounded-full transition-all duration-500" style={{ width: `${Math.min((maxDrawdown * 100) / 10 * 100, 100)}%` }} />
             </div>
           </div>
           <div>
@@ -194,7 +286,7 @@ export default function Home() {
               <span className="tabular-nums">{fmtUsd(Math.abs(dailyLoss))} / $250</span>
             </div>
             <div className="h-2 bg-secondary rounded-full overflow-hidden">
-              <div className="h-full bg-[oklch(0.8_0.15_85)] rounded-full transition-all" style={{ width: `${Math.min((Math.abs(dailyLoss) / 250) * 100, 100)}%` }} />
+              <div className="h-full bg-[oklch(0.8_0.15_85)] rounded-full transition-all duration-500" style={{ width: `${Math.min((Math.abs(dailyLoss) / 250) * 100, 100)}%` }} />
             </div>
           </div>
         </div>
@@ -202,10 +294,10 @@ export default function Home() {
 
       {/* Footer */}
       <div className="flex items-center justify-center gap-6 text-xs text-muted-foreground py-2">
-        <span className="flex items-center gap-1.5">{isRunning ? <Wifi className="h-3 w-3 text-primary" /> : <WifiOff className="h-3 w-3" />} {isRunning ? "Connected" : "Disconnected"}</span>
+        <span className="flex items-center gap-1.5">{isRunning ? <Wifi className="h-3 w-3 text-primary" /> : <WifiOff className="h-3 w-3" />} {isRunning ? "Connected to Bybit" : "Disconnected"}</span>
         <span className="flex items-center gap-1.5"><Clock className="h-3 w-3" /> Uptime: {uptime}</span>
         <span>Cycles: {totalTrades}</span>
-        <span>{new Date().toLocaleTimeString()}</span>
+        <span>{currentTime.toLocaleTimeString()}</span>
       </div>
     </div>
   );
