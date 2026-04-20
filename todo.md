@@ -103,5 +103,6 @@
 - [x] Corregido calcNetPnl para usar exchange correcto (KuCoin vs Bybit)
 - [x] Agregado logging de debug del grid (precio actual vs niveles)
 ## Ajuste: Reducir spread del grid trading
-- [ ] Reducir spread del grid de 0.8% a 0.3% para BTC y ETH para ejecutar órdenes más rápido
-- [ ] Reinicializar niveles del grid alrededor del precio actual con el nuevo spread
+- [x] Reducir spread del grid de 2% a 0.3% default para BTC y ETH para ejecutar órdenes más rápido
+- [x] Grid ahora lee config de la estrategia (gridSpreadPct, gridLevels) — configurable desde UI
+- [x] Slider de spread en UI actualizado: mín 0.1%, máx 5%, paso 0.1%
