@@ -347,6 +347,15 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
   const levels = engine.gridLevels[symbol];
   let traded = false;
 
+  // Log grid status for debugging
+  const unfilledBuys = levels.filter(l => !l.filled && l.side === "Buy");
+  const unfilledSells = levels.filter(l => !l.filled && l.side === "Sell");
+  if (unfilledBuys.length > 0 || unfilledSells.length > 0) {
+    const nearestBuy = unfilledBuys.sort((a, b) => b.price - a.price)[0];
+    const nearestSell = unfilledSells.sort((a, b) => a.price - b.price)[0];
+    console.log(`[Grid] ${symbol} price=${price.toFixed(2)} nearestBuy=${nearestBuy?.price?.toFixed(2) ?? 'none'} nearestSell=${nearestSell?.price?.toFixed(2) ?? 'none'} unfilled=${unfilledBuys.length}B/${unfilledSells.length}S`);
+  }
+
   // On first initialization in simulation mode, immediately place entry BUY orders
   // This simulates the grid bot entering the market at startup
   if (isNewGrid && engine.simulationMode) {
@@ -366,7 +375,7 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
         level.orderId = orderId;
         // Simulation: small random initial PnL minus fees (only buy leg, no sell yet)
         const grossPnl = (Math.random() * 0.008 - 0.002) * tradeAmount;
-        const pnl = calcNetPnl(grossPnl, tradeAmount, category, false); // single leg
+        const pnl = calcNetPnl(grossPnl, tradeAmount, category, false, engine.exchange); // single leg
         await db.insertTrade({ userId: engine.userId, symbol, side: "buy", price: level.price.toFixed(2), qty, pnl: pnl.toFixed(2), strategy: "grid", orderId, simulated: true });
         const cs = await db.getOrCreateBotState(engine.userId);
         if (cs) {
@@ -388,8 +397,10 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
   for (const level of levels) {
     if (level.filled) continue;
 
-    // In simulation mode, use a slightly wider trigger (0.05% tolerance) to fill more levels
-    const tolerance = engine.simulationMode ? 0.0005 : 0;
+    // Tolerance for grid level matching:
+    // Simulation: 0.05% tolerance to fill more levels for demo
+    // Live mode: 0.02% tolerance — price must be within 0.02% of grid level
+    const tolerance = engine.simulationMode ? 0.0005 : 0.0002;
     const shouldFill = level.side === "Buy"
       ? price <= level.price * (1 + tolerance)
       : price >= level.price * (1 - tolerance);
@@ -417,8 +428,8 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
           ? (price - level.price) * parseFloat(qty)   // profit on sells
           : (level.price - price) * parseFloat(qty);  // profit on buys (negative if price > level)
 
-        // Deduct Bybit fees (round-trip: buy + sell)
-        const pnl = calcNetPnl(grossPnl, tradeAmount, category, true);
+        // Deduct exchange fees (round-trip: buy + sell)
+        const pnl = calcNetPnl(grossPnl, tradeAmount, category, true, engine.exchange);
 
         await db.insertTrade({
           userId: engine.userId,

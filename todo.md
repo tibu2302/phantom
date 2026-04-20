@@ -91,9 +91,13 @@
 - [x] Push a GitHub + instrucciones VPS
 
 ## Bug: Error al guardar API Keys de KuCoin
-- [ ] Diagnosticar y corregir error al guardar claves API de KuCoin en el bot
+- [x] Diagnosticar y corregir error al guardar claves API de KuCoin en el bot (faltaba columna passphrase en DB del VPS)
 
 ## Bug: XAUUSDT no soportado en KuCoin + CoinGecko 429 masivo
 - [x] Saltar estrategia XAUUSDT cuando exchange es KuCoin
 - [x] Reducir scanner a 10 monedas top para evitar CoinGecko 429
 - [x] Aumentar delay entre requests CoinGecko
+
+## Bug: Grid Trading no ejecuta órdenes (depende de CoinGecko bloqueado)
+- [ ] Grid Trading debe usar precios WebSocket directamente para decidir órdenes
+- [ ] Reemplazar CoinGecko con KuCoin/Bybit REST API para klines del scanner
