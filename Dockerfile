@@ -10,7 +10,7 @@ RUN npm install -g pnpm@10
 COPY package.json pnpm-lock.yaml ./
 COPY patches/ ./patches/
 
-# Instalar dependencias
+# Instalar todas las dependencias (incluye devDependencies para el build)
 RUN pnpm install --frozen-lockfile
 
 # Copiar el resto del código
@@ -27,12 +27,12 @@ WORKDIR /app
 # Instalar pnpm
 RUN npm install -g pnpm@10
 
-# Solo copiar lo necesario para producción
+# Copiar archivos de dependencias
 COPY package.json pnpm-lock.yaml ./
 COPY patches/ ./patches/
 
-# Instalar solo dependencias de producción
-RUN pnpm install --frozen-lockfile --prod
+# Instalar TODAS las dependencias (vite es requerido en runtime por el servidor)
+RUN pnpm install --frozen-lockfile
 
 # Copiar el build generado
 COPY --from=builder /app/dist ./dist
