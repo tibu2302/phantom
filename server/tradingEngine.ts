@@ -106,22 +106,32 @@ function calculateMACD(closes: number[]) {
 }
 
 // ─── Bybit API Helpers ───
-async function fetchTicker(client: RestClientV5, symbol: string, category: "spot" | "linear" = "spot"): Promise<TickerData | null> {
+// Use public REST API directly (SDK auth causes Forbidden in sandbox)
+async function fetchTicker(_client: RestClientV5 | null, symbol: string, category: "spot" | "linear" = "spot"): Promise<TickerData | null> {
+  // First: use cached live price (updated every 10s by background feed)
+  const cached = livePrices.get(symbol);
+  if (cached) return cached;
+  // Fallback: call public Bybit REST directly
   try {
-    const res = await client.getTickers({ category, symbol } as any);
-    const t = (res.result as any)?.list?.[0];
+    const url = `https://api.bybit.com/v5/market/tickers?category=${category}&symbol=${symbol}`;
+    const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json() as any;
+    const t = data?.result?.list?.[0];
     if (!t) return null;
-    return {
+    const ticker: TickerData = {
       symbol: t.symbol,
       lastPrice: parseFloat(t.lastPrice),
-      bid1Price: parseFloat(t.bid1Price),
-      ask1Price: parseFloat(t.ask1Price),
-      price24hPcnt: parseFloat(t.price24hPcnt),
-      highPrice24h: parseFloat(t.highPrice24h),
-      lowPrice24h: parseFloat(t.lowPrice24h),
-      volume24h: parseFloat(t.volume24h),
-      turnover24h: parseFloat(t.turnover24h),
+      bid1Price: parseFloat(t.bid1Price ?? t.lastPrice),
+      ask1Price: parseFloat(t.ask1Price ?? t.lastPrice),
+      price24hPcnt: parseFloat(t.price24hPcnt ?? "0"),
+      highPrice24h: parseFloat(t.highPrice24h ?? t.lastPrice),
+      lowPrice24h: parseFloat(t.lowPrice24h ?? t.lastPrice),
+      volume24h: parseFloat(t.volume24h ?? "0"),
+      turnover24h: parseFloat(t.turnover24h ?? "0"),
     };
+    livePrices.set(symbol, ticker);
+    return ticker;
   } catch (e) {
     console.error(`[Engine] Failed to fetch ticker ${symbol}:`, (e as Error).message);
     return null;
@@ -133,10 +143,14 @@ interface KlineData {
   volumes: number[];
 }
 
-async function fetchKlines(client: RestClientV5, symbol: string, interval: any = "15", limit: number = 50, category: "spot" | "linear" = "spot"): Promise<KlineData> {
+async function fetchKlines(_client: RestClientV5 | null, symbol: string, interval: any = "15", limit: number = 50, category: "spot" | "linear" = "spot"): Promise<KlineData> {
+  // Use public Bybit REST API directly to avoid SDK auth issues
   try {
-    const res = await client.getKline({ category, symbol, interval, limit });
-    const list = res.result?.list;
+    const url = `https://api.bybit.com/v5/market/kline?category=${category}&symbol=${symbol}&interval=${interval}&limit=${limit}`;
+    const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json() as any;
+    const list = data?.result?.list;
     if (!list || list.length === 0) return { closes: [], volumes: [] };
     // Klines are [timestamp, open, high, low, close, volume, turnover] — newest first
     const reversed = [...list].reverse();
@@ -371,11 +385,9 @@ async function runScalpingStrategy(engine: EngineState, symbol: string, category
 // ─── Opportunity Scanner ───
 async function runOpportunityScanner(engine: EngineState) {
   console.log(`[Scanner] Scanning ${SCANNER_COINS.length} coins...`);
-  const publicClient = new RestClientV5({});
-
   for (const symbol of SCANNER_COINS) {
     try {
-      const klines = await fetchKlines(publicClient, symbol, "15", 50, "spot");
+      const klines = await fetchKlines(null, symbol, "15", 50, "spot");
       if (klines.closes.length < 26) continue;
       const closes = klines.closes;
       const volumes = klines.volumes;
@@ -478,14 +490,15 @@ async function fetchSP500Price(): Promise<TickerData | null> {
 }
 
 // ─── Price Feed ───
-async function updateLivePrices(client: RestClientV5) {
+async function updateLivePrices(_client?: RestClientV5) {
+  // Always use public REST API directly — SDK auth causes Forbidden
   const symbols = ["BTCUSDT", "ETHUSDT"];
   for (const symbol of symbols) {
-    const ticker = await fetchTicker(client, symbol, "spot");
+    const ticker = await fetchTicker(null, symbol, "spot");
     if (ticker) livePrices.set(symbol, ticker);
   }
   // XAUUSDT (Gold) on linear
-  const gold = await fetchTicker(client, "XAUUSDT", "linear");
+  const gold = await fetchTicker(null, "XAUUSDT", "linear");
   if (gold) livePrices.set("XAUUSDT", gold);
   // SP500 via Yahoo Finance (reference only)
   const sp500 = await fetchSP500Price();
@@ -563,10 +576,10 @@ export async function startEngine(userId: number): Promise<{ success: boolean; e
     }
   }, 30_000);
 
-  // Price update loop — every 10 seconds
+  // Price update loop — every 10 seconds (uses public REST, no auth needed)
   engine.priceIntervalId = setInterval(async () => {
     if (!engine.isRunning) return;
-    await updateLivePrices(engine.client);
+    await updateLivePrices();
   }, 10_000);
 
   // Opportunity scanner — every 2 minutes
@@ -633,11 +646,10 @@ let backgroundPriceInterval: ReturnType<typeof setInterval> | null = null;
 
 export function startBackgroundPriceFeed() {
   if (backgroundPriceInterval) return;
-  const publicClient = new RestClientV5({});
   console.log("[PriceFeed] Starting background price feed...");
 
-  // Fetch immediately
-  updateLivePrices(publicClient).then(() => {
+  // Fetch immediately using public REST (no SDK client needed)
+  updateLivePrices().then(() => {
     console.log("[PriceFeed] Initial prices loaded");
   }).catch(e => {
     console.error("[PriceFeed] Initial fetch failed:", (e as Error).message);
@@ -646,7 +658,7 @@ export function startBackgroundPriceFeed() {
   // Then every 10 seconds
   backgroundPriceInterval = setInterval(async () => {
     try {
-      await updateLivePrices(publicClient);
+      await updateLivePrices();
     } catch (e) {
       console.error("[PriceFeed] Update failed:", (e as Error).message);
     }

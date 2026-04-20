@@ -55,3 +55,6 @@
 - [x] Mobile-optimize Strategies, Trades, Opportunities pages
 - [x] Add notification badge on bottom nav for unread opportunities
 - [x] Improve overall visual polish: better glassmorphism, spacing, typography
+- [x] Fix mobile: all pages use DashboardLayout with bottom nav — confirmed in App.tsx routing
+- [x] Fix PnL: engine now uses public REST API for prices (SDK was blocked by sandbox — Forbidden errors fixed)
+- [x] Fix mobile bottom nav: confirmed all routes wrapped in DashboardLayout
