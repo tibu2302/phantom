@@ -15,6 +15,8 @@ const Opportunities = lazy(() => import("./pages/Opportunities"));
 const Trades = lazy(() => import("./pages/Trades"));
 const Strategies = lazy(() => import("./pages/Strategies"));
 const Settings = lazy(() => import("./pages/Settings"));
+// Página de login local para despliegue en VPS propio (AUTH_MODE=local)
+const LocalLogin = lazy(() => import("./pages/LocalLogin"));
 
 function PageLoader() {
   return (
@@ -26,21 +28,32 @@ function PageLoader() {
 
 function Router() {
   return (
-    <DashboardLayout>
-      <Suspense fallback={<PageLoader />}>
-        <Switch>
-          <Route path="/" component={Home} />
-          <Route path="/strategies" component={Strategies} />
-          <Route path="/ai-analyst" component={AiAnalyst} />
-          <Route path="/opportunities" component={Opportunities} />
-          <Route path="/trades" component={Trades} />
-          <Route path="/api-keys" component={ApiKeys} />
-          <Route path="/settings" component={Settings} />
-          <Route path="/404" component={NotFound} />
-          <Route component={NotFound} />
-        </Switch>
-      </Suspense>
-    </DashboardLayout>
+    <Switch>
+      {/* Ruta de login local — fuera del DashboardLayout para no requerir auth */}
+      <Route path="/login">
+        <Suspense fallback={<PageLoader />}>
+          <LocalLogin />
+        </Suspense>
+      </Route>
+      {/* Resto de rutas protegidas dentro del DashboardLayout */}
+      <Route>
+        <DashboardLayout>
+          <Suspense fallback={<PageLoader />}>
+            <Switch>
+              <Route path="/" component={Home} />
+              <Route path="/strategies" component={Strategies} />
+              <Route path="/ai-analyst" component={AiAnalyst} />
+              <Route path="/opportunities" component={Opportunities} />
+              <Route path="/trades" component={Trades} />
+              <Route path="/api-keys" component={ApiKeys} />
+              <Route path="/settings" component={Settings} />
+              <Route path="/404" component={NotFound} />
+              <Route component={NotFound} />
+            </Switch>
+          </Suspense>
+        </DashboardLayout>
+      </Route>
+    </Switch>
   );
 }
 

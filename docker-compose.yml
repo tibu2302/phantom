@@ -1,0 +1,59 @@
+version: "3.9"
+
+services:
+  # ─── Base de datos MySQL ─────────────────────────────────────────────────────
+  db:
+    image: mysql:8.0
+    container_name: phantom_db
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-phantom_root_2024}
+      MYSQL_DATABASE: phantom_bot
+      MYSQL_USER: phantom
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-phantom_db_2024}
+    volumes:
+      - phantom_db_data:/var/lib/mysql
+    ports:
+      - "3306:3306"
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD:-phantom_root_2024}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ─── Aplicación PHANTOM ──────────────────────────────────────────────────────
+  app:
+    build: .
+    container_name: phantom_app
+    restart: unless-stopped
+    ports:
+      - "${PORT:-3000}:3000"
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      # Base de datos (apunta al contenedor db)
+      DATABASE_URL: mysql://phantom:${MYSQL_PASSWORD:-phantom_db_2024}@db:3306/phantom_bot
+      # Seguridad — CAMBIÁ ESTE VALOR antes de arrancar en producción
+      JWT_SECRET: ${JWT_SECRET:-cambia-este-secreto-ahora-mismo}
+      # Credenciales del administrador del bot
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-phantom2024}
+      # Modo de autenticación: "local" usa usuario/contraseña, "manus" usa OAuth de Manus
+      AUTH_MODE: local
+      # LLM para el Analista IA (opcional — si no se configura, el analista no funciona)
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_API_URL: ${OPENAI_API_URL:-https://api.openai.com}
+      # Variables de Manus (dejar vacías en VPS propio)
+      VITE_APP_ID: ""
+      OAUTH_SERVER_URL: ""
+      OWNER_OPEN_ID: ""
+      OWNER_NAME: ""
+      BUILT_IN_FORGE_API_URL: ""
+      BUILT_IN_FORGE_API_KEY: ""
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  phantom_db_data:
+    driver: local

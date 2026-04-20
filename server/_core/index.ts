@@ -8,6 +8,8 @@ import { registerStorageProxy } from "./storageProxy";
 import { appRouter } from "../routers";
 import { createContext } from "./context";
 import { serveStatic, setupVite } from "./vite";
+import { ENV } from "./env";
+import { registerLocalAuthRoutes } from "../localAuth";
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise(resolve => {
@@ -35,7 +37,16 @@ async function startServer() {
   app.use(express.json({ limit: "50mb" }));
   app.use(express.urlencoded({ limit: "50mb", extended: true }));
   registerStorageProxy(app);
-  registerOAuthRoutes(app);
+
+  // Registrar rutas de autenticación según el modo configurado
+  if (ENV.authMode === "local") {
+    console.log("[Auth] Running in LOCAL mode (username/password)");
+    registerLocalAuthRoutes(app);
+  } else {
+    console.log("[OAuth] Initialized with baseURL:", ENV.oAuthServerUrl || "https://api.manus.im");
+    registerOAuthRoutes(app);
+  }
+
   // tRPC API
   app.use(
     "/api/trpc",

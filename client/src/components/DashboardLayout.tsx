@@ -82,7 +82,12 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
             </p>
           </div>
           <Button
-            onClick={() => { window.location.href = getLoginUrl(); }}
+            onClick={() => {
+              // En modo local (VPS), redirigir a la página de login propia
+              // En modo Manus, redirigir al OAuth de Manus
+              const isLocalMode = !import.meta.env.VITE_APP_ID;
+              window.location.href = isLocalMode ? "/login" : getLoginUrl();
+            }}
             size="lg"
             className="w-full bg-primary text-primary-foreground hover:bg-primary/90 shadow-lg"
           >

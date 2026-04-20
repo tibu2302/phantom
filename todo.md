@@ -73,3 +73,11 @@
 - [x] Reemplazar Bybit REST API (bloqueada) con WebSocket de Bybit para feed de precios en tiempo real
 - [x] Verificar que WebSocket de Bybit es accesible desde el servidor de Manus — CONFIRMADO: wss://stream.bybit.com funciona
 - [x] Verificar end-to-end: fetchKlines reemplazado con CoinGecko (crypto) + Yahoo Finance (Gold) — 33 tests pasando
+
+## VPS Deployment (Opción A — Servidor Propio)
+- [x] Crear sistema de login propio (usuario/contraseña) para VPS — reemplaza Manus OAuth
+- [x] Crear env-vars-reference.md con todas las variables necesarias
+- [x] Crear Dockerfile para build de producción
+- [x] Crear docker-compose.yml con app + MySQL
+- [x] Crear DEPLOY.md con guía paso a paso en español
+- [x] Verificar que el build funciona sin variables de Manus — AUTH_MODE=local bypasea OAuth
