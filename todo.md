@@ -67,3 +67,8 @@
 - [x] Exportar historial de trades a CSV desde la página de Historial
 - [x] Parámetros configurables de estrategia desde la UI (niveles grid, spread, umbral scalping)
 - [x] CRÍTICO RESUELTO: Engine ahora ejecuta órdenes iniciales en grid + scalping con umbral reducido en simulación + upsertDailyPnl tras cada trade
+
+## Bug Crítico Activo
+- [ ] Bot muestra EN VIVO pero 0 operaciones, $0 PnL, precios en guión — diagnóstico y fix completo
+- [ ] Reemplazar Bybit REST API (bloqueada) con WebSocket de Bybit para feed de precios en tiempo real
+- [ ] Verificar que WebSocket de Bybit es accesible desde el servidor de Manus

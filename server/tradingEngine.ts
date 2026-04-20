@@ -7,6 +7,7 @@
 import { RestClientV5 } from "bybit-api";
 import { callDataApi } from "./_core/dataApi";
 import * as db from "./db";
+import { WebSocket } from "ws";
 
 // ─── Types ───
 interface TickerData {
@@ -555,19 +556,10 @@ async function fetchSP500Price(): Promise<TickerData | null> {
 }
 
 // ─── Price Feed ───
+// updateLivePrices is now a no-op — prices are updated via WebSocket in real-time
 async function updateLivePrices(_client?: RestClientV5) {
-  // Always use public REST API directly — SDK auth causes Forbidden
-  const symbols = ["BTCUSDT", "ETHUSDT"];
-  for (const symbol of symbols) {
-    const ticker = await fetchTicker(null, symbol, "spot");
-    if (ticker) livePrices.set(symbol, ticker);
-  }
-  // XAUUSDT (Gold) on linear
-  const gold = await fetchTicker(null, "XAUUSDT", "linear");
-  if (gold) livePrices.set("XAUUSDT", gold);
-  // SP500 via Yahoo Finance (reference only)
-  const sp500 = await fetchSP500Price();
-  if (sp500) livePrices.set("SP500", sp500);
+  // Prices are now fed by the Bybit WebSocket (startBybitWebSocketFeed)
+  // This function is kept for compatibility but does nothing
 }
 
 // ─── Engine Control ───
@@ -641,11 +633,8 @@ export async function startEngine(userId: number): Promise<{ success: boolean; e
     }
   }, 30_000);
 
-  // Price update loop — every 10 seconds (uses public REST, no auth needed)
-  engine.priceIntervalId = setInterval(async () => {
-    if (!engine.isRunning) return;
-    await updateLivePrices();
-  }, 10_000);
+  // Price updates are handled by the persistent Bybit WebSocket feed
+  // No need for a polling interval
 
   // Opportunity scanner — every 2 minutes
   engine.scannerIntervalId = setInterval(async () => {
@@ -705,30 +694,104 @@ export function isEngineRunning(userId: number): boolean {
   return engines.has(userId);
 }
 
-// ─── Background Price Feed ───
-// Runs automatically on server start, no user login required
-let backgroundPriceInterval: ReturnType<typeof setInterval> | null = null;
+// ─── Bybit WebSocket Price Feed ───
+// Uses WebSocket (not blocked) instead of REST API (blocked by CloudFront geo-restriction)
+let wsSpot: WebSocket | null = null;
+let wsLinear: WebSocket | null = null;
+let wsReconnectTimer: ReturnType<typeof setTimeout> | null = null;
+let wsInitialized = false;
+
+const SPOT_SYMBOLS = [
+  "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "DOGEUSDT",
+  "ADAUSDT", "AVAXUSDT", "DOTUSDT", "LINKUSDT", "MATICUSDT",
+  "SHIBUSDT", "LTCUSDT", "UNIUSDT", "ATOMUSDT", "NEARUSDT",
+  "APTUSDT", "ARBUSDT", "OPUSDT", "SUIUSDT", "SEIUSDT",
+  "TIAUSDT", "INJUSDT", "FETUSDT", "RENDERUSDT", "WIFUSDT",
+  "PEPEUSDT", "FLOKIUSDT", "BONKUSDT", "JUPUSDT", "AAVEUSDT",
+  "MKRUSDT", "FILUSDT",
+];
+const LINEAR_SYMBOLS = ["XAUUSDT"];
+
+function parseWsTickerMsg(data: Buffer | string): void {
+  try {
+    const msg = JSON.parse(data.toString()) as any;
+    if (!msg.data) return;
+    const t = msg.data;
+    if (!t.symbol || !t.lastPrice) return;
+    const existing = livePrices.get(t.symbol);
+    const ticker: TickerData = {
+      symbol: t.symbol,
+      lastPrice: parseFloat(t.lastPrice),
+      bid1Price: parseFloat(t.bid1Price ?? t.lastPrice),
+      ask1Price: parseFloat(t.ask1Price ?? t.lastPrice),
+      price24hPcnt: parseFloat(t.price24hPcnt ?? existing?.price24hPcnt ?? "0"),
+      highPrice24h: parseFloat(t.highPrice24h ?? existing?.highPrice24h ?? t.lastPrice),
+      lowPrice24h: parseFloat(t.lowPrice24h ?? existing?.lowPrice24h ?? t.lastPrice),
+      volume24h: parseFloat(t.volume24h ?? existing?.volume24h ?? "0"),
+      turnover24h: parseFloat(t.turnover24h ?? existing?.turnover24h ?? "0"),
+    };
+    livePrices.set(t.symbol, ticker);
+  } catch { /* ignore parse errors */ }
+}
+
+function connectBybitWS(url: string, symbols: string[], label: string): WebSocket {
+  const ws = new WebSocket(url);
+  ws.on("open", () => {
+    console.log(`[PriceFeed] ${label} WS connected — subscribing to ${symbols.length} symbols`);
+    const args = symbols.map(s => `tickers.${s}`);
+    // Subscribe in batches of 10 to avoid message size limits
+    for (let i = 0; i < args.length; i += 10) {
+      ws.send(JSON.stringify({ op: "subscribe", args: args.slice(i, i + 10) }));
+    }
+  });
+  ws.on("message", (data) => {
+    parseWsTickerMsg(data as Buffer);
+    if (!wsInitialized && livePrices.size >= 2) {
+      wsInitialized = true;
+      console.log(`[PriceFeed] Initial prices loaded via WebSocket (${livePrices.size} symbols)`);
+    }
+  });
+  ws.on("error", (e) => {
+    console.error(`[PriceFeed] ${label} WS error:`, e.message);
+  });
+  ws.on("close", () => {
+    console.warn(`[PriceFeed] ${label} WS closed — reconnecting in 5s...`);
+    if (wsReconnectTimer) clearTimeout(wsReconnectTimer);
+    wsReconnectTimer = setTimeout(() => startBybitWebSocketFeed(), 5000);
+  });
+  // Keepalive ping every 20 seconds
+  const pingInterval = setInterval(() => {
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ op: "ping" }));
+    } else {
+      clearInterval(pingInterval);
+    }
+  }, 20_000);
+  return ws;
+}
 
 export function startBackgroundPriceFeed() {
-  if (backgroundPriceInterval) return;
-  console.log("[PriceFeed] Starting background price feed...");
+  startBybitWebSocketFeed();
+}
 
-  // Fetch immediately using public REST (no SDK client needed)
-  updateLivePrices().then(() => {
-    console.log("[PriceFeed] Initial prices loaded");
-  }).catch(e => {
-    console.error("[PriceFeed] Initial fetch failed:", (e as Error).message);
-  });
+function startBybitWebSocketFeed() {
+  // Close existing connections
+  if (wsSpot && wsSpot.readyState !== WebSocket.CLOSED) wsSpot.terminate();
+  if (wsLinear && wsLinear.readyState !== WebSocket.CLOSED) wsLinear.terminate();
 
-  // Then every 10 seconds
-  backgroundPriceInterval = setInterval(async () => {
-    try {
-      await updateLivePrices();
-    } catch (e) {
-      console.error("[PriceFeed] Update failed:", (e as Error).message);
-    }
-  }, 10_000);
+  console.log("[PriceFeed] Starting Bybit WebSocket price feed...");
+  wsSpot = connectBybitWS("wss://stream.bybit.com/v5/public/spot", SPOT_SYMBOLS, "Spot");
+  wsLinear = connectBybitWS("wss://stream.bybit.com/v5/public/linear", LINEAR_SYMBOLS, "Linear");
+
+  // SP500 via Yahoo Finance — update every 60 seconds (not available on Bybit)
+  updateSP500Price();
+  setInterval(updateSP500Price, 60_000);
+}
+
+async function updateSP500Price() {
+  const sp500 = await fetchSP500Price();
+  if (sp500) livePrices.set("SP500", sp500);
 }
 
 // Auto-start on module load
-startBackgroundPriceFeed();
+startBybitWebSocketFeed();
