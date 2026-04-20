@@ -190,6 +190,11 @@
     50% { opacity: 0.5; }
   }
 
+  /* Mobile safe area for bottom navigation */
+  .safe-area-bottom {
+    padding-bottom: env(safe-area-inset-bottom, 0);
+  }
+
   /* Scrollbar styling */
   ::-webkit-scrollbar {
     width: 6px;

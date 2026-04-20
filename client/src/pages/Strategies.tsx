@@ -11,16 +11,23 @@ export default function Strategies() {
     onSuccess: () => { utils.strategies.list.invalidate(); toast.success("Estrategia actualizada"); },
   });
 
-  if (isLoading) return <div className="space-y-4 animate-pulse"><div className="h-64 glass-card rounded-xl" /></div>;
+  if (isLoading) return (
+    <div className="space-y-3 animate-pulse">
+      <div className="h-8 glass-card rounded-xl w-40" />
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+        {Array.from({ length: 3 }).map((_, i) => <div key={i} className="h-40 glass-card rounded-xl" />)}
+      </div>
+    </div>
+  );
 
   const marketLabel = (m: string | null) => m === "tradfi" ? "TradFi" : "Crypto";
   const stratIcon = (s: string | null) => s === "grid" ? Grid3X3 : LineChart;
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       <div>
-        <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2"><Zap className="h-6 w-6 text-primary" /> Estrategias</h1>
-        <p className="text-sm text-muted-foreground mt-1">Gestioná tus estrategias de trading activas</p>
+        <h1 className="text-xl font-bold tracking-tight flex items-center gap-2"><Zap className="h-5 w-5 text-primary" /> Estrategias</h1>
+        <p className="text-xs text-muted-foreground mt-1">Gestioná tus estrategias de trading activas</p>
       </div>
 
       {!strategies || strategies.length === 0 ? (

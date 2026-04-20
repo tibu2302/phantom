@@ -1,11 +1,16 @@
 import { trpc } from "@/lib/trpc";
-import { Bell, Play, Square, AlertTriangle, TrendingUp, TrendingDown, Wallet, Target, Trophy, Activity, BarChart3, Shield, Wifi, WifiOff, Clock, Zap, ArrowUpRight, ArrowDownRight } from "lucide-react";
+import {
+  Bell, Play, Square, AlertTriangle, TrendingUp, TrendingDown,
+  Wallet, Target, Trophy, Activity, BarChart3, Shield, Wifi, WifiOff,
+  Clock, Zap, ArrowUpRight, ArrowDownRight, RefreshCw
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
 import { toast } from "sonner";
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, useCallback } from "react";
+import { useIsMobile } from "@/hooks/useMobile";
 
 const fmt = (n: number) => {
   const abs = Math.abs(n);
@@ -20,11 +25,13 @@ const fmtPrice = (n: number) => {
 };
 
 export default function Home() {
-  const { data, isLoading } = trpc.bot.status.useQuery(undefined, { refetchInterval: 5000, retry: false });
+  const isMobile = useIsMobile();
+  const { data, isLoading, refetch: refetchStatus } = trpc.bot.status.useQuery(undefined, { refetchInterval: 5000, retry: false });
   const publicPrices = trpc.prices.live.useQuery(undefined, { refetchInterval: 8000 });
   const strategiesQuery = trpc.strategies.list.useQuery(undefined, { retry: false });
   const tradesQuery = trpc.trades.list.useQuery({ limit: 50 }, { retry: false });
   const utils = trpc.useUtils();
+
   const startBot = trpc.bot.start.useMutation({
     onSuccess: (res: any) => {
       utils.bot.status.invalidate();
@@ -33,16 +40,34 @@ export default function Home() {
     },
     onError: () => toast.error("Error al iniciar el motor"),
   });
-  const stopBot = trpc.bot.stop.useMutation({ onSuccess: () => { utils.bot.status.invalidate(); toast.success("Motor detenido"); } });
-  const emergencyStop = trpc.bot.emergencyStop.useMutation({ onSuccess: () => { utils.bot.status.invalidate(); toast.error("PARADA DE EMERGENCIA ejecutada"); } });
-  const markRead = trpc.bot.markNotificationsRead.useMutation({ onSuccess: () => utils.bot.status.invalidate() });
+  const stopBot = trpc.bot.stop.useMutation({
+    onSuccess: () => { utils.bot.status.invalidate(); toast.success("Motor detenido"); }
+  });
+  const emergencyStop = trpc.bot.emergencyStop.useMutation({
+    onSuccess: () => { utils.bot.status.invalidate(); toast.error("PARADA DE EMERGENCIA ejecutada"); }
+  });
+  const markRead = trpc.bot.markNotificationsRead.useMutation({
+    onSuccess: () => utils.bot.status.invalidate()
+  });
+
   const [bellOpen, setBellOpen] = useState(false);
   const [currentTime, setCurrentTime] = useState(new Date());
+  const [isRefreshing, setIsRefreshing] = useState(false);
 
   useEffect(() => {
     const timer = setInterval(() => setCurrentTime(new Date()), 1000);
     return () => clearInterval(timer);
   }, []);
+
+  const handleRefresh = useCallback(async () => {
+    if (typeof navigator !== "undefined" && "vibrate" in navigator) navigator.vibrate(30);
+    setIsRefreshing(true);
+    await Promise.all([
+      utils.bot.status.invalidate(),
+      utils.prices.live.invalidate(),
+    ]);
+    setTimeout(() => setIsRefreshing(false), 800);
+  }, [utils]);
 
   const state = data?.state;
   const totalPnl = parseFloat(String(state?.totalPnl ?? "0"));
@@ -58,6 +83,7 @@ export default function Home() {
   const dailyLoss = parseFloat(String(state?.dailyLoss ?? "0"));
   const unread = data?.unreadNotifications ?? 0;
   const notifications = data?.recentOpportunities ?? [];
+
   // Use bot status prices first, fallback to public prices
   const livePrices = (data?.livePrices && Object.keys(data.livePrices).length > 0)
     ? data.livePrices
@@ -74,36 +100,275 @@ export default function Home() {
   const pnlColor = totalPnl >= 0 ? "text-[oklch(0.72_0.19_160)]" : "text-[oklch(0.63_0.24_25)]";
   const pnlGlow = totalPnl >= 0 ? "glow-green" : "glow-red";
 
-  // Build PnL by pair from strategies
   const strategies = strategiesQuery.data ?? [];
   const barData = strategies.length > 0
     ? strategies.map((s: any) => ({
         pair: s.symbol.replace("USDT", ""),
         pnl: parseFloat(String(s.pnl ?? "0")),
       }))
-    : [
-        { pair: "BTC", pnl: 0 },
-        { pair: "ETH", pnl: 0 },
-        { pair: "XAU", pnl: 0 },
-      ];
+    : [{ pair: "BTC", pnl: 0 }, { pair: "ETH", pnl: 0 }, { pair: "XAU", pnl: 0 }];
 
-  // Price ticker data
   const tickerPairs = [
-    { symbol: "BTCUSDT", label: "BTC/USDT", icon: "₿" },
-    { symbol: "ETHUSDT", label: "ETH/USDT", icon: "Ξ" },
-    { symbol: "XAUUSDT", label: "Oro/USDT", icon: "🥇" },
-    { symbol: "SP500", label: "S&P 500", icon: "📈" },
+    { symbol: "BTCUSDT", label: "BTC/USDT", icon: "₿", shortLabel: "BTC" },
+    { symbol: "ETHUSDT", label: "ETH/USDT", icon: "Ξ", shortLabel: "ETH" },
+    { symbol: "XAUUSDT", label: "Oro/USDT", icon: "🥇", shortLabel: "Oro" },
+    { symbol: "SP500", label: "S&P 500", icon: "📈", shortLabel: "S&P" },
   ];
 
   if (isLoading && publicPrices.isLoading) {
     return (
-      <div className="space-y-6 animate-pulse">
-        <div className="h-48 glass-card rounded-xl" />
-        <div className="grid grid-cols-5 gap-4">{Array.from({ length: 5 }).map((_, i) => <div key={i} className="h-24 glass-card rounded-xl" />)}</div>
+      <div className="space-y-4 animate-pulse">
+        <div className="h-12 glass-card rounded-xl" />
+        <div className="grid grid-cols-2 gap-3">{Array.from({ length: 4 }).map((_, i) => <div key={i} className="h-20 glass-card rounded-xl" />)}</div>
+        <div className="h-32 glass-card rounded-xl" />
+        <div className="grid grid-cols-2 gap-3">{Array.from({ length: 4 }).map((_, i) => <div key={i} className="h-20 glass-card rounded-xl" />)}</div>
       </div>
     );
   }
 
+  if (isMobile) {
+    return (
+      <div className="space-y-4">
+        {/* Mobile Status Bar */}
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2 flex-wrap">
+            <Badge
+              variant={isRunning ? "default" : "secondary"}
+              className={`text-xs px-2 py-1 ${isRunning ? "bg-primary/20 text-primary border-primary/30" : ""}`}
+            >
+              {isRunning
+                ? <><span className="w-1.5 h-1.5 rounded-full bg-primary pulse-live mr-1.5 inline-block" />EN VIVO</>
+                : <><WifiOff className="h-3 w-3 mr-1" />DESCONECTADO</>
+              }
+            </Badge>
+            {state?.simulationMode && (
+              <Badge variant="outline" className="text-xs border-[oklch(0.8_0.15_85)] text-[oklch(0.8_0.15_85)]">
+                SIMULACIÓN
+              </Badge>
+            )}
+          </div>
+          <div className="flex items-center gap-1.5">
+            <button
+              onClick={handleRefresh}
+              className="h-8 w-8 flex items-center justify-center rounded-lg hover:bg-accent/50 transition-colors"
+            >
+              <RefreshCw className={`h-4 w-4 text-muted-foreground ${isRefreshing ? "animate-spin" : ""}`} />
+            </button>
+            <Popover open={bellOpen} onOpenChange={(open) => { setBellOpen(open); if (open && unread > 0) markRead.mutate(); }}>
+              <PopoverTrigger asChild>
+                <Button variant="ghost" size="icon" className="relative h-8 w-8">
+                  <Bell className="h-4 w-4" />
+                  {unread > 0 && (
+                    <span className="absolute -top-0.5 -right-0.5 h-4 w-4 rounded-full bg-destructive text-[10px] font-bold flex items-center justify-center text-white">
+                      {unread > 9 ? "9+" : unread}
+                    </span>
+                  )}
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent className="w-80 p-0" align="end">
+                <div className="p-3 border-b"><h4 className="font-semibold text-sm">Notificaciones</h4></div>
+                <div className="max-h-64 overflow-y-auto">
+                  {notifications.length === 0 ? (
+                    <p className="text-sm text-muted-foreground p-4 text-center">Sin notificaciones aún.</p>
+                  ) : notifications.map((n: any) => (
+                    <div key={n.id} className="p-3 border-b last:border-0">
+                      <div className="flex items-center justify-between">
+                        <span className="font-medium text-sm">{n.symbol}</span>
+                        <Badge variant={String(n.signal).includes("BUY") ? "default" : "destructive"} className="text-[10px]">
+                          {String(n.signal).includes("BUY") ? "COMPRA" : "VENTA"}
+                        </Badge>
+                      </div>
+                      <p className="text-xs text-muted-foreground mt-1">Confianza: {n.confidence}%</p>
+                    </div>
+                  ))}
+                </div>
+              </PopoverContent>
+            </Popover>
+          </div>
+        </div>
+
+        {/* Mobile Bot Controls */}
+        <div className="grid grid-cols-2 gap-2">
+          {!isRunning ? (
+            <Button
+              onClick={() => startBot.mutate()}
+              className="bg-primary text-primary-foreground hover:bg-primary/90 gap-2 h-12 text-sm font-semibold col-span-2"
+              disabled={startBot.isPending}
+            >
+              <Play className="h-4 w-4" />
+              {startBot.isPending ? "Iniciando..." : "Iniciar Bot"}
+            </Button>
+          ) : (
+            <>
+              <Button
+                onClick={() => stopBot.mutate()}
+                variant="secondary"
+                className="gap-2 h-12 text-sm font-semibold"
+                disabled={stopBot.isPending}
+              >
+                <Square className="h-4 w-4" />
+                Detener
+              </Button>
+              <Button
+                onClick={() => emergencyStop.mutate()}
+                variant="destructive"
+                className="gap-2 h-12 text-sm font-semibold"
+                disabled={emergencyStop.isPending}
+              >
+                <AlertTriangle className="h-4 w-4" />
+                Emergencia
+              </Button>
+            </>
+          )}
+        </div>
+
+        {/* Mobile Price Ticker - Horizontal Scroll */}
+        <div className="overflow-x-auto -mx-3 px-3">
+          <div className="flex gap-2.5 pb-1" style={{ width: "max-content" }}>
+            {tickerPairs.map(({ symbol, label, icon, shortLabel }) => {
+              const p = (livePrices as any)[symbol];
+              const price = p?.lastPrice ?? 0;
+              const change = p?.price24hPcnt ? p.price24hPcnt * 100 : 0;
+              const isUp = change >= 0;
+              return (
+                <div key={symbol} className="glass-card p-3 flex flex-col gap-1" style={{ minWidth: "130px" }}>
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-base">{icon}</span>
+                      <span className="text-xs font-semibold text-muted-foreground">{shortLabel}</span>
+                    </div>
+                    {price > 0 && (
+                      <span className={`text-[10px] font-semibold flex items-center gap-0.5 ${isUp ? "text-[oklch(0.72_0.19_160)]" : "text-[oklch(0.63_0.24_25)]"}`}>
+                        {isUp ? <ArrowUpRight className="h-3 w-3" /> : <ArrowDownRight className="h-3 w-3" />}
+                        {fmtPct(change)}
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-base font-bold tabular-nums">
+                    {price > 0 ? "$" + fmtPrice(price) : <span className="text-muted-foreground text-sm">—</span>}
+                  </p>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Mobile PnL Card */}
+        <div className={`glass-card ${pnlGlow} p-5 text-center`}>
+          <p className="text-[10px] font-semibold tracking-[0.2em] text-muted-foreground uppercase mb-1">Resultado Total</p>
+          <p className={`text-4xl font-bold tracking-tight ${pnlColor} tabular-nums`}>{fmt(totalPnl)}</p>
+          <p className={`text-base mt-0.5 ${pnlColor}`}>{fmtPct(pnlPct)}</p>
+        </div>
+
+        {/* Mobile Stats Grid 2x2 */}
+        <div className="grid grid-cols-2 gap-2.5">
+          {[
+            { icon: Wallet, label: "SALDO", value: fmtUsd(balance) },
+            { icon: Target, label: "INICIAL", value: fmtUsd(initial) },
+            { icon: todayPnl >= 0 ? TrendingUp : TrendingDown, label: "HOY", value: fmt(todayPnl), color: todayPnl >= 0 ? "text-[oklch(0.72_0.19_160)]" : "text-[oklch(0.63_0.24_25)]" },
+            { icon: Trophy, label: "WIN RATE", value: winRate.toFixed(1) + "%" },
+          ].map((s) => (
+            <div key={s.label} className="glass-card p-4 text-center">
+              <s.icon className="h-4 w-4 mx-auto text-muted-foreground mb-1.5" />
+              <p className="text-[9px] font-semibold tracking-[0.15em] text-muted-foreground">{s.label}</p>
+              <p className={`text-base font-bold mt-1 tabular-nums ${s.color ?? ""}`}>{s.value}</p>
+            </div>
+          ))}
+        </div>
+
+        {/* Mobile Stats Row */}
+        <div className="grid grid-cols-2 gap-2.5">
+          <div className="glass-card p-4 text-center">
+            <Activity className="h-4 w-4 mx-auto text-muted-foreground mb-1.5" />
+            <p className="text-[9px] font-semibold tracking-[0.15em] text-muted-foreground">OPERACIONES</p>
+            <p className="text-base font-bold mt-1 tabular-nums">{totalTrades}</p>
+          </div>
+          <div className="glass-card p-4 text-center">
+            <Clock className="h-4 w-4 mx-auto text-muted-foreground mb-1.5" />
+            <p className="text-[9px] font-semibold tracking-[0.15em] text-muted-foreground">ACTIVO</p>
+            <p className="text-base font-bold mt-1 tabular-nums">{isRunning ? uptime : "—"}</p>
+          </div>
+        </div>
+
+        {/* Mobile Recent Trades */}
+        <div className="glass-card p-4">
+          <div className="flex items-center gap-2 mb-3">
+            <Zap className="h-4 w-4 text-primary" />
+            <h3 className="font-semibold text-sm">Últimas Operaciones</h3>
+          </div>
+          <div className="space-y-2">
+            {(!tradesQuery.data || tradesQuery.data.length === 0) ? (
+              <div className="flex items-center justify-center h-20 text-muted-foreground text-sm">
+                <Activity className="h-5 w-5 opacity-20 mr-2" /> Sin operaciones aún
+              </div>
+            ) : (
+              tradesQuery.data.slice(0, 5).map((t: any) => {
+                const pnl = parseFloat(String(t.pnl ?? "0"));
+                return (
+                  <div key={t.id} className="flex items-center justify-between py-2 border-b border-border/50 last:border-0">
+                    <div className="flex items-center gap-2">
+                      <Badge variant={t.side === "buy" ? "default" : "destructive"} className="text-[9px] w-12 justify-center shrink-0">
+                        {t.side === "buy" ? "COMPRA" : "VENTA"}
+                      </Badge>
+                      <span className="text-sm font-medium">{t.symbol?.replace("USDT", "")}</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-muted-foreground tabular-nums">${fmtPrice(parseFloat(String(t.price ?? "0")))}</span>
+                      <span className={`text-xs font-semibold tabular-nums ${pnl >= 0 ? "text-[oklch(0.72_0.19_160)]" : "text-[oklch(0.63_0.24_25)]"}`}>
+                        {fmt(pnl)}
+                      </span>
+                    </div>
+                  </div>
+                );
+              })
+            )}
+          </div>
+        </div>
+
+        {/* Mobile Risk Management */}
+        <div className="glass-card p-4">
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-2">
+              <Shield className="h-4 w-4 text-[oklch(0.8_0.15_85)]" />
+              <h3 className="font-semibold text-sm">Gestión de Riesgo</h3>
+            </div>
+            <Badge variant="outline" className={`text-[10px] ${dailyLoss > 200 ? "border-destructive/50 text-destructive" : "border-primary/30 text-primary"}`}>
+              {dailyLoss > 200 ? "⚠ ALTO" : "SEGURO"}
+            </Badge>
+          </div>
+          <div className="space-y-3">
+            <div>
+              <div className="flex justify-between text-xs mb-1.5">
+                <span className="text-muted-foreground">Drawdown Máx.</span>
+                <span className="tabular-nums">{(maxDrawdown * 100).toFixed(2)}% / 10%</span>
+              </div>
+              <div className="h-1.5 bg-secondary rounded-full overflow-hidden">
+                <div className="h-full bg-primary rounded-full transition-all duration-500" style={{ width: `${Math.min((maxDrawdown * 100) / 10 * 100, 100)}%` }} />
+              </div>
+            </div>
+            <div>
+              <div className="flex justify-between text-xs mb-1.5">
+                <span className="text-muted-foreground">Pérdida Diaria</span>
+                <span className="tabular-nums">{fmtUsd(Math.abs(dailyLoss))} / $250</span>
+              </div>
+              <div className="h-1.5 bg-secondary rounded-full overflow-hidden">
+                <div className="h-full bg-[oklch(0.8_0.15_85)] rounded-full transition-all duration-500" style={{ width: `${Math.min((Math.abs(dailyLoss) / 250) * 100, 100)}%` }} />
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Mobile Footer */}
+        <div className="flex items-center justify-center gap-4 text-[10px] text-muted-foreground py-2">
+          <span className="flex items-center gap-1">{isRunning ? <Wifi className="h-3 w-3 text-primary" /> : <WifiOff className="h-3 w-3" />} {isRunning ? "Conectado" : "Desconectado"}</span>
+          <span>Ciclos: {data?.cycles ?? 0}</span>
+          <span>{currentTime.toLocaleTimeString()}</span>
+        </div>
+      </div>
+    );
+  }
+
+  // ─── Desktop Layout ───
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -157,10 +422,10 @@ export default function Home() {
         </div>
       </div>
 
-      {/* Live Price Ticker */}
+      {/* Desktop Price Ticker */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         {tickerPairs.map(({ symbol, label, icon }) => {
-          const p = livePrices[symbol];
+          const p = (livePrices as any)[symbol];
           const price = p?.lastPrice ?? 0;
           const change = p?.price24hPcnt ? p.price24hPcnt * 100 : 0;
           const isUp = change >= 0;
@@ -179,9 +444,7 @@ export default function Home() {
                   {fmtPct(change)}
                 </div>
               )}
-              {price === 0 && (
-                <span className="text-xs text-muted-foreground">Esperando...</span>
-              )}
+              {price === 0 && <span className="text-xs text-muted-foreground">—</span>}
             </div>
           );
         })}

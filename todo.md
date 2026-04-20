@@ -47,3 +47,11 @@
 - [x] Live price ticker shows 4 assets: BTC, ETH, Gold (XAUUSDT), SP500
 - [x] Auto-seed strategies use XAUUSDT instead of SPXUSDT
 - [x] Fix getEngineCycles export error after module edit
+- [x] Add mobile bottom navigation bar (Panel, Estrategias, Oportunidades, Analista, Más)
+- [x] Fix DashboardLayout for mobile: hide sidebar on mobile, show bottom nav
+- [x] Redesign Home.tsx for mobile: compact header, horizontal price scroll, better stats grid
+- [x] Fix price ticker showing "Esperando..." on mobile (precios no cargan al inicio)
+- [x] Improve bot control buttons for mobile (larger touch targets)
+- [x] Mobile-optimize Strategies, Trades, Opportunities pages
+- [x] Add notification badge on bottom nav for unread opportunities
+- [x] Improve overall visual polish: better glassmorphism, spacing, typography
