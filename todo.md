@@ -120,3 +120,8 @@
 - [x] Verificar spread > comisiones antes de colocar orden (garantizar rentabilidad)
 - [x] Regenerar grid automáticamente cuando precio se aleja del centro (drift threshold = 1.5x spread)
 - [x] En tendencia bajista: skip buys; en neutral/alcista: operar ambos lados
+
+## Operación Simultánea Completa
+- [ ] XAUUSDT siempre opera en Bybit (independiente del exchange seleccionado)
+- [ ] Modo "Ambos": KuCoin (BTC+ETH) + Bybit (BTC+ETH+XAUUSDT) simultáneo
+- [ ] En modo KuCoin solo: BTC+ETH en KuCoin, XAUUSDT en Bybit automáticamente

@@ -946,17 +946,55 @@ export async function startEngine(userId: number): Promise<{ success: boolean; e
       console.log(`[Engine] Found ${strats.length} strategies, ${strats.filter(s => s.enabled).length} enabled`);
       for (const strat of strats) {
         if (!strat.enabled) continue;
-        // Skip XAUUSDT on KuCoin — KuCoin doesn't support gold trading
-        if (strat.symbol === "XAUUSDT" && (engine.exchange === "kucoin" || engine.exchange === "both")) {
-          console.log(`[Engine] Skipping ${strat.symbol} — not supported on KuCoin`);
+        const cat = strat.category === "linear" ? "linear" : "spot";
+
+        // XAUUSDT always runs on Bybit (KuCoin doesn't support gold)
+        // Create a temporary Bybit-only engine state when current exchange is KuCoin
+        if (strat.symbol === "XAUUSDT") {
+          if (engine.exchange === "kucoin") {
+            // Need Bybit client for XAUUSDT — create one if we have keys
+            const bybitKeys = await db.getApiKey(userId, "bybit");
+            if (bybitKeys) {
+              const bybitClient = new RestClientV5({ key: bybitKeys.apiKey, secret: bybitKeys.apiSecret });
+              const bybitEngine: EngineState = { ...engine, client: bybitClient, exchange: "bybit", kucoinClient: null };
+              console.log(`[Engine] Running ${strat.strategyType} for XAUUSDT on Bybit (forced)`);
+              if (strat.strategyType === "scalping") await runScalpingStrategy(bybitEngine, strat.symbol, cat as "spot" | "linear");
+              else await runGridStrategy(bybitEngine, strat.symbol, cat as "spot" | "linear");
+            } else {
+              console.log(`[Engine] Skipping XAUUSDT — no Bybit keys available`);
+            }
+          } else {
+            // Bybit or Both: run normally on Bybit client
+            console.log(`[Engine] Running ${strat.strategyType} for XAUUSDT on Bybit`);
+            if (strat.strategyType === "scalping") await runScalpingStrategy(engine, strat.symbol, cat as "spot" | "linear");
+            else await runGridStrategy(engine, strat.symbol, cat as "spot" | "linear");
+          }
           continue;
         }
+
+        // For BTC/ETH and other pairs:
+        // In "both" mode: run on KuCoin first, then also on Bybit
+        if (engine.exchange === "both") {
+          // Run on KuCoin
+          if (engine.kucoinClient) {
+            const kucoinEngine: EngineState = { ...engine, exchange: "kucoin" };
+            console.log(`[Engine] Running ${strat.strategyType} for ${strat.symbol} on KuCoin`);
+            if (strat.strategyType === "grid") await runGridStrategy(kucoinEngine, strat.symbol, "spot");
+            else if (strat.strategyType === "scalping") await runScalpingStrategy(kucoinEngine, strat.symbol, "spot");
+          }
+          // Run on Bybit
+          const bybitEngine: EngineState = { ...engine, exchange: "bybit", kucoinClient: null };
+          console.log(`[Engine] Running ${strat.strategyType} for ${strat.symbol} on Bybit`);
+          if (strat.strategyType === "grid") await runGridStrategy(bybitEngine, strat.symbol, cat as "spot" | "linear");
+          else if (strat.strategyType === "scalping") await runScalpingStrategy(bybitEngine, strat.symbol, cat as "spot" | "linear");
+          continue;
+        }
+
+        // Single exchange mode (bybit or kucoin)
         console.log(`[Engine] Running ${strat.strategyType} for ${strat.symbol} (${strat.category})`);
         if (strat.strategyType === "grid") {
-          const cat = strat.category === "linear" ? "linear" : "spot";
           await runGridStrategy(engine, strat.symbol, cat as "spot" | "linear");
         } else if (strat.strategyType === "scalping") {
-          const cat = strat.category === "linear" ? "linear" : "spot";
           await runScalpingStrategy(engine, strat.symbol, cat as "spot" | "linear");
         }
       }
