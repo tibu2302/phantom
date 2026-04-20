@@ -20,6 +20,7 @@ export const botState = mysqlTable("bot_state", {
   userId: int("userId").notNull(),
   isRunning: boolean("isRunning").default(false).notNull(),
   simulationMode: boolean("simulationMode").default(true).notNull(),
+  selectedExchange: varchar("selectedExchange", { length: 32 }).default("bybit").notNull(),
   initialBalance: decimal("initialBalance", { precision: 18, scale: 2 }).default("5000"),
   currentBalance: decimal("currentBalance", { precision: 18, scale: 2 }).default("5000"),
   totalPnl: decimal("totalPnl", { precision: 18, scale: 2 }).default("0"),
@@ -38,6 +39,7 @@ export const apiKeys = mysqlTable("api_keys", {
   exchange: varchar("exchange", { length: 32 }).default("bybit").notNull(),
   apiKey: varchar("apiKey", { length: 128 }).notNull(),
   apiSecret: varchar("apiSecret", { length: 256 }).notNull(),
+  passphrase: varchar("passphrase", { length: 256 }),
   label: varchar("label", { length: 64 }),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
 });

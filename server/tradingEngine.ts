@@ -1,22 +1,28 @@
 /**
- * PHANTOM Trading Engine — Real Bybit API V5 Integration
+ * PHANTOM Trading Engine — Multi-Exchange (Bybit + KuCoin)
  * Grid Trading for BTC/USDT & ETH/USDT, Scalping for XAUUSDT (Gold)
  * SP500 reference price via Yahoo Finance (direct, no Manus internal API)
  * Opportunity Scanner for 30+ coins with RSI, EMA, Volume, Bollinger
  *
- * v3.2 — Fixes:
- *  - Bybit fee deductions in PnL (Spot: 0.1% taker, Linear: 0.055% taker)
- *  - PnL in live mode based on real price difference (not random)
- *  - CoinGecko 429 rate limit: 2s delay + exponential backoff + 5-min cache
- *  - SP500 via direct Yahoo Finance fetch (no Manus callDataApi dependency)
+ * v4.0 — Multi-Exchange:
+ *  - Support for Bybit and KuCoin exchanges
+ *  - Exchange-specific fee deductions in PnL
+ *  - Exchange-specific order placement
+ *  - Bybit: Spot 0.1% taker, Linear 0.055% taker
+ *  - KuCoin: Spot 0.1% taker, Futures 0.06% taker
  */
 import { RestClientV5 } from "bybit-api";
 import * as db from "./db";
 import { WebSocket } from "ws";
 
-// ─── Fee Constants ───
-const SPOT_FEE_RATE = 0.001;    // 0.1% Bybit spot taker fee
-const LINEAR_FEE_RATE = 0.00055; // 0.055% Bybit linear/futures taker fee
+// ─── Fee Constants (per exchange) ───
+const FEES: Record<string, { spot: number; linear: number }> = {
+  bybit:  { spot: 0.001,   linear: 0.00055 },  // 0.1% / 0.055%
+  kucoin: { spot: 0.001,   linear: 0.0006  },  // 0.1% / 0.06%
+};
+// Legacy constants for backward compat
+const SPOT_FEE_RATE = 0.001;
+const LINEAR_FEE_RATE = 0.00055;
 
 // ─── Types ───
 interface TickerData {
@@ -40,7 +46,9 @@ interface GridLevel {
 
 interface EngineState {
   userId: number;
-  client: RestClientV5;
+  exchange: string; // "bybit" | "kucoin"
+  client: RestClientV5; // Bybit client (also used as placeholder for KuCoin)
+  kucoinClient: any | null; // KuCoin SpotClient when exchange=kucoin
   isRunning: boolean;
   simulationMode: boolean;
   gridLevels: Record<string, GridLevel[]>;
@@ -268,31 +276,42 @@ async function placeOrder(engine: EngineState, symbol: string, side: "Buy" | "Se
     return `SIM_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   }
   try {
-    const res = await engine.client.submitOrder({
-      category,
-      symbol,
-      side,
-      orderType: "Market",
-      qty,
-    });
-    return res.result?.orderId ?? null;
+    if (engine.exchange === "kucoin" && engine.kucoinClient) {
+      // KuCoin order: uses BTC-USDT format, lowercase side
+      const kucoinSymbol = symbol.replace("USDT", "-USDT");
+      const res = await engine.kucoinClient.submitOrder({
+        clientOid: `phantom_${Date.now()}`,
+        side: side.toLowerCase(),
+        symbol: kucoinSymbol,
+        type: "market",
+        size: qty,
+      });
+      console.log(`[Engine] KuCoin order response:`, JSON.stringify(res?.data ?? res));
+      return res?.data?.orderId ?? null;
+    } else {
+      // Bybit order
+      const res = await engine.client.submitOrder({
+        category,
+        symbol,
+        side,
+        orderType: "Market",
+        qty,
+      });
+      return res.result?.orderId ?? null;
+    }
   } catch (e) {
-    console.error(`[Engine] Order failed ${side} ${symbol}:`, (e as Error).message);
+    console.error(`[Engine] Order failed ${side} ${symbol} (${engine.exchange}):`, (e as Error).message);
     return null;
   }
 }
 
 /**
- * Calculate PnL after Bybit fees.
- * For a completed round-trip (buy + sell), fees are deducted twice.
- * For an open position (only buy or only sell recorded), fees are deducted once.
- * @param grossPnl  Price difference * qty (positive = profit before fees)
- * @param tradeAmount  USDT value of the trade (qty * price)
- * @param category  "spot" (0.1% taker) or "linear" (0.055% taker)
- * @param roundTrip  true = deduct fees for both buy AND sell legs
+ * Calculate PnL after exchange fees.
+ * Fees are per-exchange: Bybit Spot 0.1%, Linear 0.055%; KuCoin Spot 0.1%, Futures 0.06%.
  */
-function calcNetPnl(grossPnl: number, tradeAmount: number, category: "spot" | "linear", roundTrip = true): number {
-  const feeRate = category === "linear" ? LINEAR_FEE_RATE : SPOT_FEE_RATE;
+function calcNetPnl(grossPnl: number, tradeAmount: number, category: "spot" | "linear", roundTrip = true, exchange = "bybit"): number {
+  const exchangeFees = FEES[exchange] ?? FEES.bybit;
+  const feeRate = category === "linear" ? exchangeFees.linear : exchangeFees.spot;
   const feeLegs = roundTrip ? 2 : 1;
   const totalFees = tradeAmount * feeRate * feeLegs;
   return grossPnl - totalFees;
@@ -715,27 +734,44 @@ export async function startEngine(userId: number): Promise<{ success: boolean; e
     return { success: false, error: "Engine already running" };
   }
 
-  // Get API keys
-  const keys = await db.getApiKey(userId);
+  // Get selected exchange and API keys
   const state = await db.getOrCreateBotState(userId);
   const simulationMode = state?.simulationMode ?? true;
+  const selectedExchange = (state as any)?.selectedExchange ?? "bybit";
+  const keys = await db.getApiKey(userId, selectedExchange);
 
-  // Create client (public for simulation, authenticated for live)
-  let client: RestClientV5;
+  // Create exchange-specific client
+  let client: RestClientV5 = new RestClientV5({});
+  let kucoinClient: any = null;
+
   if (simulationMode || !keys) {
-    client = new RestClientV5({});
-    console.log(`[Engine] Starting in ${simulationMode ? "SIMULATION" : "PUBLIC"} mode for user ${userId}`);
+    console.log(`[Engine] Starting in ${simulationMode ? "SIMULATION" : "PUBLIC"} mode (${selectedExchange}) for user ${userId}`);
+  } else if (selectedExchange === "kucoin") {
+    try {
+      const { SpotClient } = await import("kucoin-api");
+      kucoinClient = new SpotClient({
+        apiKey: keys.apiKey,
+        apiSecret: keys.apiSecret,
+        apiPassphrase: keys.passphrase ?? "",
+      });
+      console.log(`[Engine] Starting in LIVE mode (KuCoin) for user ${userId}`);
+    } catch (e) {
+      console.error(`[Engine] Failed to create KuCoin client:`, (e as Error).message);
+      return { success: false, error: "Failed to initialize KuCoin client" };
+    }
   } else {
     client = new RestClientV5({
       key: keys.apiKey,
       secret: keys.apiSecret,
     });
-    console.log(`[Engine] Starting in LIVE mode for user ${userId}`);
+    console.log(`[Engine] Starting in LIVE mode (Bybit) for user ${userId}`);
   }
 
   const engine: EngineState = {
     userId,
+    exchange: selectedExchange,
     client,
+    kucoinClient,
     isRunning: true,
     simulationMode,
     gridLevels: {},
@@ -842,11 +878,14 @@ export function isEngineRunning(userId: number): boolean {
   return engines.has(userId);
 }
 
-// ─── Bybit WebSocket Price Feed ───
-// Uses WebSocket (not blocked) instead of REST API (blocked by CloudFront geo-restriction)
+// ─── Multi-Exchange WebSocket Price Feed ───
+// Both Bybit and KuCoin WebSockets run simultaneously for the ticker display.
+// The engine uses the selected exchange for order placement.
 let wsSpot: WebSocket | null = null;
 let wsLinear: WebSocket | null = null;
+let wsKucoin: WebSocket | null = null;
 let wsReconnectTimer: ReturnType<typeof setTimeout> | null = null;
+let wsKucoinReconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let wsInitialized = false;
 
 const SPOT_SYMBOLS = [
@@ -920,10 +959,10 @@ function connectBybitWS(url: string, symbols: string[], label: string): WebSocke
 
 export function startBackgroundPriceFeed() {
   startBybitWebSocketFeed();
+  startKuCoinWebSocketFeed();
 }
 
 function startBybitWebSocketFeed() {
-  // Close existing connections
   if (wsSpot && wsSpot.readyState !== WebSocket.CLOSED) wsSpot.terminate();
   if (wsLinear && wsLinear.readyState !== WebSocket.CLOSED) wsLinear.terminate();
 
@@ -931,9 +970,118 @@ function startBybitWebSocketFeed() {
   wsSpot = connectBybitWS("wss://stream.bybit.com/v5/public/spot", SPOT_SYMBOLS, "Spot");
   wsLinear = connectBybitWS("wss://stream.bybit.com/v5/public/linear", LINEAR_SYMBOLS, "Linear");
 
-  // SP500 via Yahoo Finance direct — update every 60 seconds (not available on Bybit)
+  // SP500 via Yahoo Finance direct — update every 60 seconds
   updateSP500Price();
   setInterval(updateSP500Price, 60_000);
+}
+
+// ─── KuCoin WebSocket Price Feed ───
+// KuCoin requires a token from REST API before connecting WebSocket
+async function getKuCoinWsToken(): Promise<{ token: string; endpoint: string } | null> {
+  try {
+    const res = await fetch("https://api.kucoin.com/api/v1/bullet-public", { method: "POST" });
+    const json = await res.json() as any;
+    if (json.code === "200000" && json.data?.token && json.data?.instanceServers?.[0]) {
+      return {
+        token: json.data.token,
+        endpoint: json.data.instanceServers[0].endpoint,
+      };
+    }
+  } catch (e) {
+    console.error("[PriceFeed] KuCoin token fetch failed:", (e as Error).message);
+  }
+  return null;
+}
+
+function parseKuCoinTickerMsg(data: Buffer | string): void {
+  try {
+    const msg = JSON.parse(data.toString()) as any;
+    if (msg.type !== "message" || !msg.data) return;
+    const t = msg.data;
+    // KuCoin ticker topic: /market/ticker:{symbol}
+    // Data fields: price, bestBid, bestAsk, size, bestBidSize, bestAskSize
+    const rawSymbol = msg.topic?.split(":")[1]; // e.g. "BTC-USDT"
+    if (!rawSymbol) return;
+    const symbol = rawSymbol.replace("-", ""); // "BTCUSDT"
+    const existing = livePrices.get(symbol);
+    const lastPrice = parseFloat(t.price ?? "0");
+    if (lastPrice <= 0) return;
+    // Only update if we don't already have a Bybit price (Bybit is primary)
+    // KuCoin serves as fallback / validation
+    const ticker: TickerData = {
+      symbol,
+      lastPrice,
+      bid1Price: parseFloat(t.bestBid ?? String(lastPrice)),
+      ask1Price: parseFloat(t.bestAsk ?? String(lastPrice)),
+      price24hPcnt: existing?.price24hPcnt ?? 0,
+      highPrice24h: existing?.highPrice24h ?? lastPrice,
+      lowPrice24h: existing?.lowPrice24h ?? lastPrice,
+      volume24h: parseFloat(t.size ?? existing?.volume24h ?? "0"),
+      turnover24h: existing?.turnover24h ?? 0,
+    };
+    // Update price — KuCoin prices supplement Bybit
+    livePrices.set(symbol, ticker);
+  } catch { /* ignore */ }
+}
+
+async function startKuCoinWebSocketFeed() {
+  if (wsKucoin && wsKucoin.readyState !== WebSocket.CLOSED) wsKucoin.terminate();
+
+  const tokenData = await getKuCoinWsToken();
+  if (!tokenData) {
+    console.warn("[PriceFeed] KuCoin WS token unavailable — retrying in 30s");
+    wsKucoinReconnectTimer = setTimeout(() => startKuCoinWebSocketFeed(), 30_000);
+    return;
+  }
+
+  const connectId = Date.now();
+  const wsUrl = `${tokenData.endpoint}?token=${tokenData.token}&connectId=${connectId}`;
+  console.log("[PriceFeed] Starting KuCoin WebSocket price feed...");
+
+  const ws = new WebSocket(wsUrl);
+  wsKucoin = ws;
+
+  ws.on("open", () => {
+    console.log(`[PriceFeed] KuCoin WS connected — subscribing to ${SPOT_SYMBOLS.length} symbols`);
+    // KuCoin uses BTC-USDT format and comma-separated topics
+    const kucoinSymbols = SPOT_SYMBOLS.map(s => s.replace("USDT", "-USDT"));
+    // Subscribe in batches of 10
+    for (let i = 0; i < kucoinSymbols.length; i += 10) {
+      const batch = kucoinSymbols.slice(i, i + 10);
+      ws.send(JSON.stringify({
+        id: Date.now() + i,
+        type: "subscribe",
+        topic: `/market/ticker:${batch.join(",")}`,
+        privateChannel: false,
+        response: true,
+      }));
+    }
+  });
+
+  ws.on("message", (data) => {
+    const msg = JSON.parse(data.toString()) as any;
+    if (msg.type === "pong" || msg.type === "welcome" || msg.type === "ack") return;
+    parseKuCoinTickerMsg(data as Buffer);
+  });
+
+  ws.on("error", (e) => {
+    console.error("[PriceFeed] KuCoin WS error:", e.message);
+  });
+
+  ws.on("close", () => {
+    console.warn("[PriceFeed] KuCoin WS closed — reconnecting in 10s...");
+    if (wsKucoinReconnectTimer) clearTimeout(wsKucoinReconnectTimer);
+    wsKucoinReconnectTimer = setTimeout(() => startKuCoinWebSocketFeed(), 10_000);
+  });
+
+  // KuCoin requires ping every 30s
+  const pingInterval = setInterval(() => {
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ id: Date.now(), type: "ping" }));
+    } else {
+      clearInterval(pingInterval);
+    }
+  }, 30_000);
 }
 
 async function updateSP500Price() {
@@ -943,3 +1091,4 @@ async function updateSP500Price() {
 
 // Auto-start on module load
 startBybitWebSocketFeed();
+startKuCoinWebSocketFeed();

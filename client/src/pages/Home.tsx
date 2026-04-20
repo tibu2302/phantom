@@ -84,6 +84,16 @@ export default function Home() {
   const dailyLoss = parseFloat(String(state?.dailyLoss ?? "0"));
   const unread = data?.unreadNotifications ?? 0;
   const notifications = data?.recentOpportunities ?? [];
+  const selectedExchange = (state as any)?.selectedExchange ?? "bybit";
+
+  const updateSettings = trpc.bot.updateSettings.useMutation({
+    onSuccess: () => { utils.bot.status.invalidate(); },
+  });
+  const handleExchangeChange = (exchange: string) => {
+    if (isRunning) { toast.error("Detené el bot antes de cambiar de exchange"); return; }
+    updateSettings.mutate({ selectedExchange: exchange });
+    toast.success(`Exchange cambiado a ${exchange === "kucoin" ? "KuCoin" : "Bybit"}`);
+  };
 
   // Use bot status prices first, fallback to public prices
   const livePrices = (data?.livePrices && Object.keys(data.livePrices).length > 0)
@@ -130,6 +140,23 @@ export default function Home() {
   if (isMobile) {
     return (
       <div className="space-y-4">
+        {/* Mobile Exchange Selector */}
+        <div className="flex gap-2">
+          {["bybit", "kucoin"].map(ex => (
+            <button
+              key={ex}
+              onClick={() => handleExchangeChange(ex)}
+              className={`flex-1 py-2 rounded-lg text-xs font-semibold transition-all border ${
+                selectedExchange === ex
+                  ? "bg-primary/10 border-primary/50 text-primary"
+                  : "bg-secondary/30 border-border text-muted-foreground"
+              }`}
+            >
+              {ex === "bybit" ? "Bybit" : "KuCoin"}
+            </button>
+          ))}
+        </div>
+
         {/* Mobile Status Bar */}
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2 flex-wrap">
@@ -402,7 +429,25 @@ export default function Home() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight">Panel</h1>
+          <div className="flex items-center gap-4">
+            <h1 className="text-2xl font-bold tracking-tight">Panel</h1>
+            {/* Exchange Selector */}
+            <div className="flex gap-1 bg-secondary/30 rounded-lg p-0.5">
+              {["bybit", "kucoin"].map(ex => (
+                <button
+                  key={ex}
+                  onClick={() => handleExchangeChange(ex)}
+                  className={`px-3 py-1 rounded-md text-xs font-semibold transition-all ${
+                    selectedExchange === ex
+                      ? "bg-primary/20 text-primary"
+                      : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  {ex === "bybit" ? "Bybit" : "KuCoin"}
+                </button>
+              ))}
+            </div>
+          </div>
           <div className="flex items-center gap-3 mt-1">
             <Badge variant={isRunning ? "default" : "secondary"} className={isRunning ? "bg-primary/20 text-primary border-primary/30" : ""}>
               {isRunning ? <><span className="w-1.5 h-1.5 rounded-full bg-primary pulse-live mr-1.5 inline-block" /> EN VIVO</> : <><WifiOff className="h-3 w-3 mr-1" /> DESCONECTADO</>}

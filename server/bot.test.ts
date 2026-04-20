@@ -115,6 +115,20 @@ describe("bot.updateSettings", () => {
     const result = await caller.bot.updateSettings({ initialBalance: "10000" });
     expect(result).toEqual({ success: true });
   });
+
+  it("updates selected exchange to kucoin", async () => {
+    const { ctx } = createAuthContext();
+    const caller = appRouter.createCaller(ctx);
+    const result = await caller.bot.updateSettings({ selectedExchange: "kucoin" });
+    expect(result).toEqual({ success: true });
+  });
+
+  it("updates selected exchange to bybit", async () => {
+    const { ctx } = createAuthContext();
+    const caller = appRouter.createCaller(ctx);
+    const result = await caller.bot.updateSettings({ selectedExchange: "bybit" });
+    expect(result).toEqual({ success: true });
+  });
 });
 
 describe("bot.markNotificationsRead", () => {
@@ -139,6 +153,15 @@ describe("apiKeys", () => {
     const caller = appRouter.createCaller(ctx);
     const result = await caller.apiKeys.get();
     expect(result === null || typeof result === "object").toBe(true);
+  });
+
+  it("get supports exchange parameter", async () => {
+    const { ctx } = createAuthContext();
+    const caller = appRouter.createCaller(ctx);
+    const bybitResult = await caller.apiKeys.get({ exchange: "bybit" });
+    expect(bybitResult === null || typeof bybitResult === "object").toBe(true);
+    const kucoinResult = await caller.apiKeys.get({ exchange: "kucoin" });
+    expect(kucoinResult === null || typeof kucoinResult === "object").toBe(true);
   });
 });
 

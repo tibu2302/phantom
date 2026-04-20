@@ -67,29 +67,45 @@ export async function updateBotState(userId: number, data: Partial<typeof botSta
   await db.update(botState).set(data).where(eq(botState.userId, userId));
 }
 
-// ─── API Keys ───
-export async function saveApiKey(userId: number, data: { apiKey: string; apiSecret: string; label?: string }) {
+// ─── API Keys (multi-exchange: bybit | kucoin) ───
+export async function saveApiKey(userId: number, data: { apiKey: string; apiSecret: string; passphrase?: string; label?: string; exchange?: string }) {
   const db = await getDb();
   if (!db) return;
-  const existing = await db.select().from(apiKeys).where(eq(apiKeys.userId, userId)).limit(1);
+  const exchange = data.exchange ?? "bybit";
+  const existing = await db.select().from(apiKeys).where(and(eq(apiKeys.userId, userId), eq(apiKeys.exchange, exchange))).limit(1);
   if (existing.length > 0) {
-    await db.update(apiKeys).set({ apiKey: data.apiKey, apiSecret: data.apiSecret, label: data.label ?? null }).where(eq(apiKeys.userId, userId));
+    await db.update(apiKeys).set({ apiKey: data.apiKey, apiSecret: data.apiSecret, passphrase: data.passphrase ?? null, label: data.label ?? null }).where(and(eq(apiKeys.userId, userId), eq(apiKeys.exchange, exchange)));
   } else {
-    await db.insert(apiKeys).values({ userId, apiKey: data.apiKey, apiSecret: data.apiSecret, label: data.label ?? null });
+    await db.insert(apiKeys).values({ userId, exchange, apiKey: data.apiKey, apiSecret: data.apiSecret, passphrase: data.passphrase ?? null, label: data.label ?? null });
   }
 }
 
-export async function getApiKey(userId: number) {
+export async function getApiKey(userId: number, exchange?: string) {
   const db = await getDb();
   if (!db) return null;
+  if (exchange) {
+    const rows = await db.select().from(apiKeys).where(and(eq(apiKeys.userId, userId), eq(apiKeys.exchange, exchange))).limit(1);
+    return rows[0] ?? null;
+  }
+  // Legacy: return first key found
   const rows = await db.select().from(apiKeys).where(eq(apiKeys.userId, userId)).limit(1);
   return rows[0] ?? null;
 }
 
-export async function deleteApiKey(userId: number) {
+export async function getAllApiKeys(userId: number) {
+  const db = await getDb();
+  if (!db) return [];
+  return db.select().from(apiKeys).where(eq(apiKeys.userId, userId));
+}
+
+export async function deleteApiKey(userId: number, exchange?: string) {
   const db = await getDb();
   if (!db) return;
-  await db.delete(apiKeys).where(eq(apiKeys.userId, userId));
+  if (exchange) {
+    await db.delete(apiKeys).where(and(eq(apiKeys.userId, userId), eq(apiKeys.exchange, exchange)));
+  } else {
+    await db.delete(apiKeys).where(eq(apiKeys.userId, userId));
+  }
 }
 
 // ─── Strategies ───

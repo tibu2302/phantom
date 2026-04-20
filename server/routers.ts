@@ -60,6 +60,7 @@ export const appRouter = router({
     updateSettings: protectedProcedure.input(z.object({
       simulationMode: z.boolean().optional(),
       initialBalance: z.string().optional(),
+      selectedExchange: z.string().optional(),
     })).mutation(async ({ ctx, input }) => {
       const data: Record<string, unknown> = {};
       if (input.simulationMode !== undefined) data.simulationMode = input.simulationMode;
@@ -67,6 +68,7 @@ export const appRouter = router({
         data.initialBalance = input.initialBalance;
         data.currentBalance = input.initialBalance;
       }
+      if (input.selectedExchange !== undefined) data.selectedExchange = input.selectedExchange;
       await db.updateBotState(ctx.user.id, data as any);
       return { success: true };
     }),
@@ -87,15 +89,27 @@ export const appRouter = router({
   }),
 
   apiKeys: router({
-    get: protectedProcedure.query(async ({ ctx }) => {
-      const key = await db.getApiKey(ctx.user.id);
-      if (!key) return null;
-      return { id: key.id, label: key.label, apiKey: key.apiKey.slice(0, 6) + "..." + key.apiKey.slice(-4), hasSecret: true, createdAt: key.createdAt };
+    get: protectedProcedure.input(z.object({ exchange: z.string().optional() }).optional()).query(async ({ ctx, input }) => {
+      const exchange = input?.exchange;
+      if (exchange) {
+        const key = await db.getApiKey(ctx.user.id, exchange);
+        if (!key) return null;
+        return { id: key.id, exchange: key.exchange, label: key.label, apiKey: key.apiKey.slice(0, 6) + "..." + key.apiKey.slice(-4), hasSecret: true, hasPassphrase: !!key.passphrase, createdAt: key.createdAt };
+      }
+      // Return all keys for all exchanges
+      const allKeys = await db.getAllApiKeys(ctx.user.id);
+      return allKeys.map(key => ({
+        id: key.id, exchange: key.exchange, label: key.label,
+        apiKey: key.apiKey.slice(0, 6) + "..." + key.apiKey.slice(-4),
+        hasSecret: true, hasPassphrase: !!key.passphrase, createdAt: key.createdAt,
+      }));
     }),
     save: protectedProcedure.input(z.object({
       apiKey: z.string().min(1),
       apiSecret: z.string().min(1),
+      passphrase: z.string().optional(),
       label: z.string().optional(),
+      exchange: z.string().default("bybit"),
     })).mutation(async ({ ctx, input }) => {
       await db.saveApiKey(ctx.user.id, input);
       const existingStrategies = await db.getUserStrategies(ctx.user.id);
@@ -106,23 +120,36 @@ export const appRouter = router({
       }
       return { success: true };
     }),
-    delete: protectedProcedure.mutation(async ({ ctx }) => {
-      await db.deleteApiKey(ctx.user.id);
+    delete: protectedProcedure.input(z.object({ exchange: z.string().optional() }).optional()).mutation(async ({ ctx, input }) => {
+      await db.deleteApiKey(ctx.user.id, input?.exchange);
       return { success: true };
     }),
-    testConnection: protectedProcedure.mutation(async ({ ctx }) => {
-      const keys = await db.getApiKey(ctx.user.id);
-      if (!keys) return { success: false, error: "No API keys configured" };
+    testConnection: protectedProcedure.input(z.object({ exchange: z.string().default("bybit") }).optional()).mutation(async ({ ctx, input }) => {
+      const exchange = input?.exchange ?? "bybit";
+      const keys = await db.getApiKey(ctx.user.id, exchange);
+      if (!keys) return { success: false, error: `No API keys configured for ${exchange}` };
       try {
-        const { RestClientV5 } = await import("bybit-api");
-        const client = new RestClientV5({ key: keys.apiKey, secret: keys.apiSecret });
-        const res = await client.getWalletBalance({ accountType: "UNIFIED" });
-        if (res.retCode === 0) {
-          const coins = (res.result as any)?.list?.[0]?.coin ?? [];
-          const totalUsd = (res.result as any)?.list?.[0]?.totalEquity ?? "0";
-          return { success: true, balance: totalUsd, coins: coins.length };
+        if (exchange === "kucoin") {
+          const { SpotClient } = await import("kucoin-api");
+          const client = new SpotClient({ apiKey: keys.apiKey, apiSecret: keys.apiSecret, apiPassphrase: keys.passphrase ?? "" });
+          const res = await client.getAccountSummary();
+          if (res.code === "200000") {
+            const summary = res.data as any;
+            const totalUsd = parseFloat(summary?.totalBalance ?? summary?.availableBalance ?? "0");
+            return { success: true, balance: totalUsd.toFixed(2), coins: 1 };
+          }
+          return { success: false, error: (res as any).msg || "Connection failed" };
+        } else {
+          const { RestClientV5 } = await import("bybit-api");
+          const client = new RestClientV5({ key: keys.apiKey, secret: keys.apiSecret });
+          const res = await client.getWalletBalance({ accountType: "UNIFIED" });
+          if (res.retCode === 0) {
+            const coins = (res.result as any)?.list?.[0]?.coin ?? [];
+            const totalUsd = (res.result as any)?.list?.[0]?.totalEquity ?? "0";
+            return { success: true, balance: totalUsd, coins: coins.length };
+          }
+          return { success: false, error: res.retMsg || "Connection failed" };
         }
-        return { success: false, error: res.retMsg || "Connection failed" };
       } catch (e: any) {
         return { success: false, error: e.message || "Connection failed" };
       }

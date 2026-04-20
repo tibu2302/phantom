@@ -81,3 +81,11 @@
 - [x] Crear docker-compose.yml con app + MySQL
 - [x] Crear DEPLOY.md con guía paso a paso en español
 - [x] Verificar que el build funciona sin variables de Manus — AUTH_MODE=local bypasea OAuth
+
+## Soporte Multi-Exchange (Bybit + KuCoin)
+- [x] Campo exchange y passphrase en tabla api_keys de la DB
+- [x] Motor de trading con soporte dual (WebSocket, órdenes, comisiones para ambos exchanges)
+- [x] Selector de exchange en el Dashboard
+- [x] Pantalla de API Keys con soporte para KuCoin (3 campos: API Key, Secret, Passphrase)
+- [x] Tests actualizados para soporte multi-exchange
+- [x] Push a GitHub + instrucciones VPS
