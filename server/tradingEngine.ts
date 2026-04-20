@@ -68,14 +68,11 @@ export function getEngineCycles(userId: number): number {
 }
 
 // Coins to scan for opportunities
+// Top 10 most liquid coins — reduced from 32 to avoid CoinGecko 429 rate limits
+// CoinGecko free tier: ~30 req/min. 10 coins × 4s delay = 40s per scan cycle (safe).
 const SCANNER_COINS = [
   "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "DOGEUSDT",
-  "ADAUSDT", "AVAXUSDT", "DOTUSDT", "LINKUSDT", "MATICUSDT",
-  "SHIBUSDT", "LTCUSDT", "UNIUSDT", "ATOMUSDT", "NEARUSDT",
-  "APTUSDT", "ARBUSDT", "OPUSDT", "SUIUSDT", "SEIUSDT",
-  "TIAUSDT", "INJUSDT", "FETUSDT", "RENDERUSDT", "WIFUSDT",
-  "PEPEUSDT", "FLOKIUSDT", "BONKUSDT", "JUPUSDT", "AAVEUSDT",
-  "MKRUSDT", "FILUSDT",
+  "ADAUSDT", "AVAXUSDT", "LINKUSDT", "ARBUSDT", "SUIUSDT",
 ];
 
 // ─── Technical Indicators ───
@@ -678,8 +675,8 @@ async function runOpportunityScanner(engine: EngineState) {
       }
 
       // Delay between scanner calls to avoid CoinGecko 429 rate limits
-      // CoinGecko free tier: ~30 req/min. 2s delay = max 30 req/min safely.
-      await new Promise(r => setTimeout(r, 2000));
+      // CoinGecko free tier: ~30 req/min. 4s delay with 10 coins = ~15 req/min (very safe).
+      await new Promise(r => setTimeout(r, 4000));
     } catch (e) {
       // Skip this coin on error
     }
@@ -802,6 +799,11 @@ export async function startEngine(userId: number): Promise<{ success: boolean; e
       console.log(`[Engine] Found ${strats.length} strategies, ${strats.filter(s => s.enabled).length} enabled`);
       for (const strat of strats) {
         if (!strat.enabled) continue;
+        // Skip XAUUSDT on KuCoin — KuCoin doesn't support gold trading
+        if (strat.symbol === "XAUUSDT" && engine.exchange === "kucoin") {
+          console.log(`[Engine] Skipping ${strat.symbol} — not supported on KuCoin`);
+          continue;
+        }
         console.log(`[Engine] Running ${strat.strategyType} for ${strat.symbol} (${strat.category})`);
         if (strat.strategyType === "grid") {
           const cat = strat.category === "linear" ? "linear" : "spot";
@@ -834,6 +836,8 @@ export async function startEngine(userId: number): Promise<{ success: boolean; e
     const strats = await db.getUserStrategies(userId);
     for (const strat of strats) {
       if (!strat.enabled) continue;
+      // Skip XAUUSDT on KuCoin
+      if (strat.symbol === "XAUUSDT" && engine.exchange === "kucoin") continue;
       if (strat.strategyType === "grid") {
         await runGridStrategy(engine, strat.symbol, (strat.category === "linear" ? "linear" : "spot") as any);
       } else if (strat.strategyType === "scalping") {

@@ -89,3 +89,11 @@
 - [x] Pantalla de API Keys con soporte para KuCoin (3 campos: API Key, Secret, Passphrase)
 - [x] Tests actualizados para soporte multi-exchange
 - [x] Push a GitHub + instrucciones VPS
+
+## Bug: Error al guardar API Keys de KuCoin
+- [ ] Diagnosticar y corregir error al guardar claves API de KuCoin en el bot
+
+## Bug: XAUUSDT no soportado en KuCoin + CoinGecko 429 masivo
+- [ ] Saltar estrategia XAUUSDT cuando exchange es KuCoin
+- [ ] Reducir scanner a 10 monedas top para evitar CoinGecko 429
+- [ ] Aumentar delay entre requests CoinGecko
