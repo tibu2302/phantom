@@ -1,17 +1,7 @@
-import { int, mysqlEnum, mysqlTable, text, timestamp, varchar } from "drizzle-orm/mysql-core";
+import { int, mysqlEnum, mysqlTable, text, timestamp, varchar, boolean, decimal, json } from "drizzle-orm/mysql-core";
 
-/**
- * Core user table backing auth flow.
- * Extend this file with additional tables as your product grows.
- * Columns use camelCase to match both database fields and generated types.
- */
 export const users = mysqlTable("users", {
-  /**
-   * Surrogate primary key. Auto-incremented numeric value managed by the database.
-   * Use this for relations between tables.
-   */
   id: int("id").autoincrement().primaryKey(),
-  /** Manus OAuth identifier (openId) returned from the OAuth callback. Unique per user. */
   openId: varchar("openId", { length: 64 }).notNull().unique(),
   name: text("name"),
   email: varchar("email", { length: 320 }),
@@ -25,4 +15,82 @@ export const users = mysqlTable("users", {
 export type User = typeof users.$inferSelect;
 export type InsertUser = typeof users.$inferInsert;
 
-// TODO: Add your tables here
+export const botState = mysqlTable("bot_state", {
+  id: int("id").autoincrement().primaryKey(),
+  userId: int("userId").notNull(),
+  isRunning: boolean("isRunning").default(false).notNull(),
+  simulationMode: boolean("simulationMode").default(true).notNull(),
+  initialBalance: decimal("initialBalance", { precision: 18, scale: 2 }).default("5000"),
+  currentBalance: decimal("currentBalance", { precision: 18, scale: 2 }).default("5000"),
+  totalPnl: decimal("totalPnl", { precision: 18, scale: 2 }).default("0"),
+  todayPnl: decimal("todayPnl", { precision: 18, scale: 2 }).default("0"),
+  totalTrades: int("totalTrades").default(0),
+  winningTrades: int("winningTrades").default(0),
+  maxDrawdown: decimal("maxDrawdown", { precision: 8, scale: 4 }).default("0"),
+  dailyLoss: decimal("dailyLoss", { precision: 18, scale: 2 }).default("0"),
+  startedAt: timestamp("startedAt"),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+
+export const apiKeys = mysqlTable("api_keys", {
+  id: int("id").autoincrement().primaryKey(),
+  userId: int("userId").notNull(),
+  exchange: varchar("exchange", { length: 32 }).default("bybit").notNull(),
+  apiKey: varchar("apiKey", { length: 128 }).notNull(),
+  apiSecret: varchar("apiSecret", { length: 256 }).notNull(),
+  label: varchar("label", { length: 64 }),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+
+export const strategies = mysqlTable("strategies", {
+  id: int("id").autoincrement().primaryKey(),
+  userId: int("userId").notNull(),
+  symbol: varchar("symbol", { length: 32 }).notNull(),
+  strategyType: varchar("strategyType", { length: 32 }).notNull(),
+  market: varchar("market", { length: 16 }).default("crypto").notNull(),
+  category: varchar("category", { length: 32 }).default("spot").notNull(),
+  enabled: boolean("enabled").default(true).notNull(),
+  allocationPct: int("allocationPct").default(0).notNull(),
+  balance: decimal("balance", { precision: 18, scale: 2 }).default("0"),
+  pnl: decimal("pnl", { precision: 18, scale: 2 }).default("0"),
+  trades: int("trades").default(0),
+  winningTrades: int("winningTrades").default(0),
+  config: json("config"),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+
+export const trades = mysqlTable("trades", {
+  id: int("id").autoincrement().primaryKey(),
+  userId: int("userId").notNull(),
+  symbol: varchar("symbol", { length: 32 }).notNull(),
+  side: varchar("side", { length: 8 }).notNull(),
+  price: decimal("price", { precision: 18, scale: 8 }).notNull(),
+  qty: decimal("qty", { precision: 18, scale: 8 }).notNull(),
+  pnl: decimal("pnl", { precision: 18, scale: 2 }).default("0"),
+  strategy: varchar("strategy", { length: 32 }).notNull(),
+  orderId: varchar("orderId", { length: 64 }),
+  simulated: boolean("simulated").default(true).notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+
+export const opportunities = mysqlTable("opportunities", {
+  id: int("id").autoincrement().primaryKey(),
+  userId: int("userId").notNull(),
+  symbol: varchar("symbol", { length: 32 }).notNull(),
+  signal: varchar("signal", { length: 32 }).notNull(),
+  price: decimal("price", { precision: 18, scale: 8 }).notNull(),
+  confidence: int("confidence").notNull(),
+  reasons: json("reasons"),
+  isRead: boolean("isRead").default(false).notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+
+export const aiAnalyses = mysqlTable("ai_analyses", {
+  id: int("id").autoincrement().primaryKey(),
+  userId: int("userId").notNull(),
+  type: varchar("type", { length: 32 }).notNull(),
+  title: varchar("title", { length: 128 }).notNull(),
+  content: text("content").notNull(),
+  sentiment: varchar("sentiment", { length: 16 }),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});

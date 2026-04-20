@@ -4,32 +4,50 @@ import NotFound from "@/pages/NotFound";
 import { Route, Switch } from "wouter";
 import ErrorBoundary from "./components/ErrorBoundary";
 import { ThemeProvider } from "./contexts/ThemeContext";
-import Home from "./pages/Home";
+import DashboardLayout from "./components/DashboardLayout";
+import { lazy, Suspense } from "react";
+import { Ghost } from "lucide-react";
 
-function Router() {
-  // make sure to consider if you need authentication for certain routes
+const Home = lazy(() => import("./pages/Home"));
+const ApiKeys = lazy(() => import("./pages/ApiKeys"));
+const AiAnalyst = lazy(() => import("./pages/AiAnalyst"));
+const Opportunities = lazy(() => import("./pages/Opportunities"));
+const Trades = lazy(() => import("./pages/Trades"));
+const Strategies = lazy(() => import("./pages/Strategies"));
+const Settings = lazy(() => import("./pages/Settings"));
+
+function PageLoader() {
   return (
-    <Switch>
-      <Route path={"/"} component={Home} />
-      <Route path={"/404"} component={NotFound} />
-      {/* Final fallback route */}
-      <Route component={NotFound} />
-    </Switch>
+    <div className="flex items-center justify-center h-64">
+      <Ghost className="h-8 w-8 text-primary animate-pulse" />
+    </div>
   );
 }
 
-// NOTE: About Theme
-// - First choose a default theme according to your design style (dark or light bg), than change color palette in index.css
-//   to keep consistent foreground/background color across components
-// - If you want to make theme switchable, pass `switchable` ThemeProvider and use `useTheme` hook
+function Router() {
+  return (
+    <DashboardLayout>
+      <Suspense fallback={<PageLoader />}>
+        <Switch>
+          <Route path="/" component={Home} />
+          <Route path="/strategies" component={Strategies} />
+          <Route path="/ai-analyst" component={AiAnalyst} />
+          <Route path="/opportunities" component={Opportunities} />
+          <Route path="/trades" component={Trades} />
+          <Route path="/api-keys" component={ApiKeys} />
+          <Route path="/settings" component={Settings} />
+          <Route path="/404" component={NotFound} />
+          <Route component={NotFound} />
+        </Switch>
+      </Suspense>
+    </DashboardLayout>
+  );
+}
 
 function App() {
   return (
     <ErrorBoundary>
-      <ThemeProvider
-        defaultTheme="light"
-        // switchable
-      >
+      <ThemeProvider defaultTheme="dark">
         <TooltipProvider>
           <Toaster />
           <Router />
