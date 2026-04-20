@@ -94,6 +94,6 @@
 - [ ] Diagnosticar y corregir error al guardar claves API de KuCoin en el bot
 
 ## Bug: XAUUSDT no soportado en KuCoin + CoinGecko 429 masivo
-- [ ] Saltar estrategia XAUUSDT cuando exchange es KuCoin
-- [ ] Reducir scanner a 10 monedas top para evitar CoinGecko 429
-- [ ] Aumentar delay entre requests CoinGecko
+- [x] Saltar estrategia XAUUSDT cuando exchange es KuCoin
+- [x] Reducir scanner a 10 monedas top para evitar CoinGecko 429
+- [x] Aumentar delay entre requests CoinGecko
