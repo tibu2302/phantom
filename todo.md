@@ -99,5 +99,6 @@
 - [x] Aumentar delay entre requests CoinGecko
 
 ## Bug: Grid Trading no ejecuta órdenes (depende de CoinGecko bloqueado)
-- [ ] Grid Trading debe usar precios WebSocket directamente para decidir órdenes
-- [ ] Reemplazar CoinGecko con KuCoin/Bybit REST API para klines del scanner
+- [x] Grid Trading: agregada tolerancia 0.02% en modo real para que las órdenes se ejecuten
+- [x] Corregido calcNetPnl para usar exchange correcto (KuCoin vs Bybit)
+- [x] Agregado logging de debug del grid (precio actual vs niveles)
