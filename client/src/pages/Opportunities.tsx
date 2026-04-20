@@ -10,14 +10,14 @@ export default function Opportunities() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2"><Sparkles className="h-6 w-6 text-primary" /> Smart Opportunities</h1>
-        <p className="text-sm text-muted-foreground mt-1">AI-detected trading signals across 30+ coins</p>
+        <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2"><Sparkles className="h-6 w-6 text-primary" /> Oportunidades Inteligentes</h1>
+        <p className="text-sm text-muted-foreground mt-1">Señales de trading detectadas por IA en más de 30 monedas</p>
       </div>
 
       {!opps || opps.length === 0 ? (
         <div className="glass-card p-12 text-center">
           <Sparkles className="h-10 w-10 text-primary/30 mx-auto mb-3" />
-          <p className="text-muted-foreground">No opportunities detected yet. Start the bot to begin scanning.</p>
+          <p className="text-muted-foreground">Sin oportunidades detectadas aún. Iniciá el bot para comenzar a escanear.</p>
         </div>
       ) : (
         <div className="space-y-3">
@@ -30,11 +30,11 @@ export default function Opportunities() {
                   <div className="flex items-center gap-3">
                     {isBuy ? <TrendingUp className="h-5 w-5 text-[oklch(0.72_0.19_160)]" /> : <TrendingDown className="h-5 w-5 text-[oklch(0.63_0.24_25)]" />}
                     <span className="font-bold">{o.symbol}</span>
-                    <Badge variant={isBuy ? "default" : "destructive"}>{o.signal}</Badge>
+                    <Badge variant={isBuy ? "default" : "destructive"}>{isBuy ? "COMPRA" : "VENTA"}</Badge>
                   </div>
                   <div className="flex items-center gap-2">
                     <span className="text-sm font-mono">${parseFloat(String(o.price ?? "0")).toLocaleString()}</span>
-                    <Badge variant="outline" className="text-xs">{o.confidence}%</Badge>
+                    <Badge variant="outline" className="text-xs">Confianza: {o.confidence}%</Badge>
                   </div>
                 </div>
                 {reasons.length > 0 && (

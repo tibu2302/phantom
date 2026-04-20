@@ -20,20 +20,21 @@ const fmtPrice = (n: number) => {
 };
 
 export default function Home() {
-  const { data, isLoading } = trpc.bot.status.useQuery(undefined, { refetchInterval: 5000 });
-  const strategiesQuery = trpc.strategies.list.useQuery();
-  const tradesQuery = trpc.trades.list.useQuery({ limit: 50 });
+  const { data, isLoading } = trpc.bot.status.useQuery(undefined, { refetchInterval: 5000, retry: false });
+  const publicPrices = trpc.prices.live.useQuery(undefined, { refetchInterval: 8000 });
+  const strategiesQuery = trpc.strategies.list.useQuery(undefined, { retry: false });
+  const tradesQuery = trpc.trades.list.useQuery({ limit: 50 }, { retry: false });
   const utils = trpc.useUtils();
   const startBot = trpc.bot.start.useMutation({
     onSuccess: (res: any) => {
       utils.bot.status.invalidate();
-      if (res.success) toast.success("PHANTOM engine started");
-      else toast.error(res.error || "Failed to start");
+      if (res.success) toast.success("Motor PHANTOM iniciado");
+      else toast.error(res.error || "Error al iniciar");
     },
-    onError: () => toast.error("Failed to start engine"),
+    onError: () => toast.error("Error al iniciar el motor"),
   });
-  const stopBot = trpc.bot.stop.useMutation({ onSuccess: () => { utils.bot.status.invalidate(); toast.success("Engine stopped"); } });
-  const emergencyStop = trpc.bot.emergencyStop.useMutation({ onSuccess: () => { utils.bot.status.invalidate(); toast.error("EMERGENCY STOP executed"); } });
+  const stopBot = trpc.bot.stop.useMutation({ onSuccess: () => { utils.bot.status.invalidate(); toast.success("Motor detenido"); } });
+  const emergencyStop = trpc.bot.emergencyStop.useMutation({ onSuccess: () => { utils.bot.status.invalidate(); toast.error("PARADA DE EMERGENCIA ejecutada"); } });
   const markRead = trpc.bot.markNotificationsRead.useMutation({ onSuccess: () => utils.bot.status.invalidate() });
   const [bellOpen, setBellOpen] = useState(false);
   const [currentTime, setCurrentTime] = useState(new Date());
@@ -57,7 +58,10 @@ export default function Home() {
   const dailyLoss = parseFloat(String(state?.dailyLoss ?? "0"));
   const unread = data?.unreadNotifications ?? 0;
   const notifications = data?.recentOpportunities ?? [];
-  const livePrices = data?.livePrices ?? {};
+  // Use bot status prices first, fallback to public prices
+  const livePrices = (data?.livePrices && Object.keys(data.livePrices).length > 0)
+    ? data.livePrices
+    : (publicPrices.data ?? {});
 
   const uptime = useMemo(() => {
     if (!state?.startedAt || !isRunning) return "0m";
@@ -80,17 +84,18 @@ export default function Home() {
     : [
         { pair: "BTC", pnl: 0 },
         { pair: "ETH", pnl: 0 },
-        { pair: "SPX", pnl: 0 },
+        { pair: "XAU", pnl: 0 },
       ];
 
   // Price ticker data
   const tickerPairs = [
     { symbol: "BTCUSDT", label: "BTC/USDT", icon: "₿" },
     { symbol: "ETHUSDT", label: "ETH/USDT", icon: "Ξ" },
-    { symbol: "SPXUSDT", label: "SP500", icon: "📈" },
+    { symbol: "XAUUSDT", label: "Oro/USDT", icon: "🥇" },
+    { symbol: "SP500", label: "S&P 500", icon: "📈" },
   ];
 
-  if (isLoading) {
+  if (isLoading && publicPrices.isLoading) {
     return (
       <div className="space-y-6 animate-pulse">
         <div className="h-48 glass-card rounded-xl" />
@@ -104,12 +109,12 @@ export default function Home() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight">Dashboard</h1>
+          <h1 className="text-2xl font-bold tracking-tight">Panel</h1>
           <div className="flex items-center gap-3 mt-1">
             <Badge variant={isRunning ? "default" : "secondary"} className={isRunning ? "bg-primary/20 text-primary border-primary/30" : ""}>
-              {isRunning ? <><span className="w-1.5 h-1.5 rounded-full bg-primary pulse-live mr-1.5 inline-block" /> LIVE</> : <><WifiOff className="h-3 w-3 mr-1" /> OFFLINE</>}
+              {isRunning ? <><span className="w-1.5 h-1.5 rounded-full bg-primary pulse-live mr-1.5 inline-block" /> EN VIVO</> : <><WifiOff className="h-3 w-3 mr-1" /> DESCONECTADO</>}
             </Badge>
-            {state?.simulationMode && <Badge variant="outline" className="border-[oklch(0.8_0.15_85)] text-[oklch(0.8_0.15_85)]">SIMULATION</Badge>}
+            {state?.simulationMode && <Badge variant="outline" className="border-[oklch(0.8_0.15_85)] text-[oklch(0.8_0.15_85)]">SIMULACIÓN</Badge>}
           </div>
         </div>
         <div className="flex items-center gap-2">
@@ -121,17 +126,17 @@ export default function Home() {
               </Button>
             </PopoverTrigger>
             <PopoverContent className="w-80 p-0" align="end">
-              <div className="p-3 border-b"><h4 className="font-semibold text-sm">Notifications</h4></div>
+              <div className="p-3 border-b"><h4 className="font-semibold text-sm">Notificaciones</h4></div>
               <div className="max-h-64 overflow-y-auto">
                 {notifications.length === 0 ? (
-                  <p className="text-sm text-muted-foreground p-4 text-center">No notifications yet. Start the bot to scan opportunities.</p>
+                  <p className="text-sm text-muted-foreground p-4 text-center">Sin notificaciones aún. Iniciá el bot para escanear oportunidades.</p>
                 ) : notifications.map((n: any) => (
                   <div key={n.id} className="p-3 border-b last:border-0 hover:bg-accent/50">
                     <div className="flex items-center justify-between">
                       <span className="font-medium text-sm">{n.symbol}</span>
-                      <Badge variant={String(n.signal).includes("BUY") ? "default" : "destructive"} className="text-[10px]">{n.signal}</Badge>
+                      <Badge variant={String(n.signal).includes("BUY") ? "default" : "destructive"} className="text-[10px]">{String(n.signal).includes("BUY") ? "COMPRA" : "VENTA"}</Badge>
                     </div>
-                    <p className="text-xs text-muted-foreground mt-1">Confidence: {n.confidence}% — ${fmtPrice(parseFloat(String(n.price ?? "0")))}</p>
+                    <p className="text-xs text-muted-foreground mt-1">Confianza: {n.confidence}% — ${fmtPrice(parseFloat(String(n.price ?? "0")))}</p>
                   </div>
                 ))}
               </div>
@@ -139,21 +144,21 @@ export default function Home() {
           </Popover>
           {!isRunning ? (
             <Button onClick={() => startBot.mutate()} className="bg-primary text-primary-foreground hover:bg-primary/90 gap-2" disabled={startBot.isPending}>
-              <Play className="h-4 w-4" /> {startBot.isPending ? "Starting..." : "Start"}
+              <Play className="h-4 w-4" /> {startBot.isPending ? "Iniciando..." : "Iniciar"}
             </Button>
           ) : (
             <Button onClick={() => stopBot.mutate()} variant="secondary" className="gap-2" disabled={stopBot.isPending}>
-              <Square className="h-4 w-4" /> Stop
+              <Square className="h-4 w-4" /> Detener
             </Button>
           )}
-          <Button onClick={() => emergencyStop.mutate()} variant="ghost" size="icon" className="text-destructive hover:bg-destructive/10" disabled={emergencyStop.isPending} title="Emergency Stop">
+          <Button onClick={() => emergencyStop.mutate()} variant="ghost" size="icon" className="text-destructive hover:bg-destructive/10" disabled={emergencyStop.isPending} title="Parada de Emergencia">
             <AlertTriangle className="h-5 w-5" />
           </Button>
         </div>
       </div>
 
       {/* Live Price Ticker */}
-      <div className="grid grid-cols-3 gap-3">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         {tickerPairs.map(({ symbol, label, icon }) => {
           const p = livePrices[symbol];
           const price = p?.lastPrice ?? 0;
@@ -175,7 +180,7 @@ export default function Home() {
                 </div>
               )}
               {price === 0 && (
-                <span className="text-xs text-muted-foreground">Waiting...</span>
+                <span className="text-xs text-muted-foreground">Esperando...</span>
               )}
             </div>
           );
@@ -184,7 +189,7 @@ export default function Home() {
 
       {/* Unified PnL */}
       <div className={`glass-card ${pnlGlow} p-8 text-center`}>
-        <p className="text-xs font-semibold tracking-[0.2em] text-muted-foreground uppercase mb-2">Unified Result</p>
+        <p className="text-xs font-semibold tracking-[0.2em] text-muted-foreground uppercase mb-2">Resultado Unificado</p>
         <p className={`text-5xl md:text-6xl font-bold tracking-tight ${pnlColor} tabular-nums`}>{fmt(totalPnl)}</p>
         <p className={`text-lg mt-1 ${pnlColor}`}>{fmtPct(pnlPct)}</p>
       </div>
@@ -192,11 +197,11 @@ export default function Home() {
       {/* Stats */}
       <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
         {[
-          { icon: Wallet, label: "BALANCE", value: fmtUsd(balance) },
-          { icon: Target, label: "INITIAL", value: fmtUsd(initial) },
-          { icon: todayPnl >= 0 ? TrendingUp : TrendingDown, label: "TODAY", value: fmt(todayPnl), color: todayPnl >= 0 ? "text-[oklch(0.72_0.19_160)]" : "text-[oklch(0.63_0.24_25)]" },
-          { icon: Trophy, label: "WIN RATE", value: winRate.toFixed(1) + "%" },
-          { icon: Activity, label: "TRADES", value: String(totalTrades) },
+          { icon: Wallet, label: "SALDO", value: fmtUsd(balance) },
+          { icon: Target, label: "INICIAL", value: fmtUsd(initial) },
+          { icon: todayPnl >= 0 ? TrendingUp : TrendingDown, label: "HOY", value: fmt(todayPnl), color: todayPnl >= 0 ? "text-[oklch(0.72_0.19_160)]" : "text-[oklch(0.63_0.24_25)]" },
+          { icon: Trophy, label: "% GANANCIA", value: winRate.toFixed(1) + "%" },
+          { icon: Activity, label: "OPERACIONES", value: String(totalTrades) },
         ].map((s) => (
           <div key={s.label} className="glass-card p-4 text-center">
             <s.icon className="h-4 w-4 mx-auto text-muted-foreground mb-2" />
@@ -211,7 +216,7 @@ export default function Home() {
         <div className="glass-card p-5">
           <div className="flex items-center gap-2 mb-4">
             <BarChart3 className="h-4 w-4 text-[oklch(0.75_0.14_200)]" />
-            <h3 className="font-semibold text-sm">PnL by Pair</h3>
+            <h3 className="font-semibold text-sm">PnL por Par</h3>
           </div>
           <ResponsiveContainer width="100%" height={192}>
             <BarChart data={barData}>
@@ -227,12 +232,12 @@ export default function Home() {
         <div className="glass-card p-5">
           <div className="flex items-center gap-2 mb-4">
             <Zap className="h-4 w-4 text-primary" />
-            <h3 className="font-semibold text-sm">Recent Trades</h3>
+            <h3 className="font-semibold text-sm">Últimas Operaciones</h3>
           </div>
           <div className="space-y-2 max-h-[192px] overflow-y-auto">
             {(!tradesQuery.data || tradesQuery.data.length === 0) ? (
               <div className="flex items-center justify-center h-[160px] text-muted-foreground text-sm">
-                <Activity className="h-6 w-6 opacity-20 mr-2" /> No trades yet. Start the bot.
+                <Activity className="h-6 w-6 opacity-20 mr-2" /> Sin operaciones aún. Iniciá el bot.
               </div>
             ) : (
               tradesQuery.data.slice(0, 8).map((t: any) => {
@@ -241,7 +246,7 @@ export default function Home() {
                   <div key={t.id} className="flex items-center justify-between py-1.5 border-b border-border/50 last:border-0">
                     <div className="flex items-center gap-2">
                       <Badge variant={t.side === "buy" ? "default" : "destructive"} className="text-[9px] w-10 justify-center">
-                        {t.side?.toUpperCase()}
+                        {t.side === "buy" ? "COMPRA" : "VENTA"}
                       </Badge>
                       <span className="text-sm font-medium">{t.symbol?.replace("USDT", "")}</span>
                     </div>
@@ -264,16 +269,16 @@ export default function Home() {
         <div className="flex items-center justify-between mb-4">
           <div className="flex items-center gap-2">
             <Shield className="h-4 w-4 text-[oklch(0.8_0.15_85)]" />
-            <h3 className="font-semibold text-sm">Risk Management</h3>
+            <h3 className="font-semibold text-sm">Gestión de Riesgo</h3>
           </div>
           <Badge variant="outline" className={`text-xs ${dailyLoss > 200 ? "border-destructive/50 text-destructive" : "border-primary/30 text-primary"}`}>
-            {dailyLoss > 200 ? "⚠ HIGH RISK" : "SAFE TO TRADE"}
+            {dailyLoss > 200 ? "⚠ RIESGO ALTO" : "SEGURO"}
           </Badge>
         </div>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           <div>
             <div className="flex justify-between text-sm mb-2">
-              <span className="text-muted-foreground">Max Drawdown</span>
+              <span className="text-muted-foreground">Drawdown Máximo</span>
               <span className="tabular-nums">{(maxDrawdown * 100).toFixed(2)}% / 10%</span>
             </div>
             <div className="h-2 bg-secondary rounded-full overflow-hidden">
@@ -282,7 +287,7 @@ export default function Home() {
           </div>
           <div>
             <div className="flex justify-between text-sm mb-2">
-              <span className="text-muted-foreground">Daily Loss Limit</span>
+              <span className="text-muted-foreground">Límite Pérdida Diaria</span>
               <span className="tabular-nums">{fmtUsd(Math.abs(dailyLoss))} / $250</span>
             </div>
             <div className="h-2 bg-secondary rounded-full overflow-hidden">
@@ -294,9 +299,9 @@ export default function Home() {
 
       {/* Footer */}
       <div className="flex items-center justify-center gap-6 text-xs text-muted-foreground py-2">
-        <span className="flex items-center gap-1.5">{isRunning ? <Wifi className="h-3 w-3 text-primary" /> : <WifiOff className="h-3 w-3" />} {isRunning ? "Connected to Bybit" : "Disconnected"}</span>
-        <span className="flex items-center gap-1.5"><Clock className="h-3 w-3" /> Uptime: {uptime}</span>
-        <span>Cycles: {totalTrades}</span>
+        <span className="flex items-center gap-1.5">{isRunning ? <Wifi className="h-3 w-3 text-primary" /> : <WifiOff className="h-3 w-3" />} {isRunning ? "Conectado a Bybit" : "Desconectado"}</span>
+        <span className="flex items-center gap-1.5"><Clock className="h-3 w-3" /> Activo: {uptime}</span>
+        <span>Ciclos: {data?.cycles ?? 0}</span>
         <span>{currentTime.toLocaleTimeString()}</span>
       </div>
     </div>

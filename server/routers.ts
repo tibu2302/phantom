@@ -5,7 +5,7 @@ import { publicProcedure, protectedProcedure, router } from "./_core/trpc";
 import { z } from "zod";
 import * as db from "./db";
 import { invokeLLM } from "./_core/llm";
-import { startEngine, stopEngine, emergencyStopEngine, getLivePrices, isEngineRunning } from "./tradingEngine";
+import { startEngine, stopEngine, emergencyStopEngine, getLivePrices, isEngineRunning, getEngineCycles } from "./tradingEngine";
 
 export const appRouter = router({
   system: systemRouter,
@@ -31,9 +31,18 @@ export const appRouter = router({
         recentOpportunities: recentOpps,
         livePrices: prices,
         engineRunning,
+        cycles: getEngineCycles(ctx.user.id),
       };
     }),
     start: protectedProcedure.mutation(async ({ ctx }) => {
+      // Auto-seed default strategies if none exist
+      const existingStrats = await db.getUserStrategies(ctx.user.id);
+      if (existingStrats.length === 0) {
+        await db.upsertStrategy(ctx.user.id, { symbol: "BTCUSDT", strategyType: "grid", market: "crypto", category: "spot", allocationPct: 40, enabled: true });
+        await db.upsertStrategy(ctx.user.id, { symbol: "ETHUSDT", strategyType: "grid", market: "crypto", category: "spot", allocationPct: 30, enabled: true });
+        await db.upsertStrategy(ctx.user.id, { symbol: "XAUUSDT", strategyType: "scalping", market: "tradfi", category: "linear", allocationPct: 30, enabled: true });
+        console.log(`[Bot] Seeded default strategies for user ${ctx.user.id}`);
+      }
       const result = await startEngine(ctx.user.id);
       if (!result.success) {
         return { success: false, error: result.error };
@@ -70,6 +79,13 @@ export const appRouter = router({
     }),
   }),
 
+  // Public prices endpoint — works without login
+  prices: router({
+    live: publicProcedure.query(async () => {
+      return getLivePrices();
+    }),
+  }),
+
   apiKeys: router({
     get: protectedProcedure.query(async ({ ctx }) => {
       const key = await db.getApiKey(ctx.user.id);
@@ -86,7 +102,7 @@ export const appRouter = router({
       if (existingStrategies.length === 0) {
         await db.upsertStrategy(ctx.user.id, { symbol: "BTCUSDT", strategyType: "grid", market: "crypto", category: "spot", allocationPct: 40 });
         await db.upsertStrategy(ctx.user.id, { symbol: "ETHUSDT", strategyType: "grid", market: "crypto", category: "spot", allocationPct: 30 });
-        await db.upsertStrategy(ctx.user.id, { symbol: "SPXUSDT", strategyType: "scalping", market: "tradfi", category: "linear", allocationPct: 30 });
+        await db.upsertStrategy(ctx.user.id, { symbol: "XAUUSDT", strategyType: "scalping", market: "tradfi", category: "linear", allocationPct: 30 });
       }
       return { success: true };
     }),

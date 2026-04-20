@@ -1,9 +1,11 @@
 /**
  * PHANTOM Trading Engine — Real Bybit API V5 Integration
- * Grid Trading for BTC/USDT & ETH/USDT, Scalping for SPXUSDT (SP500)
+ * Grid Trading for BTC/USDT & ETH/USDT, Scalping for XAUUSDT (Gold)
+ * SP500 reference price via Yahoo Finance
  * Opportunity Scanner for 30+ coins with RSI, EMA, Volume, Bollinger
  */
 import { RestClientV5 } from "bybit-api";
+import { callDataApi } from "./_core/dataApi";
 import * as db from "./db";
 
 // ─── Types ───
@@ -41,6 +43,11 @@ interface EngineState {
 // ─── Global State ───
 const engines: Map<number, EngineState> = new Map();
 const livePrices: Map<string, TickerData> = new Map();
+const engineCycles: Map<number, number> = new Map();
+
+export function getEngineCycles(userId: number): number {
+  return engineCycles.get(userId) ?? 0;
+}
 
 // Coins to scan for opportunities
 const SCANNER_COINS = [
@@ -442,6 +449,34 @@ async function runOpportunityScanner(engine: EngineState) {
   }
 }
 
+// ─── SP500 via Yahoo Finance ───
+async function fetchSP500Price(): Promise<TickerData | null> {
+  try {
+    const result = await callDataApi("YahooFinance/get_stock_chart", {
+      query: { symbol: "^GSPC", region: "US", interval: "1d", range: "5d" },
+    }) as any;
+    const meta = result?.chart?.result?.[0]?.meta;
+    if (!meta) return null;
+    const price = meta.regularMarketPrice ?? 0;
+    const prevClose = meta.chartPreviousClose ?? meta.previousClose ?? price;
+    const pctChange = prevClose > 0 ? (price - prevClose) / prevClose : 0;
+    return {
+      symbol: "SP500",
+      lastPrice: price,
+      bid1Price: price,
+      ask1Price: price,
+      price24hPcnt: pctChange,
+      highPrice24h: meta.regularMarketDayHigh ?? price,
+      lowPrice24h: meta.regularMarketDayLow ?? price,
+      volume24h: meta.regularMarketVolume ?? 0,
+      turnover24h: 0,
+    };
+  } catch (e) {
+    console.error("[PriceFeed] SP500 fetch failed:", (e as Error).message);
+    return null;
+  }
+}
+
 // ─── Price Feed ───
 async function updateLivePrices(client: RestClientV5) {
   const symbols = ["BTCUSDT", "ETHUSDT"];
@@ -449,9 +484,12 @@ async function updateLivePrices(client: RestClientV5) {
     const ticker = await fetchTicker(client, symbol, "spot");
     if (ticker) livePrices.set(symbol, ticker);
   }
-  // SPXUSDT on linear
-  const spx = await fetchTicker(client, "SPXUSDT", "linear");
-  if (spx) livePrices.set("SPXUSDT", spx);
+  // XAUUSDT (Gold) on linear
+  const gold = await fetchTicker(client, "XAUUSDT", "linear");
+  if (gold) livePrices.set("XAUUSDT", gold);
+  // SP500 via Yahoo Finance (reference only)
+  const sp500 = await fetchSP500Price();
+  if (sp500) livePrices.set("SP500", sp500);
 }
 
 // ─── Engine Control ───
@@ -495,14 +533,23 @@ export async function startEngine(userId: number): Promise<{ success: boolean; e
   // Initial price fetch
   await updateLivePrices(client);
 
+  // Initialize cycle counter
+  engineCycles.set(userId, 0);
+
   // Main trading loop — every 30 seconds
   engine.intervalId = setInterval(async () => {
     if (!engine.isRunning) return;
     try {
+      const cycleNum = (engineCycles.get(userId) ?? 0) + 1;
+      engineCycles.set(userId, cycleNum);
+      console.log(`[Engine] Cycle #${cycleNum} for user ${userId}`);
+
       // Get user strategies
       const strats = await db.getUserStrategies(userId);
+      console.log(`[Engine] Found ${strats.length} strategies, ${strats.filter(s => s.enabled).length} enabled`);
       for (const strat of strats) {
         if (!strat.enabled) continue;
+        console.log(`[Engine] Running ${strat.strategyType} for ${strat.symbol} (${strat.category})`);
         if (strat.strategyType === "grid") {
           const cat = strat.category === "linear" ? "linear" : "spot";
           await runGridStrategy(engine, strat.symbol, cat as "spot" | "linear");
@@ -556,6 +603,7 @@ export async function stopEngine(userId: number): Promise<{ success: boolean }> 
   if (engine.scannerIntervalId) clearInterval(engine.scannerIntervalId);
   if (engine.priceIntervalId) clearInterval(engine.priceIntervalId);
   engines.delete(userId);
+  engineCycles.delete(userId);
 
   await db.updateBotState(userId, { isRunning: false });
   console.log(`[Engine] Stopped for user ${userId}`);
@@ -578,3 +626,32 @@ export function getLivePrices(): Record<string, TickerData> {
 export function isEngineRunning(userId: number): boolean {
   return engines.has(userId);
 }
+
+// ─── Background Price Feed ───
+// Runs automatically on server start, no user login required
+let backgroundPriceInterval: ReturnType<typeof setInterval> | null = null;
+
+export function startBackgroundPriceFeed() {
+  if (backgroundPriceInterval) return;
+  const publicClient = new RestClientV5({});
+  console.log("[PriceFeed] Starting background price feed...");
+
+  // Fetch immediately
+  updateLivePrices(publicClient).then(() => {
+    console.log("[PriceFeed] Initial prices loaded");
+  }).catch(e => {
+    console.error("[PriceFeed] Initial fetch failed:", (e as Error).message);
+  });
+
+  // Then every 10 seconds
+  backgroundPriceInterval = setInterval(async () => {
+    try {
+      await updateLivePrices(publicClient);
+    } catch (e) {
+      console.error("[PriceFeed] Update failed:", (e as Error).message);
+    }
+  }, 10_000);
+}
+
+// Auto-start on module load
+startBackgroundPriceFeed();

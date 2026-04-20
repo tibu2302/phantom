@@ -14,12 +14,36 @@
 - [x] Settings page: simulation mode and capital config
 - [x] Bot controls: Start / Stop / Emergency Stop
 - [x] Notification bell with unread count
-- [x] TradFi support (SP500)
-- [x] Vitest tests (21 tests passing)
+- [x] TradFi support: XAUUSDT (Gold) for scalping, SP500 via Yahoo Finance as reference
+- [x] Vitest tests (23 tests passing)
 - [x] Real Bybit API V5 connection with user's API keys
 - [x] Trading engine: Grid Trading strategy for BTC/USDT and ETH/USDT
-- [x] Trading engine: Scalping strategy for SP500 (SPXUSDT) with technical indicators
+- [x] Trading engine: Scalping strategy for XAUUSDT (Gold) with technical indicators
 - [x] Opportunity scanner: 32 coins every 2 minutes with RSI, EMA, volume, Bollinger
 - [x] Real-time price feed for all active pairs (every 10 seconds)
 - [x] Wire trading engine to tRPC routers (start/stop/status)
 - [x] Update frontend dashboard with live prices and real trade data
+- [x] Translate DashboardLayout sidebar to Spanish
+- [x] Translate Dashboard (Home) page to Spanish
+- [x] Translate API Keys page to Spanish
+- [x] Translate AI Analyst page to Spanish
+- [x] Translate Opportunities page to Spanish
+- [x] Translate Trades page to Spanish
+- [x] Translate Strategies page to Spanish
+- [x] Translate Settings page to Spanish
+- [x] Fix live price ticker showing "Waiting..." — now shows real BTC, ETH, SP500 prices
+- [x] Background price feed active — prices show without login
+- [ ] Verify bot.start executes trades for authenticated user
+- [x] Replace SPXUSDT with XAUUSDT (Gold) for scalping strategy
+- [ ] Translate BUY/SELL badges in Trades page to COMPRA/VENTA
+- [x] Auto-seed default strategies on bot.start (code implemented)
+- [x] Add cycle counter to engine (code implemented)
+- [x] Translate Risk Management section to Spanish (code done)
+- [ ] Verify bot.start executes cycles for authenticated user
+- [ ] Verify Grid Trading places simulated orders
+- [ ] Verify Scalping produces trades
+- [ ] Verify scanner saves opportunities to DB
+- [x] SP500 reference price via Yahoo Finance API (^GSPC)
+- [x] Live price ticker shows 4 assets: BTC, ETH, Gold (XAUUSDT), SP500
+- [x] Auto-seed strategies use XAUUSDT instead of SPXUSDT
+- [x] Fix getEngineCycles export error after module edit

@@ -7,15 +7,15 @@ import { useState } from "react";
 import { Streamdown } from "streamdown";
 
 const analysisTypes = [
-  { type: "market_overview" as const, label: "Market Overview", icon: Globe, desc: "Overall market sentiment and key events" },
-  { type: "asset_analysis" as const, label: "Asset Analysis", icon: BarChart3, desc: "Deep analysis of BTC, ETH, SP500" },
-  { type: "risk_assessment" as const, label: "Risk Assessment", icon: Shield, desc: "Portfolio risk evaluation" },
-  { type: "smart_opportunities" as const, label: "Smart Opportunities", icon: Sparkles, desc: "Top trading opportunities right now" },
+  { type: "market_overview" as const, label: "Resumen del Mercado", icon: Globe, desc: "Sentimiento general del mercado y eventos clave" },
+  { type: "asset_analysis" as const, label: "Análisis de Activos", icon: BarChart3, desc: "Análisis profundo de BTC, ETH, SP500" },
+  { type: "risk_assessment" as const, label: "Evaluación de Riesgo", icon: Shield, desc: "Evaluación de riesgo del portafolio" },
+  { type: "smart_opportunities" as const, label: "Oportunidades Inteligentes", icon: Sparkles, desc: "Mejores oportunidades de trading ahora" },
 ];
 
 export default function AiAnalyst() {
   const { data: history } = trpc.ai.history.useQuery();
-  const analyzeMut = trpc.ai.analyze.useMutation({ onError: () => toast.error("Analysis failed") });
+  const analyzeMut = trpc.ai.analyze.useMutation({ onError: () => toast.error("Error en el análisis") });
   const [activeResult, setActiveResult] = useState<{ content: string; sentiment: string; title: string } | null>(null);
 
   const handleAnalyze = async (type: "market_overview" | "asset_analysis" | "risk_assessment" | "smart_opportunities") => {
@@ -32,8 +32,8 @@ export default function AiAnalyst() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2"><Brain className="h-6 w-6 text-primary" /> AI Market Analyst</h1>
-        <p className="text-sm text-muted-foreground mt-1">Powered by artificial intelligence</p>
+        <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2"><Brain className="h-6 w-6 text-primary" /> Analista IA del Mercado</h1>
+        <p className="text-sm text-muted-foreground mt-1">Impulsado por inteligencia artificial</p>
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -50,7 +50,7 @@ export default function AiAnalyst() {
       {analyzeMut.isPending && (
         <div className="glass-card p-8 text-center">
           <Brain className="h-8 w-8 text-primary mx-auto animate-pulse mb-3" />
-          <p className="text-sm text-muted-foreground">PHANTOM AI is analyzing the market...</p>
+          <p className="text-sm text-muted-foreground">PHANTOM IA está analizando el mercado...</p>
         </div>
       )}
 
@@ -68,7 +68,7 @@ export default function AiAnalyst() {
 
       {history && history.length > 0 && (
         <div className="space-y-3">
-          <h3 className="font-semibold text-sm text-muted-foreground">Recent Analyses</h3>
+          <h3 className="font-semibold text-sm text-muted-foreground">Análisis Recientes</h3>
           {history.map((h: any) => (
             <div key={h.id} className="glass-card p-4 cursor-pointer hover:border-primary/20 transition-all" onClick={() => setActiveResult({ content: h.content, sentiment: h.sentiment, title: h.title })}>
               <div className="flex items-center justify-between">

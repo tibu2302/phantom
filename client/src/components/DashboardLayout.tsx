@@ -28,13 +28,13 @@ import { DashboardLayoutSkeleton } from './DashboardLayoutSkeleton';
 import { Button } from "./ui/button";
 
 const menuItems = [
-  { icon: LayoutDashboard, label: "Dashboard", path: "/" },
-  { icon: Zap, label: "Strategies", path: "/strategies" },
-  { icon: Brain, label: "AI Analyst", path: "/ai-analyst" },
-  { icon: Sparkles, label: "Smart Opportunities", path: "/opportunities" },
-  { icon: History, label: "Trade History", path: "/trades" },
-  { icon: Key, label: "API Keys", path: "/api-keys" },
-  { icon: Settings, label: "Settings", path: "/settings" },
+  { icon: LayoutDashboard, label: "Panel", path: "/" },
+  { icon: Zap, label: "Estrategias", path: "/strategies" },
+  { icon: Brain, label: "Analista IA", path: "/ai-analyst" },
+  { icon: Sparkles, label: "Oportunidades", path: "/opportunities" },
+  { icon: History, label: "Historial", path: "/trades" },
+  { icon: Key, label: "Claves API", path: "/api-keys" },
+  { icon: Settings, label: "Ajustes", path: "/settings" },
 ];
 
 const SIDEBAR_WIDTH_KEY = "sidebar-width";
@@ -71,7 +71,7 @@ export default function DashboardLayout({
               <span className="text-3xl font-bold tracking-tight text-primary">PHANTOM</span>
             </div>
             <p className="text-sm text-muted-foreground text-center">
-              Trading Intelligence — Sign in to access your dashboard
+              Trading Intelligence — Iniciá sesión para acceder a tu panel
             </p>
           </div>
           <Button
@@ -79,7 +79,7 @@ export default function DashboardLayout({
             size="lg"
             className="w-full bg-primary text-primary-foreground hover:bg-primary/90 shadow-lg"
           >
-            Sign in
+            Iniciar sesión
           </Button>
         </div>
       </div>
@@ -202,7 +202,7 @@ function DashboardLayoutContent({
               <DropdownMenuContent align="end" className="w-48">
                 <DropdownMenuItem onClick={logout} className="cursor-pointer text-destructive focus:text-destructive">
                   <LogOut className="mr-2 h-4 w-4" />
-                  <span>Sign out</span>
+                  <span>Cerrar sesión</span>
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
@@ -220,7 +220,7 @@ function DashboardLayoutContent({
           <div className="flex border-b h-14 items-center justify-between bg-background/95 px-2 backdrop-blur sticky top-0 z-40">
             <div className="flex items-center gap-2">
               <SidebarTrigger className="h-9 w-9 rounded-lg bg-background" />
-              <span className="tracking-tight text-foreground">{activeMenuItem?.label ?? "Menu"}</span>
+              <span className="tracking-tight text-foreground">{activeMenuItem?.label ?? "Menú"}</span>
             </div>
           </div>
         )}

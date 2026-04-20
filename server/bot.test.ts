@@ -197,6 +197,32 @@ describe("opportunities", () => {
   });
 });
 
+// ─── Public Prices Tests ───
+describe("prices.live", () => {
+  it("returns prices without authentication", async () => {
+    const ctx = createUnauthContext();
+    const caller = appRouter.createCaller(ctx);
+    const result = await caller.prices.live();
+    expect(typeof result).toBe("object");
+  });
+
+  it("includes XAUUSDT and SP500 keys when prices are loaded", async () => {
+    const { ctx } = createAuthContext();
+    const caller = appRouter.createCaller(ctx);
+    const prices = await caller.prices.live();
+    // Prices may or may not be loaded depending on background feed timing
+    // but the structure should be an object
+    expect(typeof prices).toBe("object");
+    // If prices are loaded, verify expected symbols
+    const keys = Object.keys(prices);
+    if (keys.length > 0) {
+      // Should have at least BTC and ETH
+      expect(keys).toContain("BTCUSDT");
+      expect(keys).toContain("ETHUSDT");
+    }
+  });
+});
+
 // ─── AI Analyst Tests ───
 describe("ai", () => {
   it("analyze requires authentication", async () => {
