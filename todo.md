@@ -116,7 +116,7 @@
 - [x] DB: bot_state.selectedExchange es varchar(32), soporta "both" sin migración
 
 ## Mejoras Grid: Siempre Ganar
-- [ ] Detección de tendencia EMA 20/50: no comprar en mercado bajista
-- [ ] Verificar spread > comisiones antes de colocar orden (garantizar rentabilidad)
-- [ ] Regenerar grid automáticamente cuando precio se aleja >2% del centro del grid
-- [ ] En tendencia alcista: priorizar ventas; en lateral: operar ambos lados
+- [x] Detección de tendencia EMA 20/50: no comprar en mercado bajista
+- [x] Verificar spread > comisiones antes de colocar orden (garantizar rentabilidad)
+- [x] Regenerar grid automáticamente cuando precio se aleja del centro (drift threshold = 1.5x spread)
+- [x] En tendencia bajista: skip buys; en neutral/alcista: operar ambos lados
