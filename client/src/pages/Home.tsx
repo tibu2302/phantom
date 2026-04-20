@@ -89,10 +89,11 @@ export default function Home() {
   const updateSettings = trpc.bot.updateSettings.useMutation({
     onSuccess: () => { utils.bot.status.invalidate(); },
   });
+  const exchangeLabel = (ex: string) => ex === "kucoin" ? "KuCoin" : ex === "bybit" ? "Bybit" : "Ambos";
   const handleExchangeChange = (exchange: string) => {
     if (isRunning) { toast.error("Detené el bot antes de cambiar de exchange"); return; }
     updateSettings.mutate({ selectedExchange: exchange });
-    toast.success(`Exchange cambiado a ${exchange === "kucoin" ? "KuCoin" : "Bybit"}`);
+    toast.success(`Exchange cambiado a ${exchangeLabel(exchange)}`);
   };
 
   // Use bot status prices first, fallback to public prices
@@ -142,7 +143,7 @@ export default function Home() {
       <div className="space-y-4">
         {/* Mobile Exchange Selector */}
         <div className="flex gap-2">
-          {["bybit", "kucoin"].map(ex => (
+          {["bybit", "kucoin", "both"].map(ex => (
             <button
               key={ex}
               onClick={() => handleExchangeChange(ex)}
@@ -152,7 +153,7 @@ export default function Home() {
                   : "bg-secondary/30 border-border text-muted-foreground"
               }`}
             >
-              {ex === "bybit" ? "Bybit" : "KuCoin"}
+              {exchangeLabel(ex)}
             </button>
           ))}
         </div>
@@ -433,7 +434,7 @@ export default function Home() {
             <h1 className="text-2xl font-bold tracking-tight">Panel</h1>
             {/* Exchange Selector */}
             <div className="flex gap-1 bg-secondary/30 rounded-lg p-0.5">
-              {["bybit", "kucoin"].map(ex => (
+              {["bybit", "kucoin", "both"].map(ex => (
                 <button
                   key={ex}
                   onClick={() => handleExchangeChange(ex)}
@@ -443,7 +444,7 @@ export default function Home() {
                       : "text-muted-foreground hover:text-foreground"
                   }`}
                 >
-                  {ex === "bybit" ? "Bybit" : "KuCoin"}
+                  {exchangeLabel(ex)}
                 </button>
               ))}
             </div>

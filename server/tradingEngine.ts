@@ -42,17 +42,29 @@ interface GridLevel {
   side: "Buy" | "Sell";
   filled: boolean;
   orderId?: string;
+  filledPrice?: number; // actual price at which the order was filled
+  qty?: string;        // quantity filled
+}
+
+interface OpenBuyPosition {
+  symbol: string;
+  buyPrice: number;
+  qty: string;
+  tradeAmount: number;
+  category: "spot" | "linear";
+  gridLevelPrice: number; // the grid level price that triggered this buy
 }
 
 interface EngineState {
   userId: number;
-  exchange: string; // "bybit" | "kucoin"
+  exchange: string; // "bybit" | "kucoin" | "both"
   client: RestClientV5; // Bybit client (also used as placeholder for KuCoin)
   kucoinClient: any | null; // KuCoin SpotClient when exchange=kucoin
   isRunning: boolean;
   simulationMode: boolean;
   gridLevels: Record<string, GridLevel[]>;
   lastPrices: Record<string, number>;
+  openBuyPositions: Record<string, OpenBuyPosition[]>; // tracks open buys waiting for sell
   intervalId?: ReturnType<typeof setInterval>;
   scannerIntervalId?: ReturnType<typeof setInterval>;
   priceIntervalId?: ReturnType<typeof setInterval>;
@@ -273,7 +285,32 @@ async function placeOrder(engine: EngineState, symbol: string, side: "Buy" | "Se
     return `SIM_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   }
   try {
-    if (engine.exchange === "kucoin" && engine.kucoinClient) {
+    if (engine.exchange === "both") {
+      // Dual exchange mode: place on both exchanges, return combined order ID
+      const orderIds: string[] = [];
+      // Place on KuCoin if available and symbol is supported
+      if (engine.kucoinClient && symbol !== "XAUUSDT") {
+        try {
+          const kucoinSymbol = symbol.replace("USDT", "-USDT");
+          const res = await engine.kucoinClient.submitOrder({
+            clientOid: `phantom_kc_${Date.now()}`,
+            side: side.toLowerCase(),
+            symbol: kucoinSymbol,
+            type: "market",
+            size: qty,
+          });
+          const kcId = res?.data?.orderId;
+          if (kcId) { orderIds.push(`KC:${kcId}`); console.log(`[Engine] BOTH/KuCoin order: ${side} ${symbol} qty=${qty} id=${kcId}`); }
+        } catch (e) { console.error(`[Engine] BOTH/KuCoin order failed:`, (e as Error).message); }
+      }
+      // Place on Bybit
+      try {
+        const res = await engine.client.submitOrder({ category, symbol, side, orderType: "Market", qty });
+        const bybitId = res.result?.orderId;
+        if (bybitId) { orderIds.push(`BY:${bybitId}`); console.log(`[Engine] BOTH/Bybit order: ${side} ${symbol} qty=${qty} id=${bybitId}`); }
+      } catch (e) { console.error(`[Engine] BOTH/Bybit order failed:`, (e as Error).message); }
+      return orderIds.length > 0 ? orderIds.join(",") : null;
+    } else if (engine.exchange === "kucoin" && engine.kucoinClient) {
       // KuCoin order: uses BTC-USDT format, lowercase side
       const kucoinSymbol = symbol.replace("USDT", "-USDT");
       const res = await engine.kucoinClient.submitOrder({
@@ -426,17 +463,43 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
       if (orderId) {
         level.filled = true;
         level.orderId = orderId;
+        level.filledPrice = price;
+        level.qty = qty;
 
-        // Calculate PnL based on price difference vs grid level
-        // In live mode: real price difference. In sim mode: same formula (no random).
-        // A Sell order profits when current price > grid level (we sell above where we planned)
-        // A Buy order profits when current price < grid level (we buy below where we planned)
-        const grossPnl = level.side === "Sell"
-          ? (price - level.price) * parseFloat(qty)   // profit on sells
-          : (level.price - price) * parseFloat(qty);  // profit on buys (negative if price > level)
+        let pnl = 0;
 
-        // Deduct exchange fees (round-trip: buy + sell)
-        const pnl = calcNetPnl(grossPnl, tradeAmount, category, true, engine.exchange);
+        if (level.side === "Buy") {
+          // BUY: record $0 PnL (position is open, no profit yet)
+          // Store as open position to be paired with future sell
+          if (!engine.openBuyPositions[symbol]) engine.openBuyPositions[symbol] = [];
+          engine.openBuyPositions[symbol].push({
+            symbol,
+            buyPrice: price,
+            qty,
+            tradeAmount,
+            category,
+            gridLevelPrice: level.price,
+          });
+          pnl = 0;
+          console.log(`[Grid] BUY ${symbol} @ ${price} qty=${qty} pnl=$0.00 (position open, waiting for sell) order=${orderId}`);
+        } else {
+          // SELL: pair with oldest open buy position to realize profit
+          const openPositions = engine.openBuyPositions[symbol] ?? [];
+          const pairedBuy = openPositions.shift(); // FIFO pairing
+          if (pairedBuy) {
+            // Realized PnL = (sellPrice - buyPrice) * qty - fees on both legs
+            const sellQty = parseFloat(qty);
+            const grossPnl = (price - pairedBuy.buyPrice) * sellQty;
+            const feesAmount = pairedBuy.tradeAmount; // use buy trade amount for fee calc
+            pnl = calcNetPnl(grossPnl, feesAmount, category, true, engine.exchange);
+            console.log(`[Grid] SELL ${symbol} @ ${price} qty=${qty} buyPrice=${pairedBuy.buyPrice} gross=${grossPnl.toFixed(2)} net=${pnl.toFixed(2)} order=${orderId}`);
+          } else {
+            // No paired buy — sell without pairing (shouldn't happen normally)
+            const grossPnl = (price - level.price) * parseFloat(qty);
+            pnl = calcNetPnl(grossPnl, tradeAmount, category, true, engine.exchange);
+            console.log(`[Grid] SELL ${symbol} @ ${price} qty=${qty} (no paired buy) net=${pnl.toFixed(2)} order=${orderId}`);
+          }
+        }
 
         await db.insertTrade({
           userId: engine.userId,
@@ -450,7 +513,7 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
           simulated: engine.simulationMode,
         });
 
-        // Update bot state
+        // Update bot state (only meaningful PnL impact on sells; buys are $0)
         const currentState = await db.getOrCreateBotState(engine.userId);
         if (currentState) {
           const newTotalPnl = parseFloat(currentState.totalPnl ?? "0") + pnl;
@@ -478,7 +541,6 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
         }
 
         traded = true;
-        console.log(`[Grid] ${level.side} ${symbol} @ ${price} qty=${qty} gross=${grossPnl.toFixed(2)} net=${pnl.toFixed(2)} (fees deducted) order=${orderId}`);
       }
     }
   }
@@ -759,33 +821,60 @@ export async function startEngine(userId: number): Promise<{ success: boolean; e
   const state = await db.getOrCreateBotState(userId);
   const simulationMode = state?.simulationMode ?? true;
   const selectedExchange = (state as any)?.selectedExchange ?? "bybit";
-  const keys = await db.getApiKey(userId, selectedExchange);
 
-  // Create exchange-specific client
+  // Create exchange-specific clients
   let client: RestClientV5 = new RestClientV5({});
   let kucoinClient: any = null;
 
-  if (simulationMode || !keys) {
-    console.log(`[Engine] Starting in ${simulationMode ? "SIMULATION" : "PUBLIC"} mode (${selectedExchange}) for user ${userId}`);
-  } else if (selectedExchange === "kucoin") {
-    try {
-      const { SpotClient } = await import("kucoin-api");
-      kucoinClient = new SpotClient({
-        apiKey: keys.apiKey,
-        apiSecret: keys.apiSecret,
-        apiPassphrase: keys.passphrase ?? "",
-      });
-      console.log(`[Engine] Starting in LIVE mode (KuCoin) for user ${userId}`);
-    } catch (e) {
-      console.error(`[Engine] Failed to create KuCoin client:`, (e as Error).message);
-      return { success: false, error: "Failed to initialize KuCoin client" };
+  if (simulationMode) {
+    console.log(`[Engine] Starting in SIMULATION mode (${selectedExchange}) for user ${userId}`);
+  } else if (selectedExchange === "both") {
+    // Dual exchange mode: initialize both Bybit and KuCoin clients
+    const bybitKeys = await db.getApiKey(userId, "bybit");
+    const kucoinKeys = await db.getApiKey(userId, "kucoin");
+    if (bybitKeys) {
+      client = new RestClientV5({ key: bybitKeys.apiKey, secret: bybitKeys.apiSecret });
+      console.log(`[Engine] BOTH mode: Bybit client initialized for user ${userId}`);
+    } else {
+      console.log(`[Engine] BOTH mode: No Bybit keys, using public client`);
     }
+    if (kucoinKeys) {
+      try {
+        const { SpotClient } = await import("kucoin-api");
+        kucoinClient = new SpotClient({
+          apiKey: kucoinKeys.apiKey,
+          apiSecret: kucoinKeys.apiSecret,
+          apiPassphrase: kucoinKeys.passphrase ?? "",
+        });
+        console.log(`[Engine] BOTH mode: KuCoin client initialized for user ${userId}`);
+      } catch (e) {
+        console.error(`[Engine] BOTH mode: Failed to create KuCoin client:`, (e as Error).message);
+      }
+    } else {
+      console.log(`[Engine] BOTH mode: No KuCoin keys, KuCoin will be skipped`);
+    }
+    console.log(`[Engine] Starting in LIVE mode (BOTH: Bybit + KuCoin) for user ${userId}`);
   } else {
-    client = new RestClientV5({
-      key: keys.apiKey,
-      secret: keys.apiSecret,
-    });
-    console.log(`[Engine] Starting in LIVE mode (Bybit) for user ${userId}`);
+    const keys = await db.getApiKey(userId, selectedExchange);
+    if (!keys) {
+      console.log(`[Engine] Starting in PUBLIC mode (${selectedExchange}) for user ${userId}`);
+    } else if (selectedExchange === "kucoin") {
+      try {
+        const { SpotClient } = await import("kucoin-api");
+        kucoinClient = new SpotClient({
+          apiKey: keys.apiKey,
+          apiSecret: keys.apiSecret,
+          apiPassphrase: keys.passphrase ?? "",
+        });
+        console.log(`[Engine] Starting in LIVE mode (KuCoin) for user ${userId}`);
+      } catch (e) {
+        console.error(`[Engine] Failed to create KuCoin client:`, (e as Error).message);
+        return { success: false, error: "Failed to initialize KuCoin client" };
+      }
+    } else {
+      client = new RestClientV5({ key: keys.apiKey, secret: keys.apiSecret });
+      console.log(`[Engine] Starting in LIVE mode (Bybit) for user ${userId}`);
+    }
   }
 
   const engine: EngineState = {
@@ -797,6 +886,7 @@ export async function startEngine(userId: number): Promise<{ success: boolean; e
     simulationMode,
     gridLevels: {},
     lastPrices: {},
+    openBuyPositions: {},
   };
 
   engines.set(userId, engine);
@@ -824,7 +914,7 @@ export async function startEngine(userId: number): Promise<{ success: boolean; e
       for (const strat of strats) {
         if (!strat.enabled) continue;
         // Skip XAUUSDT on KuCoin — KuCoin doesn't support gold trading
-        if (strat.symbol === "XAUUSDT" && engine.exchange === "kucoin") {
+        if (strat.symbol === "XAUUSDT" && (engine.exchange === "kucoin" || engine.exchange === "both")) {
           console.log(`[Engine] Skipping ${strat.symbol} — not supported on KuCoin`);
           continue;
         }
@@ -860,8 +950,8 @@ export async function startEngine(userId: number): Promise<{ success: boolean; e
     const strats = await db.getUserStrategies(userId);
     for (const strat of strats) {
       if (!strat.enabled) continue;
-      // Skip XAUUSDT on KuCoin
-      if (strat.symbol === "XAUUSDT" && engine.exchange === "kucoin") continue;
+      // Skip XAUUSDT on KuCoin or both mode
+      if (strat.symbol === "XAUUSDT" && (engine.exchange === "kucoin" || engine.exchange === "both")) continue;
       if (strat.strategyType === "grid") {
         await runGridStrategy(engine, strat.symbol, (strat.category === "linear" ? "linear" : "spot") as any);
       } else if (strat.strategyType === "scalping") {

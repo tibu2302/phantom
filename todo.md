@@ -106,3 +106,11 @@
 - [x] Reducir spread del grid de 2% a 0.3% default para BTC y ETH para ejecutar órdenes más rápido
 - [x] Grid ahora lee config de la estrategia (gridSpreadPct, gridLevels) — configurable desde UI
 - [x] Slider de spread en UI actualizado: mín 0.1%, máx 5%, paso 0.1%
+
+## Fix: PnL del Grid y Modo Ambos Exchanges
+- [ ] Corregir PnL del grid: registrar $0 en compra, ganancia real solo al completar ciclo (compra+venta)
+- [ ] Rastrear posiciones abiertas del grid para calcular PnL real al cerrar
+- [ ] Implementar modo "Ambos" exchanges: KuCoin + Bybit simultáneo
+- [ ] Actualizar selector de exchange en Dashboard: Solo KuCoin / Solo Bybit / Ambos
+- [ ] Motor: arrancar dos instancias paralelas cuando selectedExchange = "both"
+- [ ] DB: soportar selectedExchange = "both" en bot_state
