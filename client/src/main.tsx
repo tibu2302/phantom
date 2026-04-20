@@ -10,6 +10,8 @@ import "./index.css";
 
 const queryClient = new QueryClient();
 
+const isLocalMode = !import.meta.env.VITE_APP_ID;
+
 const redirectToLoginIfUnauthorized = (error: unknown) => {
   if (!(error instanceof TRPCClientError)) return;
   if (typeof window === "undefined") return;
@@ -18,7 +20,7 @@ const redirectToLoginIfUnauthorized = (error: unknown) => {
 
   if (!isUnauthorized) return;
 
-  window.location.href = getLoginUrl();
+  window.location.href = isLocalMode ? "/login" : getLoginUrl();
 };
 
 queryClient.getQueryCache().subscribe(event => {
