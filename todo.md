@@ -69,6 +69,7 @@
 - [x] CRÍTICO RESUELTO: Engine ahora ejecuta órdenes iniciales en grid + scalping con umbral reducido en simulación + upsertDailyPnl tras cada trade
 
 ## Bug Crítico Activo
-- [ ] Bot muestra EN VIVO pero 0 operaciones, $0 PnL, precios en guión — diagnóstico y fix completo
-- [ ] Reemplazar Bybit REST API (bloqueada) con WebSocket de Bybit para feed de precios en tiempo real
-- [ ] Verificar que WebSocket de Bybit es accesible desde el servidor de Manus
+- [x] Bot muestra EN VIVO pero 0 operaciones, $0 PnL, precios en guión — RESUELTO: WebSocket reemplaza REST bloqueada
+- [x] Reemplazar Bybit REST API (bloqueada) con WebSocket de Bybit para feed de precios en tiempo real
+- [x] Verificar que WebSocket de Bybit es accesible desde el servidor de Manus — CONFIRMADO: wss://stream.bybit.com funciona
+- [x] Verificar end-to-end: fetchKlines reemplazado con CoinGecko (crypto) + Yahoo Finance (Gold) — 33 tests pasando

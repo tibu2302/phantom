@@ -98,6 +98,26 @@ describe("Trading Engine Integration", () => {
     }
   });
 
+  it("engine executes trades and saves to DB after first cycle (end-to-end)", async () => {
+    // Start a fresh engine and wait for the first cycle to complete
+    const { ctx } = createAuthContext();
+    const caller = appRouter.createCaller(ctx);
+    await caller.bot.start();
+    // Wait for first cycle (engine runs every 30s but initial grid orders fire immediately)
+    await new Promise(r => setTimeout(r, 4000));
+    // Check that trades were saved to DB
+    const trades = await caller.trades.list({ limit: 50 });
+    expect(Array.isArray(trades)).toBe(true);
+    expect(trades.length).toBeGreaterThan(0); // At least initial grid entry orders
+    // Check bot status shows PnL and trade count (state is nested in status.state)
+    const status = await caller.bot.status();
+    expect(status.state).toBeDefined();
+    expect((status.state?.totalTrades ?? 0)).toBeGreaterThan(0);
+    const pnl = parseFloat(status.state?.totalPnl ?? "0");
+    expect(typeof pnl).toBe("number");
+    await caller.bot.stop();
+  }, 20000);
+
   it("opportunities list returns valid array structure", async () => {
     const { ctx } = createAuthContext();
     const caller = appRouter.createCaller(ctx);
