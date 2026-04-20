@@ -114,3 +114,9 @@
 - [x] Actualizar selector de exchange en Dashboard: Solo KuCoin / Solo Bybit / Ambos
 - [x] Motor: inicializar ambos clientes y enrutar órdenes a ambos exchanges cuando selectedExchange = "both"
 - [x] DB: bot_state.selectedExchange es varchar(32), soporta "both" sin migración
+
+## Mejoras Grid: Siempre Ganar
+- [ ] Detección de tendencia EMA 20/50: no comprar en mercado bajista
+- [ ] Verificar spread > comisiones antes de colocar orden (garantizar rentabilidad)
+- [ ] Regenerar grid automáticamente cuando precio se aleja >2% del centro del grid
+- [ ] En tendencia alcista: priorizar ventas; en lateral: operar ambos lados

@@ -374,21 +374,59 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
   engine.lastPrices[symbol] = price;
   livePrices.set(symbol, ticker);
 
-  // Initialize grid if not exists — use strategy config for spread/levels if available
+  // ─── Trend Detection (EMA 20/50) ───
+  // Only allow BUY orders when market is neutral or bullish.
+  // In a downtrend, skip buys to avoid accumulating losing positions.
+  let trendAllowsBuy = true;
+  let trendLabel = "neutral";
+  try {
+    const klines = await fetchKlines(engine.client, symbol, "15", 60, category);
+    if (klines.closes.length >= 50) {
+      const ema20 = calculateEMA(klines.closes, 20);
+      const ema50 = calculateEMA(klines.closes, 50);
+      const ema20Now = ema20[ema20.length - 1];
+      const ema50Now = ema50[ema50.length - 1];
+      const ema20Prev = ema20[ema20.length - 4]; // 4 candles ago (1 hour)
+      // Bearish: EMA20 below EMA50 AND EMA20 is falling
+      if (ema20Now < ema50Now && ema20Now < ema20Prev) {
+        trendAllowsBuy = false;
+        trendLabel = "bearish";
+      } else if (ema20Now > ema50Now) {
+        trendLabel = "bullish";
+      }
+    }
+  } catch { /* keep trendAllowsBuy = true on error */ }
+
+  // Read strategy config once for this cycle
+  const strats = await db.getUserStrategies(engine.userId);
+  const strat = strats.find(s => s.symbol === symbol);
+  const config = strat?.config as any;
+  const gridLevels = config?.gridLevels ?? 10;
+  const gridSpread = config?.gridSpreadPct ? config.gridSpreadPct / 100 : 0.008;
+  // Minimum profitable spread: fees are 0.1% per leg × 2 = 0.2% round-trip. Spread must be > 0.25% to profit.
+  const minProfitableSpread = 0.0025;
+  const effectiveSpread = Math.max(gridSpread, minProfitableSpread);
+
+  // Initialize grid if not exists
   const isNewGrid = !engine.gridLevels[symbol] || engine.gridLevels[symbol].length === 0;
   if (isNewGrid) {
-    // Read strategy config for custom grid parameters
-    const strats = await db.getUserStrategies(engine.userId);
-    const strat = strats.find(s => s.symbol === symbol);
-    const config = strat?.config as any;
-    const gridLevels = config?.gridLevels ?? 10;
-    // gridSpreadPct is stored as percentage (e.g. 0.3 means 0.3%), convert to decimal
-    const gridSpread = config?.gridSpreadPct ? config.gridSpreadPct / 100 : 0.003;
-    engine.gridLevels[symbol] = generateGridLevels(price, gridLevels, gridSpread);
-    console.log(`[Grid] ${symbol} initialized ${engine.gridLevels[symbol].length} levels around ${price} (spread=${(gridSpread * 100).toFixed(2)}%, levels=${gridLevels})`);
+    engine.gridLevels[symbol] = generateGridLevels(price, gridLevels, effectiveSpread);
+    console.log(`[Grid] ${symbol} initialized ${engine.gridLevels[symbol].length} levels around ${price} (spread=${(effectiveSpread * 100).toFixed(2)}%, levels=${gridLevels}, trend=${trendLabel})`);
   }
 
+  // ─── Smart Regeneration: recentre grid if price drifts >50% of spread from grid centre ───
   const levels = engine.gridLevels[symbol];
+  const gridPrices = levels.map(l => l.price);
+  const gridCentre = (Math.max(...gridPrices) + Math.min(...gridPrices)) / 2;
+  const driftPct = Math.abs(price - gridCentre) / gridCentre;
+  const driftThreshold = effectiveSpread * 1.5; // regenerate if price drifts 1.5× spread from centre
+  if (driftPct > driftThreshold && !isNewGrid) {
+    engine.gridLevels[symbol] = generateGridLevels(price, gridLevels, effectiveSpread);
+    // Clear open buy positions for this symbol so PnL tracking stays clean
+    engine.openBuyPositions[symbol] = [];
+    console.log(`[Grid] ${symbol} RECENTRED grid around ${price.toFixed(2)} (drift=${(driftPct * 100).toFixed(2)}%, trend=${trendLabel})`);
+  }
+
   let traded = false;
 
   // Log grid status for debugging
@@ -397,7 +435,7 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
   if (unfilledBuys.length > 0 || unfilledSells.length > 0) {
     const nearestBuy = unfilledBuys.sort((a, b) => b.price - a.price)[0];
     const nearestSell = unfilledSells.sort((a, b) => a.price - b.price)[0];
-    console.log(`[Grid] ${symbol} price=${price.toFixed(2)} nearestBuy=${nearestBuy?.price?.toFixed(2) ?? 'none'} nearestSell=${nearestSell?.price?.toFixed(2) ?? 'none'} unfilled=${unfilledBuys.length}B/${unfilledSells.length}S`);
+    console.log(`[Grid] ${symbol} price=${price.toFixed(2)} nearestBuy=${nearestBuy?.price?.toFixed(2) ?? 'none'} nearestSell=${nearestSell?.price?.toFixed(2) ?? 'none'} unfilled=${unfilledBuys.length}B/${unfilledSells.length}S trend=${trendLabel}`);
   }
 
   // On first initialization in simulation mode, immediately place entry BUY orders
@@ -450,9 +488,24 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
       : price >= level.price * (1 - tolerance);
 
     if (shouldFill) {
+      // ─── Trend guard: skip BUY if market is bearish ───
+      if (level.side === "Buy" && !trendAllowsBuy) {
+        console.log(`[Grid] SKIP BUY ${symbol} @ ${level.price.toFixed(2)} — bearish trend, waiting for reversal`);
+        continue;
+      }
+
+      // ─── Profitability guard: ensure a sell level exists above buy level with enough spread to profit ───
+      if (level.side === "Buy") {
+        const feeRoundTrip = 0.002; // 0.1% × 2 legs
+        const requiredSellPrice = level.price * (1 + feeRoundTrip + 0.001); // fees + 0.1% minimum profit
+        const hasProfit = levels.some(l => l.side === "Sell" && !l.filled && l.price >= requiredSellPrice);
+        if (!hasProfit) {
+          console.log(`[Grid] SKIP BUY ${symbol} @ ${level.price.toFixed(2)} — no profitable sell level available above ${requiredSellPrice.toFixed(2)}`);
+          continue;
+        }
+      }
+
       // Calculate qty based on allocation
-      const strats = await db.getUserStrategies(engine.userId);
-      const strat = strats.find(s => s.symbol === symbol);
       const allocation = strat?.allocationPct ?? 30;
       const state = await db.getOrCreateBotState(engine.userId);
       const balance = parseFloat(state?.currentBalance ?? "5000");
@@ -470,7 +523,6 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
 
         if (level.side === "Buy") {
           // BUY: record $0 PnL (position is open, no profit yet)
-          // Store as open position to be paired with future sell
           if (!engine.openBuyPositions[symbol]) engine.openBuyPositions[symbol] = [];
           engine.openBuyPositions[symbol].push({
             symbol,
@@ -487,14 +539,12 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
           const openPositions = engine.openBuyPositions[symbol] ?? [];
           const pairedBuy = openPositions.shift(); // FIFO pairing
           if (pairedBuy) {
-            // Realized PnL = (sellPrice - buyPrice) * qty - fees on both legs
             const sellQty = parseFloat(qty);
             const grossPnl = (price - pairedBuy.buyPrice) * sellQty;
-            const feesAmount = pairedBuy.tradeAmount; // use buy trade amount for fee calc
+            const feesAmount = pairedBuy.tradeAmount;
             pnl = calcNetPnl(grossPnl, feesAmount, category, true, engine.exchange);
             console.log(`[Grid] SELL ${symbol} @ ${price} qty=${qty} buyPrice=${pairedBuy.buyPrice} gross=${grossPnl.toFixed(2)} net=${pnl.toFixed(2)} order=${orderId}`);
           } else {
-            // No paired buy — sell without pairing (shouldn't happen normally)
             const grossPnl = (price - level.price) * parseFloat(qty);
             pnl = calcNetPnl(grossPnl, tradeAmount, category, true, engine.exchange);
             console.log(`[Grid] SELL ${symbol} @ ${price} qty=${qty} (no paired buy) net=${pnl.toFixed(2)} order=${orderId}`);
@@ -513,49 +563,32 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
           simulated: engine.simulationMode,
         });
 
-        // Update bot state (only meaningful PnL impact on sells; buys are $0)
         const currentState = await db.getOrCreateBotState(engine.userId);
         if (currentState) {
-          const newTotalPnl = parseFloat(currentState.totalPnl ?? "0") + pnl;
-          const newTodayPnl = parseFloat(currentState.todayPnl ?? "0") + pnl;
-          const newBalance = parseFloat(currentState.currentBalance ?? "5000") + pnl;
-          const newTotalTrades = (currentState.totalTrades ?? 0) + 1;
-          const newWinning = (currentState.winningTrades ?? 0) + (pnl > 0 ? 1 : 0);
           await db.updateBotState(engine.userId, {
-            totalPnl: newTotalPnl.toFixed(2),
-            todayPnl: newTodayPnl.toFixed(2),
-            currentBalance: newBalance.toFixed(2),
-            totalTrades: newTotalTrades,
-            winningTrades: newWinning,
+            totalPnl: (parseFloat(currentState.totalPnl ?? "0") + pnl).toFixed(2),
+            todayPnl: (parseFloat(currentState.todayPnl ?? "0") + pnl).toFixed(2),
+            currentBalance: (parseFloat(currentState.currentBalance ?? "5000") + pnl).toFixed(2),
+            totalTrades: (currentState.totalTrades ?? 0) + 1,
+            winningTrades: (currentState.winningTrades ?? 0) + (pnl > 0 ? 1 : 0),
           });
         }
-
-        // Update strategy stats
-        if (strat) {
-          await db.updateStrategyStats(strat.id, pnl, pnl > 0);
-        }
-        // Update daily PnL history
+        if (strat) await db.updateStrategyStats(strat.id, pnl, pnl > 0);
         const updatedState = await db.getOrCreateBotState(engine.userId);
         if (updatedState) {
           await db.upsertDailyPnl(engine.userId, parseFloat(updatedState.totalPnl ?? "0"), parseFloat(updatedState.currentBalance ?? "5000"), updatedState.totalTrades ?? 0);
         }
-
         traded = true;
       }
     }
   }
 
-  // Regenerate grid if >60% filled
+  // Regenerate grid if >60% filled (fallback to the smart recentre above)
   const filledCount = levels.filter(l => l.filled).length;
   if (filledCount > levels.length * 0.6) {
-    // Use strategy config for regeneration too
-    const regenStrats = await db.getUserStrategies(engine.userId);
-    const regenStrat = regenStrats.find(s => s.symbol === symbol);
-    const regenConfig = regenStrat?.config as any;
-    const regenLevels = regenConfig?.gridLevels ?? 10;
-    const regenSpread = regenConfig?.gridSpreadPct ? regenConfig.gridSpreadPct / 100 : 0.003;
-    engine.gridLevels[symbol] = generateGridLevels(price, regenLevels, regenSpread);
-    console.log(`[Grid] ${symbol} regenerated grid around ${price} (spread=${(regenSpread * 100).toFixed(2)}%)`);
+    engine.gridLevels[symbol] = generateGridLevels(price, gridLevels, effectiveSpread);
+    engine.openBuyPositions[symbol] = [];
+    console.log(`[Grid] ${symbol} regenerated grid (>60% filled) around ${price.toFixed(2)} (spread=${(effectiveSpread * 100).toFixed(2)}%)`);
   }
 }
 
