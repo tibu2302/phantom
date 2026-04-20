@@ -1,0 +1,1 @@
+ALTER TABLE `bot_state` ADD `selectedExchange` varchar(32) DEFAULT 'bybit' NOT NULL;
