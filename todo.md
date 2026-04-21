@@ -177,3 +177,15 @@
 ### Multi-Timeframe Analysis
 - [x] Analizar 3 timeframes (1min, 15min, 1h) antes de cada orden
 - [x] Solo operar cuando los 3 timeframes están alineados
+
+## Bugs Reportados - Abril 21
+- [x] BUG: Scalping no ejecutaba operaciones — upsertStrategy sobreescribía scalping con futures para mismo símbolo
+- [x] BUG: No hay operaciones en Bybit — primer ciclo saltaba XAUUSDT en modo both/kucoin, faltaba routing correcto
+- [x] FIX: upsertStrategy ahora busca por (userId, symbol, strategyType) para permitir múltiples estrategias por símbolo
+- [x] FIX: Primer ciclo ahora tiene la misma lógica de routing que el loop principal
+- [x] FIX: Scalping busca estrategia por strategyType=scalping primero
+- [x] FIX: Agregado Bybit REST API como fallback para klines cuando Yahoo Finance falla
+- [x] FIX: SPXUSDT agregado al WebSocket feed de Linear y a Yahoo tickers
+- [x] Verificar que XAUUSDT scalping y futures coexisten en DB con test automatizado (38 tests passing)
+- [x] Verificar que Bybit klines fallback funciona para XAUUSDT cuando Yahoo falla
+- [x] Agregar migración/backfill para usuarios existentes que perdieron XAUUSDT scalping (auto-backfill en bot.start)

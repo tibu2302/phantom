@@ -316,7 +316,11 @@ const COINGECKO_IDS: Record<string, string> = {
 const YAHOO_TICKERS: Record<string, string> = {
   XAUUSDT: "GC=F",
   XAGUSD: "SI=F",
+  SPXUSDT: "%5EGSPC",
 };
+
+// Bybit klines API as fallback for linear symbols
+const BYBIT_KLINE_SYMBOLS = new Set(["XAUUSDT", "SPXUSDT", "BTCUSDT", "ETHUSDT", "SOLUSDT"]);
 
 async function fetchKlines(_client: RestClientV5 | null, symbol: string, _interval: any = "15", limit: number = 50, _category: "spot" | "linear" = "spot"): Promise<KlineData> {
   const geckoId = COINGECKO_IDS[symbol];
@@ -374,7 +378,33 @@ async function fetchKlines(_client: RestClientV5 | null, symbol: string, _interv
     }
   }
 
-  // Fallback: synthetic klines from WebSocket price
+  // Fallback 2: Bybit REST API klines (works for linear symbols like XAUUSDT)
+  const bybitCategory = _category === "linear" ? "linear" : "spot";
+  try {
+    const intervalMap: Record<string, string> = { "1": "1", "5": "5", "15": "15", "60": "60", "240": "240" };
+    const bybitInterval = intervalMap[_interval] ?? "15";
+    const bybitUrl = `https://api.bybit.com/v5/market/kline?category=${bybitCategory}&symbol=${symbol}&interval=${bybitInterval}&limit=${limit}`;
+    const res = await fetch(bybitUrl, { signal: AbortSignal.timeout(8000) });
+    if (res.ok) {
+      const data = await res.json() as any;
+      const klines = data?.result?.list;
+      if (klines && klines.length > 0) {
+        // Bybit returns newest first, reverse for chronological order
+        const reversed = [...klines].reverse();
+        const result: KlineData = {
+          closes: reversed.map((k: string[]) => parseFloat(k[4])),
+          volumes: reversed.map((k: string[]) => parseFloat(k[5])),
+        };
+        const cacheKey = `${symbol}_${_interval}_${limit}`;
+        klineCache.set(cacheKey, { data: result, expiresAt: Date.now() + CACHE_TTL_MS });
+        return result;
+      }
+    }
+  } catch (e) {
+    console.error(`[Engine] Bybit klines fallback ${symbol}:`, (e as Error).message);
+  }
+
+  // Fallback 3: synthetic klines from WebSocket price
   const cachedPrice = livePrices.get(symbol);
   if (cachedPrice) {
     const base = cachedPrice.lastPrice;
@@ -887,9 +917,10 @@ async function runScalpingStrategy(engine: EngineState, symbol: string, category
   }
 
   const minSignals = engine.simulationMode ? 1 : 2;
+  console.log(`[Scalp] ${symbol} analysis: price=${price.toFixed(2)} rsi=${rsi.toFixed(1)} macd=${macd.histogram.toFixed(4)} signal=${signal ?? 'none'} reasons=${reasons.length} minReq=${minSignals} mtf=${mtf.direction}`);
   if (signal && reasons.length >= minSignals) {
     const strats = await db.getUserStrategies(engine.userId);
-    const strat = strats.find(s => s.symbol === symbol);
+    const strat = strats.find(s => s.symbol === symbol && s.strategyType === "scalping") ?? strats.find(s => s.symbol === symbol);
     const allocation = strat?.allocationPct ?? 30;
     const state = await db.getOrCreateBotState(engine.userId);
     const balance = parseFloat(state?.currentBalance ?? "5000");
@@ -1338,20 +1369,59 @@ export async function startEngine(userId: number): Promise<{ success: boolean; e
 
   setTimeout(() => runOpportunityScanner(engine), 5000);
 
-  // Run first trading cycle immediately
+  // Run first trading cycle immediately (mirrors main loop logic for proper exchange routing)
   setTimeout(async () => {
     const strats = await db.getUserStrategies(userId);
+    console.log(`[Engine] First cycle: ${strats.length} strategies, ${strats.filter(s => s.enabled).length} enabled`);
     for (const strat of strats) {
       if (!strat.enabled) continue;
+      const cat = strat.category === "linear" ? "linear" : "spot";
+
+      // XAUUSDT, XAGUSD, SPXUSDT always route to Bybit
       if (strat.symbol === "XAUUSDT" || strat.symbol === "XAGUSD" || strat.symbol === "SPXUSDT") {
-        if (engine.exchange === "kucoin" || engine.exchange === "both") continue;
+        if (engine.exchange === "kucoin") {
+          const bybitKeys = await db.getApiKey(userId, "bybit");
+          if (bybitKeys || engine.simulationMode) {
+            const bybitClient = engine.simulationMode ? engine.client : new (await import("bybit-api")).RestClientV5({ key: bybitKeys!.apiKey, secret: bybitKeys!.apiSecret });
+            const bybitEngine: EngineState = { ...engine, client: bybitClient, exchange: "bybit", kucoinClient: null };
+            console.log(`[Engine] First cycle: ${strat.strategyType} ${strat.symbol} on Bybit (forced)`);
+            if (strat.strategyType === "scalping") await runScalpingStrategy(bybitEngine, strat.symbol, "linear");
+            else if (strat.strategyType === "futures") await runFuturesLongOnly(bybitEngine, strat.symbol);
+            else await runGridStrategy(bybitEngine, strat.symbol, "linear");
+          }
+        } else {
+          console.log(`[Engine] First cycle: ${strat.strategyType} ${strat.symbol} on Bybit`);
+          if (strat.strategyType === "scalping") await runScalpingStrategy(engine, strat.symbol, "linear");
+          else if (strat.strategyType === "futures") await runFuturesLongOnly(engine, strat.symbol);
+          else await runGridStrategy(engine, strat.symbol, "linear");
+        }
+        continue;
       }
-      if (strat.strategyType === "grid") {
-        await runGridStrategy(engine, strat.symbol, (strat.category === "linear" ? "linear" : "spot") as any);
-      } else if (strat.strategyType === "scalping") {
-        await runScalpingStrategy(engine, strat.symbol, (strat.category === "linear" ? "linear" : "spot") as any);
-      } else if (strat.strategyType === "futures") {
-        await runFuturesLongOnly(engine, strat.symbol);
+
+      // Futures always on Bybit
+      if (strat.strategyType === "futures") {
+        const bybitEngine: EngineState = { ...engine, exchange: "bybit", kucoinClient: null };
+        console.log(`[Engine] First cycle: futures ${strat.symbol} on Bybit`);
+        await runFuturesLongOnly(bybitEngine, strat.symbol);
+        continue;
+      }
+
+      // Regular strategies: use selected exchange
+      if (engine.exchange === "both") {
+        if (engine.kucoinClient) {
+          const kucoinEngine: EngineState = { ...engine, exchange: "kucoin" };
+          console.log(`[Engine] First cycle: ${strat.strategyType} ${strat.symbol} on KuCoin`);
+          if (strat.strategyType === "grid") await runGridStrategy(kucoinEngine, strat.symbol, "spot");
+          else if (strat.strategyType === "scalping") await runScalpingStrategy(kucoinEngine, strat.symbol, "spot");
+        }
+        const bybitEngine: EngineState = { ...engine, exchange: "bybit", kucoinClient: null };
+        console.log(`[Engine] First cycle: ${strat.strategyType} ${strat.symbol} on Bybit`);
+        if (strat.strategyType === "grid") await runGridStrategy(bybitEngine, strat.symbol, cat as "spot" | "linear");
+        else if (strat.strategyType === "scalping") await runScalpingStrategy(bybitEngine, strat.symbol, cat as "spot" | "linear");
+      } else {
+        console.log(`[Engine] First cycle: ${strat.strategyType} ${strat.symbol}`);
+        if (strat.strategyType === "grid") await runGridStrategy(engine, strat.symbol, cat as "spot" | "linear");
+        else if (strat.strategyType === "scalping") await runScalpingStrategy(engine, strat.symbol, cat as "spot" | "linear");
       }
     }
   }, 2000);
@@ -1409,7 +1479,7 @@ const SPOT_SYMBOLS = [
   "PEPEUSDT", "FLOKIUSDT", "BONKUSDT", "JUPUSDT", "AAVEUSDT",
   "MKRUSDT", "FILUSDT",
 ];
-const LINEAR_SYMBOLS = ["XAUUSDT"];
+const LINEAR_SYMBOLS = ["XAUUSDT", "SPXUSDT"];
 
 function parseWsTickerMsg(data: Buffer | string): void {
   try {

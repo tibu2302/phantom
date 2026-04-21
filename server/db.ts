@@ -118,10 +118,13 @@ export async function getUserStrategies(userId: number) {
 export async function upsertStrategy(userId: number, data: { symbol: string; strategyType: string; market?: string; category?: string; allocationPct?: number; enabled?: boolean; config?: unknown }) {
   const db = await getDb();
   if (!db) return;
-  const existing = await db.select().from(strategies).where(and(eq(strategies.userId, userId), eq(strategies.symbol, data.symbol))).limit(1);
+  // Match by (userId, symbol, strategyType) to allow multiple strategy types per symbol
+  // e.g. XAUUSDT can have both "scalping" and "futures" strategies
+  const existing = await db.select().from(strategies).where(
+    and(eq(strategies.userId, userId), eq(strategies.symbol, data.symbol), eq(strategies.strategyType, data.strategyType))
+  ).limit(1);
   if (existing.length > 0) {
     await db.update(strategies).set({
-      strategyType: data.strategyType,
       market: data.market ?? existing[0].market,
       category: data.category ?? existing[0].category,
       allocationPct: data.allocationPct ?? existing[0].allocationPct,

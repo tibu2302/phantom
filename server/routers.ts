@@ -37,6 +37,19 @@ export const appRouter = router({
     start: protectedProcedure.mutation(async ({ ctx }) => {
       // Auto-seed default strategies if none exist
       const existingStrats = await db.getUserStrategies(ctx.user.id);
+      // Backfill: ensure XAUUSDT has both scalping and futures (fix for users affected by old upsert bug)
+      if (existingStrats.length > 0) {
+        const hasXauScalping = existingStrats.some(s => s.symbol === "XAUUSDT" && s.strategyType === "scalping");
+        const hasXauFutures = existingStrats.some(s => s.symbol === "XAUUSDT" && s.strategyType === "futures");
+        if (!hasXauScalping) {
+          await db.upsertStrategy(ctx.user.id, { symbol: "XAUUSDT", strategyType: "scalping", market: "tradfi", category: "linear", allocationPct: 20, enabled: true });
+          console.log(`[Bot] Backfilled XAUUSDT scalping for user ${ctx.user.id}`);
+        }
+        if (!hasXauFutures) {
+          await db.upsertStrategy(ctx.user.id, { symbol: "XAUUSDT", strategyType: "futures", market: "tradfi", category: "linear", allocationPct: 15, enabled: true, config: { leverage: 2, takeProfitPct: 1.0 } } as any);
+          console.log(`[Bot] Backfilled XAUUSDT futures for user ${ctx.user.id}`);
+        }
+      }
       if (existingStrats.length === 0) {
         await db.upsertStrategy(ctx.user.id, { symbol: "BTCUSDT", strategyType: "grid", market: "crypto", category: "spot", allocationPct: 30, enabled: true });
         await db.upsertStrategy(ctx.user.id, { symbol: "ETHUSDT", strategyType: "grid", market: "crypto", category: "spot", allocationPct: 30, enabled: true });

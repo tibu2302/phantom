@@ -131,6 +131,17 @@ describe("Trading Engine Integration", () => {
     }
   });
 
+  it("XAUUSDT has both scalping and futures strategies (coexist)", async () => {
+    const { ctx } = createAuthContext();
+    const caller = appRouter.createCaller(ctx);
+    const strategies = await caller.strategies.list();
+    const xauStrats = (strategies as any[]).filter((s: any) => s.symbol === "XAUUSDT");
+    expect(xauStrats.length).toBeGreaterThanOrEqual(2);
+    const types = xauStrats.map((s: any) => s.strategyType);
+    expect(types).toContain("scalping");
+    expect(types).toContain("futures");
+  });
+
   it("bot.stop stops the engine", async () => {
     const { ctx } = createAuthContext();
     const caller = appRouter.createCaller(ctx);
