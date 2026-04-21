@@ -618,8 +618,9 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
 
     // 1. STOP-LOSS: Cut losses if price drops below threshold
     // BTC and ETH are EXEMPT from stop-loss — never sell at a loss, always HOLD
+    // stopLossPct === 0 means stop-loss is DISABLED
     const noStopLossSymbols = ["BTCUSDT", "ETHUSDT"];
-    if (lossPct >= stopLossPct && !noStopLossSymbols.includes(symbol)) {
+    if (stopLossPct > 0 && lossPct >= stopLossPct && !noStopLossSymbols.includes(symbol)) {
       positionsToSell.push({ pos, reason: `STOP-LOSS (${(lossPct * 100).toFixed(2)}% loss)` });
       openPositions.splice(i, 1);
       continue;
@@ -631,7 +632,7 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
     // First threshold: if held > maxHoldTime and price is below buy price, just log warning
     // Only force-sell if held > 2x maxHoldTime AND still losing
     const doubleMaxHold = maxHoldTimeMs * 2;
-    if (holdTimeMs > doubleMaxHold && profitPct < -0.002 && !noStopLossSymbols.includes(symbol)) {
+    if (maxHoldTimeMs > 0 && holdTimeMs > doubleMaxHold && profitPct < -0.002 && !noStopLossSymbols.includes(symbol)) {
       // Only time-stop if the loss is small enough (< stop-loss threshold) — otherwise let stop-loss handle it
       const estGrossPnl = (price - pos.buyPrice) * parseFloat(pos.qty);
       const estNetPnl = calcNetPnl(estGrossPnl, pos.tradeAmount, category, true, engine.exchange);
@@ -643,9 +644,9 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
       } else {
         console.log(`[Grid] ${symbol} TIME-WARNING — held ${(holdTimeMs / 3600000).toFixed(1)}h, loss $${estNetPnl.toFixed(2)} too large for time-stop, waiting for recovery`);
       }
-    } else if (holdTimeMs > doubleMaxHold && profitPct < -0.002 && noStopLossSymbols.includes(symbol)) {
+    } else if (maxHoldTimeMs > 0 && holdTimeMs > doubleMaxHold && profitPct < -0.002 && noStopLossSymbols.includes(symbol)) {
       console.log(`[Grid] ${symbol} HOLD — held ${(holdTimeMs / 3600000).toFixed(1)}h, BTC/ETH exempt from time-stop`);
-    } else if (holdTimeMs > maxHoldTimeMs && profitPct >= 0) {
+    } else if (maxHoldTimeMs > 0 && holdTimeMs > maxHoldTimeMs && profitPct >= 0) {
       // Held long but in profit — let trailing stop handle it, don't force close
       console.log(`[Grid] ${symbol} held ${(holdTimeMs / 3600000).toFixed(1)}h but in profit ${(profitPct * 100).toFixed(2)}%, trailing stop will handle exit`);
     }
