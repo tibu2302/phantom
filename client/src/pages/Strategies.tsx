@@ -99,11 +99,11 @@ function StrategyConfig({ strategy, onClose }: { strategy: any; onClose: () => v
   const [leverage, setLeverage] = useState(strategy.config?.leverage ?? 2);
   const [takeProfit, setTakeProfit] = useState(strategy.config?.takeProfitPct ?? 1.0);
   // Protection settings
-  const [stopLoss, setStopLoss] = useState(strategy.config?.stopLossPct ?? (strategy.strategyType === 'futures' ? 2.0 : 1.5));
-  const [trailingStop, setTrailingStop] = useState(strategy.config?.trailingStopPct ?? 0.3);
-  const [trailingActivation, setTrailingActivation] = useState(strategy.config?.trailingActivationPct ?? 0.3);
+  const [stopLoss, setStopLoss] = useState(strategy.config?.stopLossPct ?? (strategy.strategyType === 'futures' ? 3.0 : 5.0));
+  const [trailingStop, setTrailingStop] = useState(strategy.config?.trailingStopPct ?? 0.8);
+  const [trailingActivation, setTrailingActivation] = useState(strategy.config?.trailingActivationPct ?? 1.0);
   const [maxPositions, setMaxPositions] = useState(strategy.config?.maxOpenPositions ?? 5);
-  const [maxHoldHours, setMaxHoldHours] = useState(strategy.config?.maxHoldHours ?? (strategy.strategyType === 'futures' ? 12 : 4));
+  const [maxHoldHours, setMaxHoldHours] = useState(strategy.config?.maxHoldHours ?? (strategy.strategyType === 'futures' ? 24 : 48));
   const [minProfitUsd, setMinProfitUsd] = useState(strategy.config?.minProfitUsd ?? 5);
 
   const updateConfig = trpc.strategies.updateConfig.useMutation({
@@ -187,7 +187,7 @@ function StrategyConfig({ strategy, onClose }: { strategy: any; onClose: () => v
                 <span className="text-muted-foreground">Stop-Loss</span>
                 <span className="font-bold text-[oklch(0.63_0.24_25)]">{stopLoss}%</span>
               </div>
-              <Slider value={[stopLoss]} onValueChange={([v]) => setStopLoss(v)} min={0.5} max={10} step={0.5} className="w-full" />
+              <Slider value={[stopLoss]} onValueChange={([v]) => setStopLoss(v)} min={1} max={15} step={0.5} className="w-full" />
               <p className="text-[10px] text-muted-foreground mt-0.5">Corta pérdida automáticamente si cae este %</p>
             </div>
             {(isGrid || isFutures) && (
@@ -205,7 +205,7 @@ function StrategyConfig({ strategy, onClose }: { strategy: any; onClose: () => v
                     <span className="text-muted-foreground">Activación trailing</span>
                     <span className="font-bold text-primary">{trailingActivation}%</span>
                   </div>
-                  <Slider value={[trailingActivation]} onValueChange={([v]) => setTrailingActivation(v)} min={0.1} max={3} step={0.1} className="w-full" />
+                  <Slider value={[trailingActivation]} onValueChange={([v]) => setTrailingActivation(v)} min={0.1} max={5} step={0.1} className="w-full" />
                   <p className="text-[10px] text-muted-foreground mt-0.5">Ganancia mínima para activar trailing stop</p>
                 </div>
               </>
@@ -215,7 +215,7 @@ function StrategyConfig({ strategy, onClose }: { strategy: any; onClose: () => v
                 <span className="text-muted-foreground">Tiempo máximo (horas)</span>
                 <span className="font-bold text-primary">{maxHoldHours}h</span>
               </div>
-              <Slider value={[maxHoldHours]} onValueChange={([v]) => setMaxHoldHours(v)} min={1} max={48} step={1} className="w-full" />
+              <Slider value={[maxHoldHours]} onValueChange={([v]) => setMaxHoldHours(v)} min={1} max={96} step={1} className="w-full" />
               <p className="text-[10px] text-muted-foreground mt-0.5">Cierra posición si no hay ganancia después de este tiempo</p>
             </div>
             {isGrid && (

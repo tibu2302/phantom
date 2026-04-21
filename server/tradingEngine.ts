@@ -581,8 +581,10 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
   const driftThreshold = effectiveSpread * 1.5;
   if (driftPct > driftThreshold && !isNewGrid) {
     engine.gridLevels[symbol] = generateGridLevels(price, gridLevels, effectiveSpread);
-    engine.openBuyPositions[symbol] = [];
-    console.log(`[Grid] ${symbol} RECENTRED grid around ${price.toFixed(2)} (drift=${(driftPct * 100).toFixed(2)}%, spread=${(effectiveSpread * 100).toFixed(2)}%, trend=${trendLabel})`);
+    // IMPORTANT: Do NOT clear openBuyPositions on recentering!
+    // Clearing them causes the bot to lose track of real positions and sell at a loss.
+    // Open positions are managed by the protection system (trailing stop, stop-loss).
+    console.log(`[Grid] ${symbol} RECENTRED grid around ${price.toFixed(2)} (drift=${(driftPct * 100).toFixed(2)}%, spread=${(effectiveSpread * 100).toFixed(2)}%, trend=${trendLabel}, keeping ${(engine.openBuyPositions[symbol] ?? []).length} open positions)`);
   }
 
   let traded = false;
@@ -600,10 +602,10 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
 
   // ─── Protection System: Stop-Loss + Trailing Stop + Time Stop ───
   const stratConfig = config ?? {};
-  const stopLossPct = (stratConfig.stopLossPct ?? 1.5) / 100; // Default 1.5% stop-loss
-  const trailingPct = (stratConfig.trailingStopPct ?? 0.3) / 100; // 0.3% trailing distance
-  const trailingActivation = (stratConfig.trailingActivationPct ?? 0.3) / 100; // Activate trailing after 0.3% profit
-  const maxHoldTimeMs = (stratConfig.maxHoldHours ?? 24) * 60 * 60 * 1000; // Default 24 hours max hold
+  const stopLossPct = (stratConfig.stopLossPct ?? 5) / 100; // Default 5% stop-loss (crypto is volatile)
+  const trailingPct = (stratConfig.trailingStopPct ?? 0.8) / 100; // 0.8% trailing distance
+  const trailingActivation = (stratConfig.trailingActivationPct ?? 1.0) / 100; // Activate trailing after 1% profit
+  const maxHoldTimeMs = (stratConfig.maxHoldHours ?? 48) * 60 * 60 * 1000; // Default 48 hours max hold
   const maxOpenPositions = stratConfig.maxOpenPositions ?? 5; // Max open positions per symbol
   const minProfitUsd = stratConfig.minProfitUsd ?? 5; // Minimum $5 USD profit to sell (trailing/normal)
   const positionsToSell: { pos: OpenBuyPosition; reason: string }[] = [];
