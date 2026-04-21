@@ -326,62 +326,14 @@ const YAHOO_TICKERS: Record<string, string> = {
 const BYBIT_KLINE_SYMBOLS = new Set(["XAUUSDT", "SPXUSDT", "BTCUSDT", "ETHUSDT", "SOLUSDT"]);
 
 async function fetchKlines(_client: RestClientV5 | null, symbol: string, _interval: any = "15", limit: number = 50, _category: "spot" | "linear" = "spot"): Promise<KlineData> {
-  const geckoId = COINGECKO_IDS[symbol];
-  if (geckoId) {
-    const cacheKey = `${symbol}_${_interval}_${limit}`;
-    const cached = klineCache.get(cacheKey);
-    if (cached && Date.now() < cached.expiresAt) {
-      return cached.data;
-    }
-
-    const days = limit <= 48 ? 1 : limit <= 96 ? 2 : 7;
-    const url = `https://api.coingecko.com/api/v3/coins/${geckoId}/ohlc?vs_currency=usd&days=${days}`;
-    let lastError = "";
-    for (let attempt = 0; attempt < 3; attempt++) {
-      try {
-        if (attempt > 0) {
-          await new Promise(r => setTimeout(r, 2000 * Math.pow(2, attempt - 1)));
-        }
-        const res = await fetch(url, { signal: AbortSignal.timeout(10000) });
-        if (res.status === 429) {
-          lastError = `CoinGecko rate limited (429)`;
-          console.warn(`[Engine] CoinGecko 429 for ${symbol}, attempt ${attempt + 1}/3`);
-          continue;
-        }
-        if (!res.ok) throw new Error(`CoinGecko HTTP ${res.status}`);
-        const data = await res.json() as number[][];
-        const sliced = data.slice(-limit);
-        const result: KlineData = {
-          closes: sliced.map(k => k[4]),
-          volumes: sliced.map(() => 1000),
-        };
-        klineCache.set(cacheKey, { data: result, expiresAt: Date.now() + CACHE_TTL_MS });
-        return result;
-      } catch (e) {
-        lastError = (e as Error).message;
-        console.error(`[Engine] CoinGecko klines ${symbol} attempt ${attempt + 1}:`, lastError);
-      }
-    }
-    console.warn(`[Engine] CoinGecko failed for ${symbol} after 3 attempts: ${lastError}`);
+  // Check cache first
+  const cacheKey = `${symbol}_${_interval}_${limit}`;
+  const cached = klineCache.get(cacheKey);
+  if (cached && Date.now() < cached.expiresAt) {
+    return cached.data;
   }
 
-  const yahooTicker = YAHOO_TICKERS[symbol];
-  if (yahooTicker) {
-    try {
-      const url = `https://query1.finance.yahoo.com/v8/finance/chart/${yahooTicker}?interval=30m&range=5d`;
-      const res = await fetch(url, { signal: AbortSignal.timeout(10000), headers: { "User-Agent": "Mozilla/5.0" } });
-      if (!res.ok) throw new Error(`Yahoo HTTP ${res.status}`);
-      const data = await res.json() as any;
-      const result = data?.chart?.result?.[0];
-      const closes = (result?.indicators?.quote?.[0]?.close ?? []).filter((c: any) => c != null);
-      const volumes = (result?.indicators?.quote?.[0]?.volume ?? []).filter((v: any) => v != null);
-      return { closes: closes.slice(-limit), volumes: volumes.slice(-limit) };
-    } catch (e) {
-      console.error(`[Engine] Yahoo klines ${symbol}:`, (e as Error).message);
-    }
-  }
-
-  // Fallback 2: Bybit REST API klines (works for linear symbols like XAUUSDT)
+  // ─── Source 1: Bybit REST API (PREFERRED — works on VPS, no rate limits) ───
   const bybitCategory = _category === "linear" ? "linear" : "spot";
   try {
     const intervalMap: Record<string, string> = { "1": "1", "5": "5", "15": "15", "60": "60", "240": "240" };
@@ -392,22 +344,66 @@ async function fetchKlines(_client: RestClientV5 | null, symbol: string, _interv
       const data = await res.json() as any;
       const klines = data?.result?.list;
       if (klines && klines.length > 0) {
-        // Bybit returns newest first, reverse for chronological order
         const reversed = [...klines].reverse();
         const result: KlineData = {
           closes: reversed.map((k: string[]) => parseFloat(k[4])),
           volumes: reversed.map((k: string[]) => parseFloat(k[5])),
         };
-        const cacheKey = `${symbol}_${_interval}_${limit}`;
         klineCache.set(cacheKey, { data: result, expiresAt: Date.now() + CACHE_TTL_MS });
         return result;
       }
     }
   } catch (e) {
-    console.error(`[Engine] Bybit klines fallback ${symbol}:`, (e as Error).message);
+    console.warn(`[Engine] Bybit klines ${symbol}:`, (e as Error).message);
   }
 
-  // Fallback 3: synthetic klines from WebSocket price
+  // ─── Source 2: Yahoo Finance (for TradFi symbols) ───
+  const yahooTicker = YAHOO_TICKERS[symbol];
+  if (yahooTicker) {
+    try {
+      const url = `https://query1.finance.yahoo.com/v8/finance/chart/${yahooTicker}?interval=30m&range=5d`;
+      const res = await fetch(url, { signal: AbortSignal.timeout(10000), headers: { "User-Agent": "Mozilla/5.0" } });
+      if (!res.ok) throw new Error(`Yahoo HTTP ${res.status}`);
+      const data = await res.json() as any;
+      const result = data?.chart?.result?.[0];
+      const closes = (result?.indicators?.quote?.[0]?.close ?? []).filter((c: any) => c != null);
+      const volumes = (result?.indicators?.quote?.[0]?.volume ?? []).filter((v: any) => v != null);
+      if (closes.length > 0) {
+        const klineResult = { closes: closes.slice(-limit), volumes: volumes.slice(-limit) };
+        klineCache.set(cacheKey, { data: klineResult, expiresAt: Date.now() + CACHE_TTL_MS });
+        return klineResult;
+      }
+    } catch (e) {
+      console.warn(`[Engine] Yahoo klines ${symbol}:`, (e as Error).message);
+    }
+  }
+
+  // ─── Source 3: CoinGecko (LAST RESORT — has aggressive rate limits) ───
+  const geckoId = COINGECKO_IDS[symbol];
+  if (geckoId) {
+    const days = limit <= 48 ? 1 : limit <= 96 ? 2 : 7;
+    const url = `https://api.coingecko.com/api/v3/coins/${geckoId}/ohlc?vs_currency=usd&days=${days}`;
+    try {
+      const res = await fetch(url, { signal: AbortSignal.timeout(10000) });
+      if (res.ok) {
+        const data = await res.json() as number[][];
+        const sliced = data.slice(-limit);
+        const result: KlineData = {
+          closes: sliced.map(k => k[4]),
+          volumes: sliced.map(() => 1000),
+        };
+        klineCache.set(cacheKey, { data: result, expiresAt: Date.now() + CACHE_TTL_MS });
+        return result;
+      }
+      if (res.status === 429) {
+        console.warn(`[Engine] CoinGecko 429 for ${symbol} — using Bybit/synthetic fallback`);
+      }
+    } catch (e) {
+      console.warn(`[Engine] CoinGecko klines ${symbol}:`, (e as Error).message);
+    }
+  }
+
+  // ─── Source 4: Synthetic klines from WebSocket price ───
   const cachedPrice = livePrices.get(symbol);
   if (cachedPrice) {
     const base = cachedPrice.lastPrice;
@@ -503,10 +499,8 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
   // ─── Trading Hours Filter (configurable, default: always trade crypto) ───
   // Crypto markets are 24/7 but volume is highest during NY hours
   // Only apply strict hours filter for non-crypto (commodities)
-  if (category === "linear" && !isHighVolumeHours()) {
-    console.log(`[Grid] ${symbol} SKIP — outside high-volume hours (linear market)`);
-    return;
-  }
+  // Crypto markets are 24/7 — removed strict hours filter
+  // Grid operates at all hours, protection system handles risk
 
   // ─── Volume Filter ───
   if (!hasAdequateVolume(symbol)) {
@@ -1024,11 +1018,8 @@ async function runFuturesLongOnly(engine: EngineState, symbol: string) {
   engine.lastPrices[symbol] = price;
   livePrices.set(symbol, ticker);
 
-  // Only trade during high volume hours for futures
-  if (!isHighVolumeHours()) {
-    console.log(`[Futures] ${symbol} SKIP — outside trading hours`);
-    return;
-  }
+  // Crypto futures trade 24/7 — no hours restriction
+  // Note: volume is naturally lower outside NY hours but we still trade
 
   // Volume filter
   if (!hasAdequateVolume(symbol)) return;

@@ -42,18 +42,38 @@ export const appRouter = router({
     start: protectedProcedure.mutation(async ({ ctx }) => {
       // Auto-seed default strategies if none exist
       const existingStrats = await db.getUserStrategies(ctx.user.id);
-      // Backfill: ensure XAUUSDT has both scalping and futures (fix for users affected by old upsert bug)
+      // Backfill: ensure ALL strategies exist for existing users (adds any missing ones)
       if (existingStrats.length > 0) {
-        const hasXauScalping = existingStrats.some(s => s.symbol === "XAUUSDT" && s.strategyType === "scalping");
-        const hasXauFutures = existingStrats.some(s => s.symbol === "XAUUSDT" && s.strategyType === "futures");
-        if (!hasXauScalping) {
-          await db.upsertStrategy(ctx.user.id, { symbol: "XAUUSDT", strategyType: "scalping", market: "tradfi", category: "linear", allocationPct: 20, enabled: true });
-          console.log(`[Bot] Backfilled XAUUSDT scalping for user ${ctx.user.id}`);
+        const has = (sym: string, type: string) => existingStrats.some(s => s.symbol === sym && s.strategyType === type);
+        const defaultStrats: Array<{ symbol: string; strategyType: string; market: string; category: string; allocationPct: number; enabled: boolean; config?: any }> = [
+          // Grid strategies
+          { symbol: "BTCUSDT", strategyType: "grid", market: "crypto", category: "spot", allocationPct: 30, enabled: true },
+          { symbol: "ETHUSDT", strategyType: "grid", market: "crypto", category: "spot", allocationPct: 30, enabled: true },
+          { symbol: "SOLUSDT", strategyType: "grid", market: "crypto", category: "spot", allocationPct: 20, enabled: true },
+          { symbol: "XRPUSDT", strategyType: "grid", market: "crypto", category: "spot", allocationPct: 15, enabled: true },
+          { symbol: "DOGEUSDT", strategyType: "grid", market: "crypto", category: "spot", allocationPct: 10, enabled: true },
+          { symbol: "ADAUSDT", strategyType: "grid", market: "crypto", category: "spot", allocationPct: 10, enabled: true },
+          { symbol: "AVAXUSDT", strategyType: "grid", market: "crypto", category: "spot", allocationPct: 10, enabled: true },
+          { symbol: "LINKUSDT", strategyType: "grid", market: "crypto", category: "spot", allocationPct: 10, enabled: true },
+          { symbol: "ARBUSDT", strategyType: "grid", market: "crypto", category: "spot", allocationPct: 10, enabled: true },
+          { symbol: "SUIUSDT", strategyType: "grid", market: "crypto", category: "spot", allocationPct: 10, enabled: true },
+          // Scalping
+          { symbol: "XAUUSDT", strategyType: "scalping", market: "tradfi", category: "linear", allocationPct: 20, enabled: true },
+          // Futures
+          { symbol: "BTCUSDT", strategyType: "futures", market: "crypto", category: "linear", allocationPct: 20, enabled: true, config: { leverage: 2, takeProfitPct: 1.0 } },
+          { symbol: "ETHUSDT", strategyType: "futures", market: "crypto", category: "linear", allocationPct: 20, enabled: true, config: { leverage: 2, takeProfitPct: 1.0 } },
+          { symbol: "SOLUSDT", strategyType: "futures", market: "crypto", category: "linear", allocationPct: 15, enabled: true, config: { leverage: 2, takeProfitPct: 1.0 } },
+          { symbol: "XAUUSDT", strategyType: "futures", market: "tradfi", category: "linear", allocationPct: 15, enabled: true, config: { leverage: 2, takeProfitPct: 1.0 } },
+        ];
+        let backfilled = 0;
+        for (const strat of defaultStrats) {
+          if (!has(strat.symbol, strat.strategyType)) {
+            await db.upsertStrategy(ctx.user.id, strat as any);
+            backfilled++;
+            console.log(`[Bot] Backfilled ${strat.symbol} ${strat.strategyType} for user ${ctx.user.id}`);
+          }
         }
-        if (!hasXauFutures) {
-          await db.upsertStrategy(ctx.user.id, { symbol: "XAUUSDT", strategyType: "futures", market: "tradfi", category: "linear", allocationPct: 15, enabled: true, config: { leverage: 2, takeProfitPct: 1.0 } } as any);
-          console.log(`[Bot] Backfilled XAUUSDT futures for user ${ctx.user.id}`);
-        }
+        if (backfilled > 0) console.log(`[Bot] Backfilled ${backfilled} missing strategies for user ${ctx.user.id}`);
       }
       if (existingStrats.length === 0) {
         await db.upsertStrategy(ctx.user.id, { symbol: "BTCUSDT", strategyType: "grid", market: "crypto", category: "spot", allocationPct: 30, enabled: true });

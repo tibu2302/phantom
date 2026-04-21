@@ -207,3 +207,11 @@
 - [x] Agregar controles UI para stopLossPct, trailingStopPct, trailingActivationPct, maxOpenPositions en Estrategias
 - [x] Mostrar PnL no realizado y posiciones abiertas en vista desktop y mobile del dashboard
 - [x] Verificación final TypeScript (npx tsc --noEmit) — 0 errores, 38 tests pasando
+
+## Bugs VPS - Abril 21 (segunda ronda)
+- [x] BUG: CoinGecko 429 masivo — Bybit API ahora es fuente principal, CoinGecko es último recurso
+- [x] BUG: Solo 4 estrategias seedeadas — backfill completo agrega TODAS las monedas que falten
+- [x] BUG: Futures XAUUSDT SKIP "outside trading hours" — filtro de horario eliminado (crypto es 24/7)
+- [x] FIX: Bybit REST API es ahora la fuente #1 para klines (sin rate limits en VPS)
+- [x] FIX: Filtro de horario removido de Futures y Grid linear
+- [x] FIX: Backfill completo: 15 estrategias default se verifican y crean si faltan al iniciar
