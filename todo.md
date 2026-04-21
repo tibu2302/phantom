@@ -127,53 +127,53 @@
 - [x] En modo KuCoin solo: BTC+ETH en KuCoin, XAUUSDT en Bybit automáticamente
 
 ## Nuevas Monedas
-- [ ] Agregar grid para SOL, XRP, DOGE, ADA, AVAX, LINK, ARB, SUI (KuCoin + Bybit)
-- [ ] Agregar scalping para XAGUSD y SPX en Bybit
-- [ ] Verificar compatibilidad de símbolos en KuCoin y Bybit
+- [x] Agregar grid para SOL, XRP, DOGE, ADA, AVAX, LINK, ARB, SUI (KuCoin + Bybit)
+- [x] Agregar scalping para XAGUSD y SPX en Bybit
+- [x] Verificar compatibilidad de símbolos en KuCoin y Bybit
 
 ## Paquete Completo de Mejoras v2
 ### Nuevas Monedas
-- [ ] Grid: SOL, XRP, DOGE, ADA, AVAX, LINK, ARB, SUI (KuCoin + Bybit Spot)
-- [ ] Scalping: XAGUSD, SPXUSDT (Bybit Linear)
+- [x] Grid: SOL, XRP, DOGE, ADA, AVAX, LINK, ARB, SUI (KuCoin + Bybit Spot)
+- [x] Scalping: XAGUSD, SPXUSDT (Bybit Linear)
 
 ### Trailing Stop en Grid
-- [ ] En vez de vender en nivel fijo, seguir el precio mientras sube y vender cuando empieza a bajar
-- [ ] Configurable: trailing distance como % del precio
+- [x] En vez de vender en nivel fijo, seguir el precio mientras sube y vender cuando empieza a bajar
+- [x] Configurable: trailing distance como % del precio
 
 ### Reinversión Automática
-- [ ] Las ganancias se reinvierten aumentando el tamaño de las órdenes
-- [ ] Capital compuesto automático
+- [x] Las ganancias se reinvierten aumentando el tamaño de las órdenes
+- [x] Capital compuesto automático
 
 ### Grid Dinámico por Volatilidad
-- [ ] Spread se ajusta automáticamente según volatilidad del mercado
-- [ ] Más spread en alta volatilidad, menos en baja
+- [x] Spread se ajusta automáticamente según volatilidad del mercado
+- [x] Más spread en alta volatilidad, menos en baja
 
 ### Scalping en BTC, ETH, SOL
-- [ ] Agregar estrategia de scalping además de grid para BTC, ETH y SOL
+- [x] Agregar estrategia de scalping además de grid para BTC, ETH y SOL
 
 ### Notificaciones por Telegram
-- [ ] Integrar bot de Telegram para notificaciones
-- [ ] Notificar cuando se completa un ciclo rentable con PnL realizado
+- [x] Integrar bot de Telegram para notificaciones
+- [x] Notificar cuando se completa un ciclo rentable con PnL realizado
 
 ### Horario de Mayor Volumen
-- [ ] Solo operar en horas de mayor volumen (9am-5pm NY)
-- [ ] Configurable on/off desde UI
+- [x] Solo operar en horas de mayor volumen (9am-5pm NY)
+- [x] Configurable on/off desde UI
 
 ### Filtro de Volumen
-- [ ] Solo operar cuando el volumen del mercado es suficientemente alto
-- [ ] Evitar slippage en mercados con poca liquidez
+- [x] Solo operar cuando el volumen del mercado es suficientemente alto
+- [x] Evitar slippage en mercados con poca liquidez
 
 ### Futuros Long-Only con Take Profit
-- [ ] Futuros perpetuos en Bybit Linear: BTC, ETH, SOL, XAU
-- [ ] Solo posiciones Long (compra), nunca Short
-- [ ] Apalancamiento bajo (2x-3x)
-- [ ] Take Profit automático, sin Stop Loss
-- [ ] Solo abrir cuando tendencia es alcista
+- [x] Futuros perpetuos en Bybit Linear: BTC, ETH, SOL, XAU
+- [x] Solo posiciones Long (compra), nunca Short
+- [x] Apalancamiento bajo (2x-3x)
+- [x] Take Profit automático, sin Stop Loss
+- [x] Solo abrir cuando tendencia es alcista
 
 ### DCA Inteligente
-- [ ] Cuando precio baja mucho, comprar más para bajar precio promedio
-- [ ] Acumular posición y esperar recuperación
+- [x] Cuando precio baja mucho, comprar más para bajar precio promedio
+- [x] Acumular posición y esperar recuperación
 
 ### Multi-Timeframe Analysis
-- [ ] Analizar 3 timeframes (1min, 15min, 1h) antes de cada orden
-- [ ] Solo operar cuando los 3 timeframes están alineados
+- [x] Analizar 3 timeframes (1min, 15min, 1h) antes de cada orden
+- [x] Solo operar cuando los 3 timeframes están alineados
