@@ -220,3 +220,11 @@
 - [x] Implementar ganancia mínima de $5 USD por operación de venta en Grid (BTC, ETH)
 - [x] No vender si la ganancia estimada es menor a $5 (trailing stop + grid level sells)
 - [x] Control configurable desde UI en Estrategias (slider $0-$50)
+
+## BUG CRÍTICO: Bot vendiendo con pérdida - Abril 21
+- [x] BUG: Ventas Grid con PnL negativo — grid level sells no verificaban pérdida, ahora NUNCA venden con pérdida
+- [x] BUG: Filtro minProfitUsd arreglado — ahora bloquea ventas con pnl < 0 Y ventas con pnl < $5
+- [x] BUG: Time-Stop demasiado agresivo — default cambiado de 4h a 24h, solo cierra con pérdida pequeña después de 48h
+- [x] FIX: Grid sells bloqueados si pnl < 0 (mantiene posición abierta esperando recuperación)
+- [x] FIX: No-paired-buy sells también bloqueados si pnl < minProfitUsd
+- [x] 38 tests pasando, 0 errores TypeScript

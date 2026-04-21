@@ -595,7 +595,7 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
   const stopLossPct = (stratConfig.stopLossPct ?? 1.5) / 100; // Default 1.5% stop-loss
   const trailingPct = (stratConfig.trailingStopPct ?? 0.3) / 100; // 0.3% trailing distance
   const trailingActivation = (stratConfig.trailingActivationPct ?? 0.3) / 100; // Activate trailing after 0.3% profit
-  const maxHoldTimeMs = (stratConfig.maxHoldHours ?? 4) * 60 * 60 * 1000; // Default 4 hours max hold
+  const maxHoldTimeMs = (stratConfig.maxHoldHours ?? 24) * 60 * 60 * 1000; // Default 24 hours max hold
   const maxOpenPositions = stratConfig.maxOpenPositions ?? 5; // Max open positions per symbol
   const minProfitUsd = stratConfig.minProfitUsd ?? 5; // Minimum $5 USD profit to sell (trailing/normal)
   const positionsToSell: { pos: OpenBuyPosition; reason: string }[] = [];
@@ -613,11 +613,25 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
       continue;
     }
 
-    // 2. TIME STOP: Close if held too long without significant profit
-    if (holdTimeMs > maxHoldTimeMs && profitPct < 0.005) {
-      positionsToSell.push({ pos, reason: `TIME-STOP (held ${(holdTimeMs / 3600000).toFixed(1)}h, profit ${(profitPct * 100).toFixed(2)}%)` });
-      openPositions.splice(i, 1);
-      continue;
+    // 2. TIME STOP: Only close if held VERY long AND losing money
+    // First threshold: if held > maxHoldTime and price is below buy price, just log warning
+    // Only force-sell if held > 2x maxHoldTime AND still losing
+    const doubleMaxHold = maxHoldTimeMs * 2;
+    if (holdTimeMs > doubleMaxHold && profitPct < -0.002) {
+      // Only time-stop if the loss is small enough (< stop-loss threshold) — otherwise let stop-loss handle it
+      const estGrossPnl = (price - pos.buyPrice) * parseFloat(pos.qty);
+      const estNetPnl = calcNetPnl(estGrossPnl, pos.tradeAmount, category, true, engine.exchange);
+      if (Math.abs(estNetPnl) < minProfitUsd) {
+        // Loss is tiny, close to free up capital
+        positionsToSell.push({ pos, reason: `TIME-STOP (held ${(holdTimeMs / 3600000).toFixed(1)}h, loss $${estNetPnl.toFixed(2)})` });
+        openPositions.splice(i, 1);
+        continue;
+      } else {
+        console.log(`[Grid] ${symbol} TIME-WARNING — held ${(holdTimeMs / 3600000).toFixed(1)}h, loss $${estNetPnl.toFixed(2)} too large for time-stop, waiting for recovery`);
+      }
+    } else if (holdTimeMs > maxHoldTimeMs && profitPct >= 0) {
+      // Held long but in profit — let trailing stop handle it, don't force close
+      console.log(`[Grid] ${symbol} held ${(holdTimeMs / 3600000).toFixed(1)}h but in profit ${(profitPct * 100).toFixed(2)}%, trailing stop will handle exit`);
     }
 
     // 3. TRAILING STOP: Lock in profits (only if estimated profit >= minProfitUsd)
@@ -795,10 +809,16 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
             const sellQty = parseFloat(qty);
             const grossPnl = (price - pairedBuy.buyPrice) * sellQty;
             pnl = calcNetPnl(grossPnl, pairedBuy.tradeAmount, category, true, engine.exchange);
-            // Minimum profit check: don't sell if profit < minProfitUsd (except stop-loss)
-            if (pnl > 0 && pnl < minProfitUsd) {
+            // NEVER sell at a loss from grid levels — only protection system (stop-loss) can sell at a loss
+            if (pnl < 0) {
+              console.log(`[Grid] HOLD ${symbol} — grid sell would lose $${pnl.toFixed(2)}, keeping position open`);
+              level.filled = false;
+              continue;
+            }
+            // Minimum profit check: don't sell if profit < minProfitUsd
+            if (pnl < minProfitUsd) {
               console.log(`[Grid] HOLD ${symbol} — grid sell profit $${pnl.toFixed(2)} < min $${minProfitUsd}, waiting for better price`);
-              level.filled = false; // unmark so it can trigger again
+              level.filled = false;
               continue;
             }
             openPos.shift(); // now actually remove from queue
@@ -813,8 +833,15 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
               );
             }
           } else {
+            // No paired buy — estimate PnL from grid level price
             const grossPnl = (price - level.price) * parseFloat(qty);
             pnl = calcNetPnl(grossPnl, tradeAmount, category, true, engine.exchange);
+            // Block sell if it would result in a loss or profit < minimum
+            if (pnl < minProfitUsd) {
+              console.log(`[Grid] HOLD ${symbol} — no-paired sell profit $${pnl.toFixed(2)} < min $${minProfitUsd}, skipping`);
+              level.filled = false;
+              continue;
+            }
             console.log(`[Grid] SELL ${symbol} @ ${price.toFixed(2)} (no paired buy) net=${pnl.toFixed(2)} order=${orderId}`);
           }
         }
