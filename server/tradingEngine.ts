@@ -453,8 +453,16 @@ async function placeOrder(engine: EngineState, symbol: string, side: "Buy" | "Se
         type: "market",
         size: qty,
       });
-      console.log(`[Engine] KuCoin order response:`, JSON.stringify(res?.data ?? res));
-      return res?.data?.orderId ?? null;
+      const kcOrderId = res?.data?.orderId;
+      if (kcOrderId) {
+        console.log(`[Engine] KuCoin order OK: ${side} ${symbol} qty=${qty} id=${kcOrderId}`);
+        return kcOrderId;
+      } else {
+        // KuCoin returned success HTTP but no orderId (insufficient balance, min size, etc.)
+        const errMsg = res?.msg || res?.code || JSON.stringify(res?.data ?? res);
+        console.log(`[Engine] KuCoin order rejected ${side} ${symbol}: ${errMsg}`);
+        return null;
+      }
     } else {
       const res = await engine.client.submitOrder({ category, symbol, side, orderType: "Market", qty });
       return res.result?.orderId ?? null;
@@ -972,14 +980,20 @@ async function runScalpingStrategy(engine: EngineState, symbol: string, category
   let signal: "Buy" | "Sell" | null = null;
   const reasons: string[] = [];
 
-  // Buy signals (only if MTF not bearish)
+  // Buy signals — allow in bearish market if conditions are extreme (oversold)
   if (mtf.direction !== "bearish") {
+    // Normal conditions: standard thresholds
     if (rsi < 35) { reasons.push(`RSI oversold (${rsi.toFixed(1)})`); signal = "Buy"; }
     if (price <= bb.lower * 1.01) { reasons.push("Price near lower BB"); signal = "Buy"; }
     if (ema9Current > ema21Current && ema9[ema9.length - 2] <= ema21[ema21.length - 2]) {
       reasons.push("EMA 9/21 bullish crossover"); signal = "Buy";
     }
     if (macd.histogram > 0 && macd.macd > macd.signal) { reasons.push("MACD bullish"); if (!signal) signal = "Buy"; }
+  } else {
+    // Bearish market: only buy on extreme oversold conditions (counter-trend scalp)
+    if (rsi < 25) { reasons.push(`RSI extreme oversold (${rsi.toFixed(1)})`); signal = "Buy"; }
+    if (price <= bb.lower * 0.995) { reasons.push("Price below lower BB (extreme)"); signal = "Buy"; }
+    if (macd.histogram > 0 && macd.macd > macd.signal) { reasons.push("MACD reversal in bearish"); signal = "Buy"; }
   }
 
   // Sell signals
@@ -994,7 +1008,7 @@ async function runScalpingStrategy(engine: EngineState, symbol: string, category
     else if (macd.histogram < 0) { signal = "Sell"; reasons.push("MACD bearish (sim)"); }
   }
 
-  const minSignals = engine.simulationMode ? 1 : 2;
+  const minSignals = 1; // Only need 1 strong signal to scalp
   console.log(`[Scalp] ${symbol} analysis: price=${price.toFixed(2)} rsi=${rsi.toFixed(1)} macd=${macd.histogram.toFixed(4)} signal=${signal ?? 'none'} reasons=${reasons.length} minReq=${minSignals} mtf=${mtf.direction}`);
   if (signal && reasons.length >= minSignals) {
     const strats = await db.getUserStrategies(engine.userId);
@@ -1148,15 +1162,26 @@ async function runFuturesLongOnly(engine: EngineState, symbol: string) {
   // ─── Open new Long position if conditions are right ───
   const maxPositions = 2;
   if (positions.length >= maxPositions) return;
-  if (mtf.direction !== "bullish" || !mtf.aligned) return;
 
-  // Additional confirmation: RSI not overbought, MACD bullish
   const klines = await fetchKlines(engine.client, symbol, "15", 50, "linear");
   if (klines.closes.length < 26) return;
   const rsi = calculateRSI(klines.closes);
   const macd = calculateMACD(klines.closes);
-  if (rsi > 65) return; // don't enter overbought
-  if (macd.histogram <= 0) return; // need bullish MACD
+
+  // Entry conditions based on market direction:
+  // Bullish: standard entry (RSI < 65, MACD > 0)
+  // Neutral: cautious entry (RSI < 45, MACD > 0)
+  // Bearish: only extreme oversold counter-trend (RSI < 25)
+  let canEnter = false;
+  if (mtf.direction === "bullish") {
+    canEnter = rsi < 65 && macd.histogram > 0;
+  } else if (mtf.direction === "mixed") {
+    canEnter = rsi < 45 && macd.histogram > 0;
+  } else {
+    // Bearish: only enter on extreme oversold for a quick bounce trade
+    canEnter = rsi < 25;
+  }
+  if (!canEnter) return;
 
   const futStrats2 = await db.getUserStrategies(engine.userId);
   const strat = futStrats2.find(s => s.symbol === symbol && s.strategyType === "futures");

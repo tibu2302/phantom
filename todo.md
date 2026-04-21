@@ -228,3 +228,11 @@
 - [x] FIX: Grid sells bloqueados si pnl < 0 (mantiene posición abierta esperando recuperación)
 - [x] FIX: No-paired-buy sells también bloqueados si pnl < minProfitUsd
 - [x] 38 tests pasando, 0 errores TypeScript
+
+## Bugs: Órdenes fallidas KuCoin + Bybit sin operaciones visibles - Abril 21
+- [x] BUG: "Order failed Sell" en KuCoin — mejorado manejo de errores, ahora muestra razón real del rechazo
+- [x] BUG: Bybit sin operaciones — scalping ahora permite compras en mercado bearish con RSI < 25 (extreme oversold)
+- [x] FIX: KuCoin order handling mejorado: detecta orderId vs rechazo con mensaje claro
+- [x] FIX: Scalping minSignals reducido a 1 (antes 2 en live), permite operar más frecuentemente
+- [x] FIX: Futures ahora entra en mercado neutral (RSI<45+MACD>0) y bearish extremo (RSI<25)
+- [x] 38 tests pasando, 0 errores TypeScript
