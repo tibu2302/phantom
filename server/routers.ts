@@ -38,9 +38,21 @@ export const appRouter = router({
       // Auto-seed default strategies if none exist
       const existingStrats = await db.getUserStrategies(ctx.user.id);
       if (existingStrats.length === 0) {
-        await db.upsertStrategy(ctx.user.id, { symbol: "BTCUSDT", strategyType: "grid", market: "crypto", category: "spot", allocationPct: 40, enabled: true });
+        await db.upsertStrategy(ctx.user.id, { symbol: "BTCUSDT", strategyType: "grid", market: "crypto", category: "spot", allocationPct: 30, enabled: true });
         await db.upsertStrategy(ctx.user.id, { symbol: "ETHUSDT", strategyType: "grid", market: "crypto", category: "spot", allocationPct: 30, enabled: true });
-        await db.upsertStrategy(ctx.user.id, { symbol: "XAUUSDT", strategyType: "scalping", market: "tradfi", category: "linear", allocationPct: 30, enabled: true });
+        await db.upsertStrategy(ctx.user.id, { symbol: "SOLUSDT", strategyType: "grid", market: "crypto", category: "spot", allocationPct: 20, enabled: true });
+        await db.upsertStrategy(ctx.user.id, { symbol: "XRPUSDT", strategyType: "grid", market: "crypto", category: "spot", allocationPct: 15, enabled: true });
+        await db.upsertStrategy(ctx.user.id, { symbol: "DOGEUSDT", strategyType: "grid", market: "crypto", category: "spot", allocationPct: 10, enabled: true });
+        await db.upsertStrategy(ctx.user.id, { symbol: "ADAUSDT", strategyType: "grid", market: "crypto", category: "spot", allocationPct: 10, enabled: true });
+        await db.upsertStrategy(ctx.user.id, { symbol: "AVAXUSDT", strategyType: "grid", market: "crypto", category: "spot", allocationPct: 10, enabled: true });
+        await db.upsertStrategy(ctx.user.id, { symbol: "LINKUSDT", strategyType: "grid", market: "crypto", category: "spot", allocationPct: 10, enabled: true });
+        await db.upsertStrategy(ctx.user.id, { symbol: "ARBUSDT", strategyType: "grid", market: "crypto", category: "spot", allocationPct: 10, enabled: true });
+        await db.upsertStrategy(ctx.user.id, { symbol: "SUIUSDT", strategyType: "grid", market: "crypto", category: "spot", allocationPct: 10, enabled: true });
+        await db.upsertStrategy(ctx.user.id, { symbol: "XAUUSDT", strategyType: "scalping", market: "tradfi", category: "linear", allocationPct: 20, enabled: true });
+        await db.upsertStrategy(ctx.user.id, { symbol: "BTCUSDT", strategyType: "futures", market: "crypto", category: "linear", allocationPct: 20, enabled: true, config: { leverage: 2, takeProfitPct: 1.0 } } as any);
+        await db.upsertStrategy(ctx.user.id, { symbol: "ETHUSDT", strategyType: "futures", market: "crypto", category: "linear", allocationPct: 20, enabled: true, config: { leverage: 2, takeProfitPct: 1.0 } } as any);
+        await db.upsertStrategy(ctx.user.id, { symbol: "SOLUSDT", strategyType: "futures", market: "crypto", category: "linear", allocationPct: 15, enabled: true, config: { leverage: 2, takeProfitPct: 1.0 } } as any);
+        await db.upsertStrategy(ctx.user.id, { symbol: "XAUUSDT", strategyType: "futures", market: "tradfi", category: "linear", allocationPct: 15, enabled: true, config: { leverage: 2, takeProfitPct: 1.0 } } as any);
         console.log(`[Bot] Seeded default strategies for user ${ctx.user.id}`);
       }
       const result = await startEngine(ctx.user.id);
@@ -182,6 +194,9 @@ export const appRouter = router({
         gridSpreadPct: z.number().min(0.1).max(20).optional(),
         scalpingThresholdPct: z.number().min(0.1).max(5).optional(),
         allocationPct: z.number().min(1).max(100).optional(),
+        leverage: z.number().min(1).max(10).optional(),
+        takeProfitPct: z.number().min(0.1).max(20).optional(),
+        stopLossPct: z.number().min(0.1).max(10).optional(),
       }),
     })).mutation(async ({ input }) => {
       const dbConn = await db.getDb();
@@ -250,6 +265,46 @@ export const appRouter = router({
     }),
     unreadCount: protectedProcedure.query(async ({ ctx }) => {
       return db.getUnreadOpportunityCount(ctx.user.id);
+    }),
+  }),
+
+  telegram: router({
+    getConfig: protectedProcedure.query(async ({ ctx }) => {
+      const key = await db.getApiKey(ctx.user.id, "telegram" as any);
+      if (!key) return null;
+      return { botToken: key.apiKey.slice(0, 6) + "..." + key.apiKey.slice(-4), chatId: key.apiSecret };
+    }),
+    saveConfig: protectedProcedure.input(z.object({
+      botToken: z.string().min(1),
+      chatId: z.string().min(1),
+    })).mutation(async ({ ctx, input }) => {
+      await db.saveApiKey(ctx.user.id, {
+        apiKey: input.botToken,
+        apiSecret: input.chatId,
+        exchange: "telegram" as any,
+        label: "Telegram Notifications",
+      });
+      return { success: true };
+    }),
+    testNotification: protectedProcedure.mutation(async ({ ctx }) => {
+      const key = await db.getApiKey(ctx.user.id, "telegram" as any);
+      if (!key) return { success: false, error: "No Telegram config" };
+      try {
+        const url = `https://api.telegram.org/bot${key.apiKey}/sendMessage`;
+        const res = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            chat_id: key.apiSecret,
+            text: "\u2705 PHANTOM Bot conectado correctamente!",
+            parse_mode: "HTML",
+          }),
+        });
+        const data = await res.json() as any;
+        return { success: data.ok ?? false };
+      } catch (e: any) {
+        return { success: false, error: e.message };
+      }
     }),
   }),
 

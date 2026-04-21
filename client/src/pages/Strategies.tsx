@@ -3,7 +3,7 @@ import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
 import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
-import { Zap, Grid3X3, LineChart, Settings2, ChevronDown, ChevronUp } from "lucide-react";
+import { Zap, Grid3X3, LineChart, Settings2, ChevronDown, ChevronUp, TrendingUp } from "lucide-react";
 import { toast } from "sonner";
 import { useEffect, useRef, useState } from "react";
 import { createChart, ColorType, CandlestickSeries } from "lightweight-charts";
@@ -96,6 +96,8 @@ function StrategyConfig({ strategy, onClose }: { strategy: any; onClose: () => v
   const [gridSpread, setGridSpread] = useState(strategy.config?.gridSpreadPct ?? 0.3);
   const [scalpThreshold, setScalpThreshold] = useState(strategy.config?.scalpingThresholdPct ?? 0.5);
   const [allocation, setAllocation] = useState(strategy.allocationPct ?? 30);
+  const [leverage, setLeverage] = useState(strategy.config?.leverage ?? 2);
+  const [takeProfit, setTakeProfit] = useState(strategy.config?.takeProfitPct ?? 1.0);
 
   const updateConfig = trpc.strategies.updateConfig.useMutation({
     onSuccess: () => {
@@ -107,6 +109,7 @@ function StrategyConfig({ strategy, onClose }: { strategy: any; onClose: () => v
   });
 
   const isGrid = strategy.strategyType === "grid";
+  const isFutures = strategy.strategyType === "futures";
 
   return (
     <div className="border-t border-white/10 pt-4 space-y-4">
@@ -150,6 +153,34 @@ function StrategyConfig({ strategy, onClose }: { strategy: any; onClose: () => v
               />
             </div>
           </>
+        ) : isFutures ? (
+          <>
+            <div>
+              <div className="flex justify-between text-xs mb-1">
+                <span className="text-muted-foreground">Apalancamiento</span>
+                <span className="font-bold text-primary">{leverage}x</span>
+              </div>
+              <Slider
+                value={[leverage]}
+                onValueChange={([v]) => setLeverage(v)}
+                min={1} max={5} step={1}
+                className="w-full"
+              />
+              <p className="text-[10px] text-muted-foreground mt-1">Bajo apalancamiento = menor riesgo de liquidaci\u00f3n</p>
+            </div>
+            <div>
+              <div className="flex justify-between text-xs mb-1">
+                <span className="text-muted-foreground">Take Profit</span>
+                <span className="font-bold text-primary">{takeProfit}%</span>
+              </div>
+              <Slider
+                value={[takeProfit]}
+                onValueChange={([v]) => setTakeProfit(v)}
+                min={0.3} max={5} step={0.1}
+                className="w-full"
+              />
+            </div>
+          </>
         ) : (
           <div>
             <div className="flex justify-between text-xs mb-1">
@@ -174,7 +205,9 @@ function StrategyConfig({ strategy, onClose }: { strategy: any; onClose: () => v
             config: {
               gridLevels: isGrid ? gridLevels : undefined,
               gridSpreadPct: isGrid ? gridSpread : undefined,
-              scalpingThresholdPct: !isGrid ? scalpThreshold : undefined,
+              scalpingThresholdPct: (!isGrid && !isFutures) ? scalpThreshold : undefined,
+              leverage: isFutures ? leverage : undefined,
+              takeProfitPct: isFutures ? takeProfit : undefined,
               allocationPct: allocation,
             },
           })}
@@ -211,7 +244,7 @@ export default function Strategies() {
   );
 
   const marketLabel = (m: string | null) => m === "tradfi" ? "TradFi" : "Crypto";
-  const stratIcon = (s: string | null) => s === "grid" ? Grid3X3 : LineChart;
+  const stratIcon = (s: string | null) => s === "grid" ? Grid3X3 : s === "futures" ? TrendingUp : LineChart;
 
   return (
     <div className="space-y-4">

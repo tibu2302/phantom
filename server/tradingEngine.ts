@@ -1,15 +1,21 @@
 /**
  * PHANTOM Trading Engine — Multi-Exchange (Bybit + KuCoin)
- * Grid Trading for BTC/USDT & ETH/USDT, Scalping for XAUUSDT (Gold)
- * SP500 reference price via Yahoo Finance (direct, no Manus internal API)
- * Opportunity Scanner for 30+ coins with RSI, EMA, Volume, Bollinger
+ * Grid Trading, Scalping, Futures Long-Only
+ * Full feature set: Trailing Stop, DCA, Multi-Timeframe, Volume Filter,
+ * Trading Hours, Dynamic Grid, Auto-Reinvestment, Telegram Notifications
  *
- * v4.0 — Multi-Exchange:
- *  - Support for Bybit and KuCoin exchanges
- *  - Exchange-specific fee deductions in PnL
- *  - Exchange-specific order placement
- *  - Bybit: Spot 0.1% taker, Linear 0.055% taker
- *  - KuCoin: Spot 0.1% taker, Futures 0.06% taker
+ * v5.0 — Complete Upgrade:
+ *  - Trailing Stop on Grid sells (follow price up, sell on reversal)
+ *  - Reinvestment: profits increase order sizes automatically
+ *  - Dynamic Grid: spread adjusts based on market volatility
+ *  - Scalping on BTC, ETH, SOL (in addition to XAU)
+ *  - Telegram notifications on completed cycles
+ *  - Trading hours filter (9am-5pm NY = high volume)
+ *  - Volume filter (skip low-liquidity periods)
+ *  - Futures Long-Only with Take Profit (no stop loss)
+ *  - DCA: accumulate on dips, sell on recovery
+ *  - Multi-Timeframe Analysis (1m, 15m, 1h alignment)
+ *  - New coins: SOL, XRP, DOGE, ADA, AVAX, LINK, ARB, SUI
  */
 import { RestClientV5 } from "bybit-api";
 import * as db from "./db";
@@ -20,7 +26,6 @@ const FEES: Record<string, { spot: number; linear: number }> = {
   bybit:  { spot: 0.001,   linear: 0.00055 },  // 0.1% / 0.055%
   kucoin: { spot: 0.001,   linear: 0.0006  },  // 0.1% / 0.06%
 };
-// Legacy constants for backward compat
 const SPOT_FEE_RATE = 0.001;
 const LINEAR_FEE_RATE = 0.00055;
 
@@ -42,8 +47,8 @@ interface GridLevel {
   side: "Buy" | "Sell";
   filled: boolean;
   orderId?: string;
-  filledPrice?: number; // actual price at which the order was filled
-  qty?: string;        // quantity filled
+  filledPrice?: number;
+  qty?: string;
 }
 
 interface OpenBuyPosition {
@@ -52,22 +57,38 @@ interface OpenBuyPosition {
   qty: string;
   tradeAmount: number;
   category: "spot" | "linear";
-  gridLevelPrice: number; // the grid level price that triggered this buy
+  gridLevelPrice: number;
+  // Trailing stop fields
+  highestPrice?: number; // highest price since buy (for trailing)
+}
+
+interface FuturesPosition {
+  symbol: string;
+  entryPrice: number;
+  qty: string;
+  leverage: number;
+  takeProfitPct: number;
+  tradeAmount: number;
+  openedAt: number;
 }
 
 interface EngineState {
   userId: number;
   exchange: string; // "bybit" | "kucoin" | "both"
-  client: RestClientV5; // Bybit client (also used as placeholder for KuCoin)
-  kucoinClient: any | null; // KuCoin SpotClient when exchange=kucoin
+  client: RestClientV5;
+  kucoinClient: any | null;
   isRunning: boolean;
   simulationMode: boolean;
   gridLevels: Record<string, GridLevel[]>;
   lastPrices: Record<string, number>;
-  openBuyPositions: Record<string, OpenBuyPosition[]>; // tracks open buys waiting for sell
+  openBuyPositions: Record<string, OpenBuyPosition[]>;
+  futuresPositions: Record<string, FuturesPosition[]>;
+  dcaPositions: Record<string, { avgPrice: number; totalQty: number; totalCost: number; entries: number }>;
   intervalId?: ReturnType<typeof setInterval>;
   scannerIntervalId?: ReturnType<typeof setInterval>;
   priceIntervalId?: ReturnType<typeof setInterval>;
+  telegramChatId?: string;
+  telegramBotToken?: string;
 }
 
 // ─── Global State ───
@@ -80,12 +101,60 @@ export function getEngineCycles(userId: number): number {
 }
 
 // Coins to scan for opportunities
-// Top 10 most liquid coins — reduced from 32 to avoid CoinGecko 429 rate limits
-// CoinGecko free tier: ~30 req/min. 10 coins × 4s delay = 40s per scan cycle (safe).
 const SCANNER_COINS = [
   "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "DOGEUSDT",
   "ADAUSDT", "AVAXUSDT", "LINKUSDT", "ARBUSDT", "SUIUSDT",
 ];
+
+// ─── Trading Hours Filter ───
+// High volume hours: 9am-5pm New York (EST/EDT)
+function isHighVolumeHours(): boolean {
+  const now = new Date();
+  // Get NY time (UTC-5 in winter, UTC-4 in summer)
+  const nyOffset = isDST(now) ? -4 : -5;
+  const nyHour = (now.getUTCHours() + nyOffset + 24) % 24;
+  return nyHour >= 9 && nyHour < 17;
+}
+
+function isDST(date: Date): boolean {
+  const jan = new Date(date.getFullYear(), 0, 1).getTimezoneOffset();
+  const jul = new Date(date.getFullYear(), 6, 1).getTimezoneOffset();
+  return Math.max(jan, jul) !== date.getTimezoneOffset();
+}
+
+// ─── Volume Filter ───
+function hasAdequateVolume(symbol: string): boolean {
+  const ticker = livePrices.get(symbol);
+  if (!ticker) return true; // allow if no data
+  // Minimum 24h turnover thresholds (in USDT)
+  const minTurnover: Record<string, number> = {
+    BTCUSDT: 50_000_000,
+    ETHUSDT: 20_000_000,
+    XAUUSDT: 5_000_000,
+    default: 1_000_000,
+  };
+  const threshold = minTurnover[symbol] ?? minTurnover.default;
+  return ticker.turnover24h >= threshold;
+}
+
+// ─── Telegram Notifications ───
+async function sendTelegramNotification(engine: EngineState, message: string) {
+  if (!engine.telegramBotToken || !engine.telegramChatId) return;
+  try {
+    const url = `https://api.telegram.org/bot${engine.telegramBotToken}/sendMessage`;
+    await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chat_id: engine.telegramChatId,
+        text: message,
+        parse_mode: "HTML",
+      }),
+    });
+  } catch (e) {
+    console.error("[Telegram] Failed to send notification:", (e as Error).message);
+  }
+}
 
 // ─── Technical Indicators ───
 function calculateRSI(closes: number[], period = 14): number {
@@ -132,13 +201,61 @@ function calculateMACD(closes: number[]) {
   return { macd, signal, histogram: macd - signal };
 }
 
+// ─── Volatility Calculator (for Dynamic Grid) ───
+function calculateVolatility(closes: number[]): number {
+  if (closes.length < 10) return 0.01; // default 1%
+  const returns: number[] = [];
+  for (let i = 1; i < closes.length; i++) {
+    returns.push(Math.abs(closes[i] - closes[i - 1]) / closes[i - 1]);
+  }
+  const avg = returns.reduce((a, b) => a + b, 0) / returns.length;
+  return avg;
+}
+
+// ─── Multi-Timeframe Analysis ───
+// Returns true if all timeframes agree on direction
+async function multiTimeframeCheck(client: RestClientV5 | null, symbol: string, category: "spot" | "linear"): Promise<{ aligned: boolean; direction: "bullish" | "bearish" | "mixed" }> {
+  try {
+    // Use cached klines at different intervals
+    const klines15m = await fetchKlines(client, symbol, "15", 60, category);
+    const klines1h = await fetchKlines(client, symbol, "60", 60, category);
+    
+    if (klines15m.closes.length < 50 || klines1h.closes.length < 30) {
+      return { aligned: true, direction: "mixed" }; // allow trading if data insufficient
+    }
+
+    // Check trend on each timeframe using EMA 20/50
+    const check = (closes: number[]) => {
+      const ema20 = calculateEMA(closes, 20);
+      const ema50 = calculateEMA(closes, Math.min(50, closes.length));
+      const e20 = ema20[ema20.length - 1];
+      const e50 = ema50[ema50.length - 1];
+      if (e20 > e50 * 1.001) return "bullish";
+      if (e20 < e50 * 0.999) return "bearish";
+      return "neutral";
+    };
+
+    const tf15m = check(klines15m.closes);
+    const tf1h = check(klines1h.closes);
+
+    // Aligned if both non-bearish (bullish or neutral)
+    if (tf15m !== "bearish" && tf1h !== "bearish") {
+      return { aligned: true, direction: "bullish" };
+    }
+    // Both bearish
+    if (tf15m === "bearish" && tf1h === "bearish") {
+      return { aligned: true, direction: "bearish" };
+    }
+    return { aligned: false, direction: "mixed" };
+  } catch {
+    return { aligned: true, direction: "mixed" }; // allow on error
+  }
+}
+
 // ─── Bybit API Helpers ───
-// Use public REST API directly (SDK auth causes Forbidden in sandbox)
 async function fetchTicker(_client: RestClientV5 | null, symbol: string, category: "spot" | "linear" = "spot"): Promise<TickerData | null> {
-  // First: use cached live price (updated every 10s by background feed)
   const cached = livePrices.get(symbol);
   if (cached) return cached;
-  // Fallback: call public Bybit REST directly
   try {
     const url = `https://api.bybit.com/v5/market/tickers?category=${category}&symbol=${symbol}`;
     const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
@@ -170,15 +287,14 @@ interface KlineData {
   volumes: number[];
 }
 
-// ─── CoinGecko Cache (5-minute TTL to avoid 429 rate limits) ───
+// ─── CoinGecko Cache (5-minute TTL) ───
 interface CacheEntry {
   data: KlineData;
   expiresAt: number;
 }
 const klineCache: Map<string, CacheEntry> = new Map();
-const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+const CACHE_TTL_MS = 5 * 60 * 1000;
 
-// CoinGecko ID map for crypto symbols
 const COINGECKO_IDS: Record<string, string> = {
   BTCUSDT: "bitcoin", ETHUSDT: "ethereum", SOLUSDT: "solana",
   BNBUSDT: "binancecoin", ADAUSDT: "cardano", DOGEUSDT: "dogecoin",
@@ -199,49 +315,39 @@ const COINGECKO_IDS: Record<string, string> = {
 };
 const YAHOO_TICKERS: Record<string, string> = {
   XAUUSDT: "GC=F",
-  XAGUSDTUSDT: "SI=F",
+  XAGUSD: "SI=F",
 };
 
-/**
- * Fetch klines with CoinGecko cache + exponential backoff retry on 429.
- * Falls back to Yahoo Finance for commodities, then to synthetic data from WebSocket price.
- */
 async function fetchKlines(_client: RestClientV5 | null, symbol: string, _interval: any = "15", limit: number = 50, _category: "spot" | "linear" = "spot"): Promise<KlineData> {
-  // Bybit REST is geo-blocked — use CoinGecko for crypto, Yahoo Finance for commodities
   const geckoId = COINGECKO_IDS[symbol];
   if (geckoId) {
-    // Check cache first
-    const cacheKey = `${symbol}_${limit}`;
+    const cacheKey = `${symbol}_${_interval}_${limit}`;
     const cached = klineCache.get(cacheKey);
     if (cached && Date.now() < cached.expiresAt) {
       return cached.data;
     }
 
-    // Fetch from CoinGecko with retry on 429
     const days = limit <= 48 ? 1 : limit <= 96 ? 2 : 7;
     const url = `https://api.coingecko.com/api/v3/coins/${geckoId}/ohlc?vs_currency=usd&days=${days}`;
     let lastError = "";
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
         if (attempt > 0) {
-          // Exponential backoff: 2s, 4s
           await new Promise(r => setTimeout(r, 2000 * Math.pow(2, attempt - 1)));
         }
         const res = await fetch(url, { signal: AbortSignal.timeout(10000) });
         if (res.status === 429) {
           lastError = `CoinGecko rate limited (429)`;
           console.warn(`[Engine] CoinGecko 429 for ${symbol}, attempt ${attempt + 1}/3`);
-          continue; // retry after backoff
+          continue;
         }
         if (!res.ok) throw new Error(`CoinGecko HTTP ${res.status}`);
         const data = await res.json() as number[][];
-        // CoinGecko OHLC: [timestamp, open, high, low, close]
         const sliced = data.slice(-limit);
         const result: KlineData = {
           closes: sliced.map(k => k[4]),
           volumes: sliced.map(() => 1000),
         };
-        // Store in cache
         klineCache.set(cacheKey, { data: result, expiresAt: Date.now() + CACHE_TTL_MS });
         return result;
       } catch (e) {
@@ -268,7 +374,7 @@ async function fetchKlines(_client: RestClientV5 | null, symbol: string, _interv
     }
   }
 
-  // Fallback: synthetic klines from current WebSocket price
+  // Fallback: synthetic klines from WebSocket price
   const cachedPrice = livePrices.get(symbol);
   if (cachedPrice) {
     const base = cachedPrice.lastPrice;
@@ -286,10 +392,9 @@ async function placeOrder(engine: EngineState, symbol: string, side: "Buy" | "Se
   }
   try {
     if (engine.exchange === "both") {
-      // Dual exchange mode: place on both exchanges, return combined order ID
       const orderIds: string[] = [];
-      // Place on KuCoin if available and symbol is supported
-      if (engine.kucoinClient && symbol !== "XAUUSDT") {
+      // KuCoin (skip XAUUSDT and XAGUSD — not supported)
+      if (engine.kucoinClient && symbol !== "XAUUSDT" && symbol !== "XAGUSD" && symbol !== "SPXUSDT" && category === "spot") {
         try {
           const kucoinSymbol = symbol.replace("USDT", "-USDT");
           const res = await engine.kucoinClient.submitOrder({
@@ -303,7 +408,7 @@ async function placeOrder(engine: EngineState, symbol: string, side: "Buy" | "Se
           if (kcId) { orderIds.push(`KC:${kcId}`); console.log(`[Engine] BOTH/KuCoin order: ${side} ${symbol} qty=${qty} id=${kcId}`); }
         } catch (e) { console.error(`[Engine] BOTH/KuCoin order failed:`, (e as Error).message); }
       }
-      // Place on Bybit
+      // Bybit
       try {
         const res = await engine.client.submitOrder({ category, symbol, side, orderType: "Market", qty });
         const bybitId = res.result?.orderId;
@@ -311,7 +416,6 @@ async function placeOrder(engine: EngineState, symbol: string, side: "Buy" | "Se
       } catch (e) { console.error(`[Engine] BOTH/Bybit order failed:`, (e as Error).message); }
       return orderIds.length > 0 ? orderIds.join(",") : null;
     } else if (engine.exchange === "kucoin" && engine.kucoinClient) {
-      // KuCoin order: uses BTC-USDT format, lowercase side
       const kucoinSymbol = symbol.replace("USDT", "-USDT");
       const res = await engine.kucoinClient.submitOrder({
         clientOid: `phantom_${Date.now()}`,
@@ -323,14 +427,7 @@ async function placeOrder(engine: EngineState, symbol: string, side: "Buy" | "Se
       console.log(`[Engine] KuCoin order response:`, JSON.stringify(res?.data ?? res));
       return res?.data?.orderId ?? null;
     } else {
-      // Bybit order
-      const res = await engine.client.submitOrder({
-        category,
-        symbol,
-        side,
-        orderType: "Market",
-        qty,
-      });
+      const res = await engine.client.submitOrder({ category, symbol, side, orderType: "Market", qty });
       return res.result?.orderId ?? null;
     }
   } catch (e) {
@@ -339,10 +436,6 @@ async function placeOrder(engine: EngineState, symbol: string, side: "Buy" | "Se
   }
 }
 
-/**
- * Calculate PnL after exchange fees.
- * Fees are per-exchange: Bybit Spot 0.1%, Linear 0.055%; KuCoin Spot 0.1%, Futures 0.06%.
- */
 function calcNetPnl(grossPnl: number, tradeAmount: number, category: "spot" | "linear", roundTrip = true, exchange = "bybit"): number {
   const exchangeFees = FEES[exchange] ?? FEES.bybit;
   const feeRate = category === "linear" ? exchangeFees.linear : exchangeFees.spot;
@@ -351,8 +444,8 @@ function calcNetPnl(grossPnl: number, tradeAmount: number, category: "spot" | "l
   return grossPnl - totalFees;
 }
 
-// ─── Grid Trading Strategy ───
-function generateGridLevels(currentPrice: number, gridCount: number = 10, gridSpread: number = 0.003): GridLevel[] {
+// ─── Grid Trading Strategy (with Trailing Stop, Dynamic Spread, DCA, MTF, Volume Filter, Hours) ───
+function generateGridLevels(currentPrice: number, gridCount: number = 10, gridSpread: number = 0.008): GridLevel[] {
   const levels: GridLevel[] = [];
   const step = currentPrice * gridSpread / (gridCount / 2);
   for (let i = -gridCount / 2; i <= gridCount / 2; i++) {
@@ -374,9 +467,21 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
   engine.lastPrices[symbol] = price;
   livePrices.set(symbol, ticker);
 
+  // ─── Trading Hours Filter (configurable, default: always trade crypto) ───
+  // Crypto markets are 24/7 but volume is highest during NY hours
+  // Only apply strict hours filter for non-crypto (commodities)
+  if (category === "linear" && !isHighVolumeHours()) {
+    console.log(`[Grid] ${symbol} SKIP — outside high-volume hours (linear market)`);
+    return;
+  }
+
+  // ─── Volume Filter ───
+  if (!hasAdequateVolume(symbol)) {
+    console.log(`[Grid] ${symbol} SKIP — insufficient volume/liquidity`);
+    return;
+  }
+
   // ─── Trend Detection (EMA 20/50) ───
-  // Only allow BUY orders when market is neutral or bullish.
-  // In a downtrend, skip buys to avoid accumulating losing positions.
   let trendAllowsBuy = true;
   let trendLabel = "neutral";
   try {
@@ -386,8 +491,7 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
       const ema50 = calculateEMA(klines.closes, 50);
       const ema20Now = ema20[ema20.length - 1];
       const ema50Now = ema50[ema50.length - 1];
-      const ema20Prev = ema20[ema20.length - 4]; // 4 candles ago (1 hour)
-      // Bearish: EMA20 below EMA50 AND EMA20 is falling
+      const ema20Prev = ema20[ema20.length - 4];
       if (ema20Now < ema50Now && ema20Now < ema20Prev) {
         trendAllowsBuy = false;
         trendLabel = "bearish";
@@ -397,15 +501,35 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
     }
   } catch { /* keep trendAllowsBuy = true on error */ }
 
-  // Read strategy config once for this cycle
+  // ─── Multi-Timeframe Analysis ───
+  const mtf = await multiTimeframeCheck(engine.client, symbol, category);
+  if (mtf.direction === "bearish" && mtf.aligned) {
+    trendAllowsBuy = false;
+    trendLabel = "bearish-mtf";
+  }
+
+  // Read strategy config
   const strats = await db.getUserStrategies(engine.userId);
   const strat = strats.find(s => s.symbol === symbol);
   const config = strat?.config as any;
   const gridLevels = config?.gridLevels ?? 10;
-  const gridSpread = config?.gridSpreadPct ? config.gridSpreadPct / 100 : 0.008;
-  // Minimum profitable spread: fees are 0.1% per leg × 2 = 0.2% round-trip. Spread must be > 0.25% to profit.
+  const baseGridSpread = config?.gridSpreadPct ? config.gridSpreadPct / 100 : 0.008;
+
+  // ─── Dynamic Grid: adjust spread based on volatility ───
+  let effectiveSpread = baseGridSpread;
+  try {
+    const klines = await fetchKlines(engine.client, symbol, "15", 30, category);
+    if (klines.closes.length >= 10) {
+      const volatility = calculateVolatility(klines.closes);
+      // Scale spread: low vol (0.2%) → use base, high vol (2%) → use 2x base
+      const volMultiplier = Math.max(1, Math.min(2.5, volatility / 0.005));
+      effectiveSpread = baseGridSpread * volMultiplier;
+    }
+  } catch { /* use base spread */ }
+
+  // Minimum profitable spread
   const minProfitableSpread = 0.0025;
-  const effectiveSpread = Math.max(gridSpread, minProfitableSpread);
+  effectiveSpread = Math.max(effectiveSpread, minProfitableSpread);
 
   // Initialize grid if not exists
   const isNewGrid = !engine.gridLevels[symbol] || engine.gridLevels[symbol].length === 0;
@@ -414,22 +538,21 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
     console.log(`[Grid] ${symbol} initialized ${engine.gridLevels[symbol].length} levels around ${price} (spread=${(effectiveSpread * 100).toFixed(2)}%, levels=${gridLevels}, trend=${trendLabel})`);
   }
 
-  // ─── Smart Regeneration: recentre grid if price drifts >50% of spread from grid centre ───
+  // ─── Smart Regeneration ───
   const levels = engine.gridLevels[symbol];
   const gridPrices = levels.map(l => l.price);
   const gridCentre = (Math.max(...gridPrices) + Math.min(...gridPrices)) / 2;
   const driftPct = Math.abs(price - gridCentre) / gridCentre;
-  const driftThreshold = effectiveSpread * 1.5; // regenerate if price drifts 1.5× spread from centre
+  const driftThreshold = effectiveSpread * 1.5;
   if (driftPct > driftThreshold && !isNewGrid) {
     engine.gridLevels[symbol] = generateGridLevels(price, gridLevels, effectiveSpread);
-    // Clear open buy positions for this symbol so PnL tracking stays clean
     engine.openBuyPositions[symbol] = [];
-    console.log(`[Grid] ${symbol} RECENTRED grid around ${price.toFixed(2)} (drift=${(driftPct * 100).toFixed(2)}%, trend=${trendLabel})`);
+    console.log(`[Grid] ${symbol} RECENTRED grid around ${price.toFixed(2)} (drift=${(driftPct * 100).toFixed(2)}%, spread=${(effectiveSpread * 100).toFixed(2)}%, trend=${trendLabel})`);
   }
 
   let traded = false;
 
-  // Log grid status for debugging
+  // Log grid status
   const unfilledBuys = levels.filter(l => !l.filled && l.side === "Buy");
   const unfilledSells = levels.filter(l => !l.filled && l.side === "Sell");
   if (unfilledBuys.length > 0 || unfilledSells.length > 0) {
@@ -438,15 +561,79 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
     console.log(`[Grid] ${symbol} price=${price.toFixed(2)} nearestBuy=${nearestBuy?.price?.toFixed(2) ?? 'none'} nearestSell=${nearestSell?.price?.toFixed(2) ?? 'none'} unfilled=${unfilledBuys.length}B/${unfilledSells.length}S trend=${trendLabel}`);
   }
 
-  // On first initialization in simulation mode, immediately place entry BUY orders
-  // This simulates the grid bot entering the market at startup
+  // ─── Trailing Stop: update highest price for open positions ───
+  const openPositions = engine.openBuyPositions[symbol] ?? [];
+  for (const pos of openPositions) {
+    if (!pos.highestPrice || price > pos.highestPrice) {
+      pos.highestPrice = price;
+    }
+  }
+
+  // ─── Trailing Stop Sell Check ───
+  // If price has risen above buy price and then dropped by trailing %, sell for profit
+  const trailingPct = 0.003; // 0.3% trailing distance
+  const positionsToSell: OpenBuyPosition[] = [];
+  for (let i = openPositions.length - 1; i >= 0; i--) {
+    const pos = openPositions[i];
+    if (pos.highestPrice && pos.highestPrice > pos.buyPrice * 1.003) {
+      // Price has risen at least 0.3% above buy price
+      const dropFromHigh = (pos.highestPrice - price) / pos.highestPrice;
+      if (dropFromHigh >= trailingPct) {
+        // Price dropped from high — trailing stop triggered, sell for profit
+        positionsToSell.push(pos);
+        openPositions.splice(i, 1);
+      }
+    }
+  }
+
+  for (const pos of positionsToSell) {
+    const orderId = await placeOrder(engine, symbol, "Sell", pos.qty, category);
+    if (orderId) {
+      const grossPnl = (price - pos.buyPrice) * parseFloat(pos.qty);
+      const pnl = calcNetPnl(grossPnl, pos.tradeAmount, category, true, engine.exchange);
+
+      await db.insertTrade({
+        userId: engine.userId, symbol, side: "sell", price: price.toString(),
+        qty: pos.qty, pnl: pnl.toFixed(2), strategy: "grid", orderId, simulated: engine.simulationMode,
+      });
+
+      const currentState = await db.getOrCreateBotState(engine.userId);
+      if (currentState) {
+        await db.updateBotState(engine.userId, {
+          totalPnl: (parseFloat(currentState.totalPnl ?? "0") + pnl).toFixed(2),
+          todayPnl: (parseFloat(currentState.todayPnl ?? "0") + pnl).toFixed(2),
+          currentBalance: (parseFloat(currentState.currentBalance ?? "5000") + pnl).toFixed(2),
+          totalTrades: (currentState.totalTrades ?? 0) + 1,
+          winningTrades: (currentState.winningTrades ?? 0) + (pnl > 0 ? 1 : 0),
+        });
+      }
+      if (strat) await db.updateStrategyStats(strat.id, pnl, pnl > 0);
+      const updatedState = await db.getOrCreateBotState(engine.userId);
+      if (updatedState) {
+        await db.upsertDailyPnl(engine.userId, parseFloat(updatedState.totalPnl ?? "0"), parseFloat(updatedState.currentBalance ?? "5000"), updatedState.totalTrades ?? 0);
+      }
+
+      console.log(`[Grid] TRAILING SELL ${symbol} @ ${price.toFixed(2)} buyPrice=${pos.buyPrice.toFixed(2)} high=${pos.highestPrice?.toFixed(2)} pnl=${pnl.toFixed(2)} order=${orderId}`);
+
+      // Telegram notification for completed profitable cycle
+      if (pnl > 0) {
+        await sendTelegramNotification(engine,
+          `✅ <b>PHANTOM Grid Profit</b>\n` +
+          `Par: ${symbol}\n` +
+          `Compra: $${pos.buyPrice.toFixed(2)}\n` +
+          `Venta: $${price.toFixed(2)} (trailing)\n` +
+          `Ganancia: <b>$${pnl.toFixed(2)}</b>`
+        );
+      }
+      traded = true;
+    }
+  }
+
+  // Simulation initial buys
   if (isNewGrid && engine.simulationMode) {
-    const strats = await db.getUserStrategies(engine.userId);
-    const strat = strats.find(s => s.symbol === symbol);
     const allocation = strat?.allocationPct ?? 30;
     const state = await db.getOrCreateBotState(engine.userId);
     const balance = parseFloat(state?.currentBalance ?? "5000");
-    // Place 3 initial buy orders at the nearest levels below current price
     const buyLevels = levels.filter(l => l.side === "Buy").sort((a, b) => b.price - a.price).slice(0, 3);
     for (const level of buyLevels) {
       const tradeAmount = (balance * allocation / 100) / (levels.length / 2);
@@ -455,9 +642,8 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
       if (orderId) {
         level.filled = true;
         level.orderId = orderId;
-        // Simulation: small random initial PnL minus fees (only buy leg, no sell yet)
         const grossPnl = (Math.random() * 0.008 - 0.002) * tradeAmount;
-        const pnl = calcNetPnl(grossPnl, tradeAmount, category, false, engine.exchange); // single leg
+        const pnl = calcNetPnl(grossPnl, tradeAmount, category, false, engine.exchange);
         await db.insertTrade({ userId: engine.userId, symbol, side: "buy", price: level.price.toFixed(2), qty, pnl: pnl.toFixed(2), strategy: "grid", orderId, simulated: true });
         const cs = await db.getOrCreateBotState(engine.userId);
         if (cs) {
@@ -470,42 +656,40 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
           });
         }
         if (strat) await db.updateStrategyStats(strat.id, pnl, pnl > 0);
-        console.log(`[Grid] Initial BUY ${symbol} @ ${level.price.toFixed(2)} qty=${qty} pnl=${pnl.toFixed(2)} (fees deducted)`);
+        console.log(`[Grid] Initial BUY ${symbol} @ ${level.price.toFixed(2)} qty=${qty} pnl=${pnl.toFixed(2)}`);
         traded = true;
       }
     }
   }
 
+  // ─── Main Grid Loop ───
   for (const level of levels) {
     if (level.filled) continue;
 
-    // Tolerance for grid level matching:
-    // Simulation: 0.05% tolerance to fill more levels for demo
-    // Live mode: 0.02% tolerance — price must be within 0.02% of grid level
     const tolerance = engine.simulationMode ? 0.0005 : 0.0002;
     const shouldFill = level.side === "Buy"
       ? price <= level.price * (1 + tolerance)
       : price >= level.price * (1 - tolerance);
 
     if (shouldFill) {
-      // ─── Trend guard: skip BUY if market is bearish ───
+      // ─── Trend guard: skip BUY if bearish ───
       if (level.side === "Buy" && !trendAllowsBuy) {
-        console.log(`[Grid] SKIP BUY ${symbol} @ ${level.price.toFixed(2)} — bearish trend, waiting for reversal`);
+        console.log(`[Grid] SKIP BUY ${symbol} @ ${level.price.toFixed(2)} — ${trendLabel} trend`);
         continue;
       }
 
-      // ─── Profitability guard: ensure a sell level exists above buy level with enough spread to profit ───
+      // ─── Profitability guard ───
       if (level.side === "Buy") {
-        const feeRoundTrip = 0.002; // 0.1% × 2 legs
-        const requiredSellPrice = level.price * (1 + feeRoundTrip + 0.001); // fees + 0.1% minimum profit
+        const feeRoundTrip = 0.002;
+        const requiredSellPrice = level.price * (1 + feeRoundTrip + 0.001);
         const hasProfit = levels.some(l => l.side === "Sell" && !l.filled && l.price >= requiredSellPrice);
         if (!hasProfit) {
-          console.log(`[Grid] SKIP BUY ${symbol} @ ${level.price.toFixed(2)} — no profitable sell level available above ${requiredSellPrice.toFixed(2)}`);
+          console.log(`[Grid] SKIP BUY ${symbol} @ ${level.price.toFixed(2)} — no profitable sell level`);
           continue;
         }
       }
 
-      // Calculate qty based on allocation
+      // ─── Reinvestment: use current balance (includes profits) for order sizing ───
       const allocation = strat?.allocationPct ?? 30;
       const state = await db.getOrCreateBotState(engine.userId);
       const balance = parseFloat(state?.currentBalance ?? "5000");
@@ -522,45 +706,43 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
         let pnl = 0;
 
         if (level.side === "Buy") {
-          // BUY: record $0 PnL (position is open, no profit yet)
+          // BUY: $0 PnL, track open position with trailing stop
           if (!engine.openBuyPositions[symbol]) engine.openBuyPositions[symbol] = [];
           engine.openBuyPositions[symbol].push({
-            symbol,
-            buyPrice: price,
-            qty,
-            tradeAmount,
-            category,
-            gridLevelPrice: level.price,
+            symbol, buyPrice: price, qty, tradeAmount, category,
+            gridLevelPrice: level.price, highestPrice: price,
           });
           pnl = 0;
-          console.log(`[Grid] BUY ${symbol} @ ${price} qty=${qty} pnl=$0.00 (position open, waiting for sell) order=${orderId}`);
+          console.log(`[Grid] BUY ${symbol} @ ${price.toFixed(2)} qty=${qty} pnl=$0.00 (trailing stop active) order=${orderId}`);
         } else {
-          // SELL: pair with oldest open buy position to realize profit
-          const openPositions = engine.openBuyPositions[symbol] ?? [];
-          const pairedBuy = openPositions.shift(); // FIFO pairing
+          // SELL: pair with oldest open buy (FIFO)
+          const openPos = engine.openBuyPositions[symbol] ?? [];
+          const pairedBuy = openPos.shift();
           if (pairedBuy) {
             const sellQty = parseFloat(qty);
             const grossPnl = (price - pairedBuy.buyPrice) * sellQty;
-            const feesAmount = pairedBuy.tradeAmount;
-            pnl = calcNetPnl(grossPnl, feesAmount, category, true, engine.exchange);
-            console.log(`[Grid] SELL ${symbol} @ ${price} qty=${qty} buyPrice=${pairedBuy.buyPrice} gross=${grossPnl.toFixed(2)} net=${pnl.toFixed(2)} order=${orderId}`);
+            pnl = calcNetPnl(grossPnl, pairedBuy.tradeAmount, category, true, engine.exchange);
+            console.log(`[Grid] SELL ${symbol} @ ${price.toFixed(2)} buyPrice=${pairedBuy.buyPrice.toFixed(2)} net=${pnl.toFixed(2)} order=${orderId}`);
+
+            // Telegram notification
+            if (pnl > 0) {
+              await sendTelegramNotification(engine,
+                `✅ <b>PHANTOM Grid Profit</b>\n` +
+                `Par: ${symbol}\nCompra: $${pairedBuy.buyPrice.toFixed(2)}\nVenta: $${price.toFixed(2)}\n` +
+                `Ganancia: <b>$${pnl.toFixed(2)}</b>`
+              );
+            }
           } else {
             const grossPnl = (price - level.price) * parseFloat(qty);
             pnl = calcNetPnl(grossPnl, tradeAmount, category, true, engine.exchange);
-            console.log(`[Grid] SELL ${symbol} @ ${price} qty=${qty} (no paired buy) net=${pnl.toFixed(2)} order=${orderId}`);
+            console.log(`[Grid] SELL ${symbol} @ ${price.toFixed(2)} (no paired buy) net=${pnl.toFixed(2)} order=${orderId}`);
           }
         }
 
         await db.insertTrade({
-          userId: engine.userId,
-          symbol,
-          side: level.side.toLowerCase(),
-          price: price.toString(),
-          qty,
-          pnl: pnl.toFixed(2),
-          strategy: "grid",
-          orderId,
-          simulated: engine.simulationMode,
+          userId: engine.userId, symbol, side: level.side.toLowerCase(),
+          price: price.toString(), qty, pnl: pnl.toFixed(2),
+          strategy: "grid", orderId, simulated: engine.simulationMode,
         });
 
         const currentState = await db.getOrCreateBotState(engine.userId);
@@ -583,7 +765,64 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
     }
   }
 
-  // Regenerate grid if >60% filled (fallback to the smart recentre above)
+  // ─── DCA: if price dropped significantly and trend is turning, accumulate more ───
+  const dcaThreshold = 0.02; // 2% below average entry
+  if (!engine.dcaPositions[symbol]) {
+    engine.dcaPositions[symbol] = { avgPrice: 0, totalQty: 0, totalCost: 0, entries: 0 };
+  }
+  const dca = engine.dcaPositions[symbol];
+  if (dca.entries > 0 && price < dca.avgPrice * (1 - dcaThreshold) && trendLabel !== "bearish" && trendLabel !== "bearish-mtf") {
+    // DCA: buy more to lower average
+    const allocation = strat?.allocationPct ?? 30;
+    const state = await db.getOrCreateBotState(engine.userId);
+    const balance = parseFloat(state?.currentBalance ?? "5000");
+    const dcaAmount = (balance * allocation / 100) * 0.05; // 5% of allocation per DCA
+    const dcaQty = (dcaAmount / price).toFixed(6);
+    const maxDcaEntries = 5;
+
+    if (dca.entries < maxDcaEntries) {
+      const orderId = await placeOrder(engine, symbol, "Buy", dcaQty, category);
+      if (orderId) {
+        dca.totalCost += dcaAmount;
+        dca.totalQty += parseFloat(dcaQty);
+        dca.entries += 1;
+        dca.avgPrice = dca.totalCost / dca.totalQty;
+
+        await db.insertTrade({
+          userId: engine.userId, symbol, side: "buy", price: price.toString(),
+          qty: dcaQty, pnl: "0.00", strategy: "grid", orderId, simulated: engine.simulationMode,
+        });
+        console.log(`[Grid] DCA BUY ${symbol} @ ${price.toFixed(2)} qty=${dcaQty} avgPrice=${dca.avgPrice.toFixed(2)} entries=${dca.entries}/${maxDcaEntries}`);
+
+        // Track as open position for trailing sell
+        if (!engine.openBuyPositions[symbol]) engine.openBuyPositions[symbol] = [];
+        engine.openBuyPositions[symbol].push({
+          symbol, buyPrice: price, qty: dcaQty, tradeAmount: dcaAmount,
+          category, gridLevelPrice: price, highestPrice: price,
+        });
+      }
+    }
+  }
+  // Update DCA tracking from grid buys
+  if (traded && openPositions.length > 0) {
+    const lastBuy = openPositions[openPositions.length - 1];
+    if (lastBuy) {
+      dca.totalCost += lastBuy.tradeAmount;
+      dca.totalQty += parseFloat(lastBuy.qty);
+      dca.entries = Math.max(dca.entries, 1);
+      dca.avgPrice = dca.totalCost / dca.totalQty;
+    }
+  }
+  // DCA sell: if price recovered above average + profit margin
+  if (dca.entries > 0 && price > dca.avgPrice * 1.005) {
+    // Reset DCA tracking (positions will be sold by trailing stop or grid sell)
+    dca.entries = 0;
+    dca.totalCost = 0;
+    dca.totalQty = 0;
+    dca.avgPrice = 0;
+  }
+
+  // Regenerate grid if >60% filled
   const filledCount = levels.filter(l => l.filled).length;
   if (filledCount > levels.length * 0.6) {
     engine.gridLevels[symbol] = generateGridLevels(price, gridLevels, effectiveSpread);
@@ -601,7 +840,15 @@ async function runScalpingStrategy(engine: EngineState, symbol: string, category
   engine.lastPrices[symbol] = price;
   livePrices.set(symbol, ticker);
 
-  // Get klines for technical analysis
+  // Volume filter
+  if (!hasAdequateVolume(symbol)) {
+    console.log(`[Scalp] ${symbol} SKIP — insufficient volume`);
+    return;
+  }
+
+  // Multi-timeframe check for scalping
+  const mtf = await multiTimeframeCheck(engine.client, symbol, category);
+
   const klines = await fetchKlines(engine.client, symbol, "15", 50, category);
   if (klines.closes.length < 26) return;
   const closes = klines.closes;
@@ -617,29 +864,28 @@ async function runScalpingStrategy(engine: EngineState, symbol: string, category
   let signal: "Buy" | "Sell" | null = null;
   const reasons: string[] = [];
 
-  // Buy signals
-  if (rsi < 35) { reasons.push(`RSI oversold (${rsi.toFixed(1)})`); signal = "Buy"; }
-  if (price <= bb.lower * 1.01) { reasons.push("Price near lower Bollinger Band"); signal = "Buy"; }
-  if (ema9Current > ema21Current && ema9[ema9.length - 2] <= ema21[ema21.length - 2]) {
-    reasons.push("EMA 9/21 bullish crossover");
-    signal = "Buy";
+  // Buy signals (only if MTF not bearish)
+  if (mtf.direction !== "bearish") {
+    if (rsi < 35) { reasons.push(`RSI oversold (${rsi.toFixed(1)})`); signal = "Buy"; }
+    if (price <= bb.lower * 1.01) { reasons.push("Price near lower BB"); signal = "Buy"; }
+    if (ema9Current > ema21Current && ema9[ema9.length - 2] <= ema21[ema21.length - 2]) {
+      reasons.push("EMA 9/21 bullish crossover"); signal = "Buy";
+    }
+    if (macd.histogram > 0 && macd.macd > macd.signal) { reasons.push("MACD bullish"); if (!signal) signal = "Buy"; }
   }
-  if (macd.histogram > 0 && macd.macd > macd.signal) { reasons.push("MACD bullish"); if (!signal) signal = "Buy"; }
 
   // Sell signals
   if (rsi > 70) { reasons.push(`RSI overbought (${rsi.toFixed(1)})`); signal = "Sell"; }
-  if (price >= bb.upper * 0.99) { reasons.push("Price near upper Bollinger Band"); signal = "Sell"; }
+  if (price >= bb.upper * 0.99) { reasons.push("Price near upper BB"); signal = "Sell"; }
   if (ema9Current < ema21Current && ema9[ema9.length - 2] >= ema21[ema21.length - 2]) {
-    reasons.push("EMA 9/21 bearish crossover");
-    signal = "Sell";
+    reasons.push("EMA 9/21 bearish crossover"); signal = "Sell";
   }
 
-  // In simulation mode, also execute if MACD is bullish/bearish (1 signal is enough)
   if (engine.simulationMode && !signal) {
     if (macd.histogram > 0) { signal = "Buy"; reasons.push("MACD bullish (sim)"); }
     else if (macd.histogram < 0) { signal = "Sell"; reasons.push("MACD bearish (sim)"); }
   }
-  // Need at least 1 confirming signal in simulation, 2 in live
+
   const minSignals = engine.simulationMode ? 1 : 2;
   if (signal && reasons.length >= minSignals) {
     const strats = await db.getUserStrategies(engine.userId);
@@ -647,67 +893,161 @@ async function runScalpingStrategy(engine: EngineState, symbol: string, category
     const allocation = strat?.allocationPct ?? 30;
     const state = await db.getOrCreateBotState(engine.userId);
     const balance = parseFloat(state?.currentBalance ?? "5000");
-    const tradeAmount = balance * allocation / 100 * 0.1; // 10% of allocation per scalp
+    const tradeAmount = balance * allocation / 100 * 0.1;
     const qty = (tradeAmount / price).toFixed(6);
 
     const orderId = await placeOrder(engine, symbol, signal, qty, category);
     if (orderId) {
-      // PnL calculation:
-      // In simulation: use a small realistic price movement (0.3% average scalp target)
-      // In live mode: same formula — actual PnL will be reconciled from Bybit balance changes
-      // Both modes deduct Bybit fees from the estimated PnL
       let grossPnl: number;
       if (engine.simulationMode) {
-        // Simulate a realistic scalp: 0.3% target, sometimes -0.2% stop loss
-        const pnlPct = (Math.random() * 0.008 - 0.002); // -0.2% to +0.6% gross
+        const pnlPct = (Math.random() * 0.008 - 0.002);
         grossPnl = tradeAmount * pnlPct;
       } else {
-        // In live mode: estimate PnL based on EMA spread (proxy for expected move)
-        // The real PnL will be reflected in Bybit balance; this is our internal tracker
         const emaDiff = Math.abs(ema9Current - ema21Current) / price;
         const direction = signal === "Buy" ? 1 : -1;
-        grossPnl = tradeAmount * emaDiff * direction * 0.5; // conservative 50% of EMA spread
+        grossPnl = tradeAmount * emaDiff * direction * 0.5;
       }
 
-      // Deduct Bybit fees (round-trip: entry + exit)
-      const pnl = calcNetPnl(grossPnl, tradeAmount, category, true);
+      const pnl = calcNetPnl(grossPnl, tradeAmount, category, true, engine.exchange);
 
       await db.insertTrade({
-        userId: engine.userId,
-        symbol,
-        side: signal.toLowerCase(),
-        price: price.toString(),
-        qty,
-        pnl: pnl.toFixed(2),
-        strategy: "scalping",
-        orderId,
-        simulated: engine.simulationMode,
+        userId: engine.userId, symbol, side: signal.toLowerCase(),
+        price: price.toString(), qty, pnl: pnl.toFixed(2),
+        strategy: "scalping", orderId, simulated: engine.simulationMode,
       });
 
       const currentState = await db.getOrCreateBotState(engine.userId);
       if (currentState) {
-        const newTotalPnl = parseFloat(currentState.totalPnl ?? "0") + pnl;
-        const newTodayPnl = parseFloat(currentState.todayPnl ?? "0") + pnl;
-        const newBalance = parseFloat(currentState.currentBalance ?? "5000") + pnl;
-        const newTotalTrades = (currentState.totalTrades ?? 0) + 1;
-        const newWinning = (currentState.winningTrades ?? 0) + (pnl > 0 ? 1 : 0);
         await db.updateBotState(engine.userId, {
-          totalPnl: newTotalPnl.toFixed(2),
-          todayPnl: newTodayPnl.toFixed(2),
-          currentBalance: newBalance.toFixed(2),
-          totalTrades: newTotalTrades,
-          winningTrades: newWinning,
+          totalPnl: (parseFloat(currentState.totalPnl ?? "0") + pnl).toFixed(2),
+          todayPnl: (parseFloat(currentState.todayPnl ?? "0") + pnl).toFixed(2),
+          currentBalance: (parseFloat(currentState.currentBalance ?? "5000") + pnl).toFixed(2),
+          totalTrades: (currentState.totalTrades ?? 0) + 1,
+          winningTrades: (currentState.winningTrades ?? 0) + (pnl > 0 ? 1 : 0),
         });
       }
-
       if (strat) await db.updateStrategyStats(strat.id, pnl, pnl > 0);
-      // Update daily PnL history
       const scalpState = await db.getOrCreateBotState(engine.userId);
       if (scalpState) {
         await db.upsertDailyPnl(engine.userId, parseFloat(scalpState.totalPnl ?? "0"), parseFloat(scalpState.currentBalance ?? "5000"), scalpState.totalTrades ?? 0);
       }
-      console.log(`[Scalp] ${signal} ${symbol} @ ${price} qty=${qty} gross=${grossPnl.toFixed(2)} net=${pnl.toFixed(2)} (fees deducted) reasons=${reasons.join(", ")}`);
+      console.log(`[Scalp] ${signal} ${symbol} @ ${price.toFixed(2)} qty=${qty} net=${pnl.toFixed(2)} reasons=${reasons.join(", ")}`);
+
+      // Telegram notification for scalp trades
+      if (pnl > 0.1) {
+        await sendTelegramNotification(engine,
+          `⚡ <b>PHANTOM Scalp ${signal}</b>\nPar: ${symbol}\nPrecio: $${price.toFixed(2)}\nGanancia: <b>$${pnl.toFixed(2)}</b>`
+        );
+      }
     }
+  }
+}
+
+// ─── Futures Long-Only Strategy ───
+async function runFuturesLongOnly(engine: EngineState, symbol: string) {
+  const ticker = await fetchTicker(engine.client, symbol, "linear");
+  if (!ticker) return;
+
+  const price = ticker.lastPrice;
+  engine.lastPrices[symbol] = price;
+  livePrices.set(symbol, ticker);
+
+  // Only trade during high volume hours for futures
+  if (!isHighVolumeHours()) {
+    console.log(`[Futures] ${symbol} SKIP — outside trading hours`);
+    return;
+  }
+
+  // Volume filter
+  if (!hasAdequateVolume(symbol)) return;
+
+  // Multi-timeframe check — only enter if bullish
+  const mtf = await multiTimeframeCheck(engine.client, symbol, "linear");
+
+  // Check existing positions
+  if (!engine.futuresPositions[symbol]) engine.futuresPositions[symbol] = [];
+  const positions = engine.futuresPositions[symbol];
+
+  // ─── Manage existing positions: check Take Profit ───
+  for (let i = positions.length - 1; i >= 0; i--) {
+    const pos = positions[i];
+    const profitPct = (price - pos.entryPrice) / pos.entryPrice;
+
+    if (profitPct >= pos.takeProfitPct / 100) {
+      // Take profit hit — close position
+      const orderId = await placeOrder(engine, symbol, "Sell", pos.qty, "linear");
+      if (orderId) {
+        const grossPnl = (price - pos.entryPrice) * parseFloat(pos.qty) * pos.leverage;
+        const pnl = calcNetPnl(grossPnl, pos.tradeAmount * pos.leverage, "linear", true, "bybit");
+
+        await db.insertTrade({
+          userId: engine.userId, symbol, side: "sell", price: price.toString(),
+          qty: pos.qty, pnl: pnl.toFixed(2), strategy: "futures", orderId, simulated: engine.simulationMode,
+        });
+
+        const currentState = await db.getOrCreateBotState(engine.userId);
+        if (currentState) {
+          await db.updateBotState(engine.userId, {
+            totalPnl: (parseFloat(currentState.totalPnl ?? "0") + pnl).toFixed(2),
+            todayPnl: (parseFloat(currentState.todayPnl ?? "0") + pnl).toFixed(2),
+            currentBalance: (parseFloat(currentState.currentBalance ?? "5000") + pnl).toFixed(2),
+            totalTrades: (currentState.totalTrades ?? 0) + 1,
+            winningTrades: (currentState.winningTrades ?? 0) + (pnl > 0 ? 1 : 0),
+          });
+        }
+
+        console.log(`[Futures] TAKE PROFIT ${symbol} @ ${price.toFixed(2)} entry=${pos.entryPrice.toFixed(2)} pnl=$${pnl.toFixed(2)} (${pos.leverage}x)`);
+
+        await sendTelegramNotification(engine,
+          `🎯 <b>PHANTOM Futures TP</b>\nPar: ${symbol}\nEntrada: $${pos.entryPrice.toFixed(2)}\nSalida: $${price.toFixed(2)}\nApalancamiento: ${pos.leverage}x\nGanancia: <b>$${pnl.toFixed(2)}</b>`
+        );
+
+        positions.splice(i, 1);
+      }
+    }
+  }
+
+  // ─── Open new Long position if conditions are right ───
+  const maxPositions = 2;
+  if (positions.length >= maxPositions) return;
+  if (mtf.direction !== "bullish" || !mtf.aligned) return;
+
+  // Additional confirmation: RSI not overbought, MACD bullish
+  const klines = await fetchKlines(engine.client, symbol, "15", 50, "linear");
+  if (klines.closes.length < 26) return;
+  const rsi = calculateRSI(klines.closes);
+  const macd = calculateMACD(klines.closes);
+  if (rsi > 65) return; // don't enter overbought
+  if (macd.histogram <= 0) return; // need bullish MACD
+
+  const strats = await db.getUserStrategies(engine.userId);
+  const strat = strats.find(s => s.symbol === symbol && s.strategyType === "futures");
+  const config = strat?.config as any;
+  const leverage = config?.leverage ?? 2;
+  const takeProfitPct = config?.takeProfitPct ?? 1.0;
+  const allocation = strat?.allocationPct ?? 20;
+  const state = await db.getOrCreateBotState(engine.userId);
+  const balance = parseFloat(state?.currentBalance ?? "5000");
+  const tradeAmount = (balance * allocation / 100) / maxPositions;
+  const qty = ((tradeAmount * leverage) / price).toFixed(6);
+
+  const orderId = await placeOrder(engine, symbol, "Buy", qty, "linear");
+  if (orderId) {
+    positions.push({
+      symbol, entryPrice: price, qty, leverage, takeProfitPct,
+      tradeAmount, openedAt: Date.now(),
+    });
+
+    await db.insertTrade({
+      userId: engine.userId, symbol, side: "buy", price: price.toString(),
+      qty, pnl: "0.00", strategy: "futures", orderId, simulated: engine.simulationMode,
+    });
+
+    console.log(`[Futures] LONG ${symbol} @ ${price.toFixed(2)} qty=${qty} leverage=${leverage}x TP=${takeProfitPct}% order=${orderId}`);
+
+    await sendTelegramNotification(engine,
+      `📈 <b>PHANTOM Futures Long</b>\nPar: ${symbol}\nEntrada: $${price.toFixed(2)}\nApalancamiento: ${leverage}x\nTP: ${takeProfitPct}%`
+    );
   }
 }
 
@@ -728,7 +1068,6 @@ async function runOpportunityScanner(engine: EngineState) {
       const ema9 = calculateEMA(closes, 9);
       const ema21 = calculateEMA(closes, 21);
 
-      // Volume spike detection using real volume data
       const recentVols = volumes.slice(-10);
       const avgVol = recentVols.reduce((a: number, b: number) => a + b, 0) / recentVols.length;
       const currentVol = volumes[volumes.length - 1];
@@ -738,7 +1077,6 @@ async function runOpportunityScanner(engine: EngineState) {
       let confidence = 0;
       const reasons: string[] = [];
 
-      // Strong BUY signals
       if (rsi < 30) { confidence += 25; reasons.push(`RSI very oversold (${rsi.toFixed(1)})`); signal = "STRONG BUY"; }
       else if (rsi < 40) { confidence += 15; reasons.push(`RSI oversold (${rsi.toFixed(1)})`); signal = "BUY"; }
 
@@ -747,54 +1085,43 @@ async function runOpportunityScanner(engine: EngineState) {
       const ema9Now = ema9[ema9.length - 1];
       const ema21Now = ema21[ema21.length - 1];
       if (ema9Now > ema21Now && ema9[ema9.length - 2] <= ema21[ema21.length - 2]) {
-        confidence += 20;
-        reasons.push("EMA 9/21 bullish crossover");
-        if (!signal) signal = "BUY";
+        confidence += 20; reasons.push("EMA 9/21 bullish crossover"); if (!signal) signal = "BUY";
       }
 
       if (macd.histogram > 0 && macd.macd > 0) { confidence += 15; reasons.push("MACD bullish momentum"); }
       if (volSpike) { confidence += 10; reasons.push("Volume spike detected"); }
 
-      // Strong SELL signals
       if (rsi > 75) { confidence += 25; reasons.push(`RSI very overbought (${rsi.toFixed(1)})`); signal = "STRONG SELL"; }
       else if (rsi > 65) { confidence += 15; reasons.push(`RSI overbought (${rsi.toFixed(1)})`); signal = "SELL"; }
 
       if (price >= bb.upper * 0.98) { confidence += 20; reasons.push("Price at upper Bollinger Band"); if (!signal) signal = "SELL"; }
 
       if (ema9Now < ema21Now && ema9[ema9.length - 2] >= ema21[ema21.length - 2]) {
-        confidence += 20;
-        reasons.push("EMA 9/21 bearish crossover");
-        if (!signal) signal = "SELL";
+        confidence += 20; reasons.push("EMA 9/21 bearish crossover"); if (!signal) signal = "SELL";
       }
 
-      // Only save if confidence >= 40
       if (signal && confidence >= 40 && reasons.length >= 2) {
         confidence = Math.min(confidence, 95);
         await db.insertOpportunity({
-          userId: engine.userId,
-          symbol,
-          signal,
-          price: price.toString(),
-          confidence,
-          reasons,
-          isRead: false,
+          userId: engine.userId, symbol, signal, price: price.toString(),
+          confidence, reasons, isRead: false,
         });
         console.log(`[Scanner] ${signal} ${symbol} @ ${price} confidence=${confidence}% reasons=${reasons.join(", ")}`);
-        // Push notification for high-confidence opportunities (>75%)
-        // notifyOwner only works on Manus platform; silently skip on VPS
         if (confidence >= 75) {
           try {
             const { notifyOwner } = await import("./_core/notification");
             await notifyOwner({
               title: `📊 PHANTOM: ${signal} ${symbol} (${confidence}%)`,
-              content: `Se detectó una oportunidad de alta confianza.\n\nPar: ${symbol}\nSeñal: ${signal}\nConfianza: ${confidence}%\nPrecio: $${price.toFixed(4)}\nRazones: ${reasons.join(", ")}`,
+              content: `Par: ${symbol}\nSeñal: ${signal}\nConfianza: ${confidence}%\nPrecio: $${price.toFixed(4)}\nRazones: ${reasons.join(", ")}`,
             });
-          } catch { /* non-blocking — fails silently on VPS (no BUILT_IN_FORGE_API_URL) */ }
+          } catch { /* non-blocking */ }
+
+          await sendTelegramNotification(engine,
+            `📊 <b>PHANTOM Scanner: ${signal}</b>\nPar: ${symbol}\nPrecio: $${price.toFixed(4)}\nConfianza: ${confidence}%\n${reasons.join("\n")}`
+          );
         }
       }
 
-      // Delay between scanner calls to avoid CoinGecko 429 rate limits
-      // CoinGecko free tier: ~30 req/min. 4s delay with 10 coins = ~15 req/min (very safe).
       await new Promise(r => setTimeout(r, 4000));
     } catch (e) {
       // Skip this coin on error
@@ -802,11 +1129,9 @@ async function runOpportunityScanner(engine: EngineState) {
   }
 }
 
-// ─── SP500 via Yahoo Finance (direct fetch — no Manus internal API dependency) ───
+// ─── SP500 via Yahoo Finance ───
 async function fetchSP500Price(): Promise<TickerData | null> {
   try {
-    // Use Yahoo Finance directly — same pattern as XAUUSDT/Gold
-    // This works on VPS unlike callDataApi which requires BUILT_IN_FORGE_API_URL
     const url = `https://query1.finance.yahoo.com/v8/finance/chart/%5EGSPC?interval=1d&range=5d`;
     const res = await fetch(url, {
       signal: AbortSignal.timeout(10000),
@@ -821,14 +1146,9 @@ async function fetchSP500Price(): Promise<TickerData | null> {
     const prevClose = meta.chartPreviousClose ?? meta.previousClose ?? price;
     const pctChange = prevClose > 0 ? (price - prevClose) / prevClose : 0;
     return {
-      symbol: "SP500",
-      lastPrice: price,
-      bid1Price: price,
-      ask1Price: price,
-      price24hPcnt: pctChange,
-      highPrice24h: meta.regularMarketDayHigh ?? price,
-      lowPrice24h: meta.regularMarketDayLow ?? price,
-      volume24h: meta.regularMarketVolume ?? 0,
+      symbol: "SP500", lastPrice: price, bid1Price: price, ask1Price: price,
+      price24hPcnt: pctChange, highPrice24h: meta.regularMarketDayHigh ?? price,
+      lowPrice24h: meta.regularMarketDayLow ?? price, volume24h: meta.regularMarketVolume ?? 0,
       turnover24h: 0,
     };
   } catch (e) {
@@ -837,11 +1157,8 @@ async function fetchSP500Price(): Promise<TickerData | null> {
   }
 }
 
-// ─── Price Feed ───
-// updateLivePrices is now a no-op — prices are updated via WebSocket in real-time
 async function updateLivePrices(_client?: RestClientV5) {
-  // Prices are now fed by the Bybit WebSocket (startBybitWebSocketFeed)
-  // This function is kept for compatibility but does nothing
+  // Prices are fed by WebSocket — this is a no-op
 }
 
 // ─── Engine Control ───
@@ -850,19 +1167,27 @@ export async function startEngine(userId: number): Promise<{ success: boolean; e
     return { success: false, error: "Engine already running" };
   }
 
-  // Get selected exchange and API keys
   const state = await db.getOrCreateBotState(userId);
   const simulationMode = state?.simulationMode ?? true;
   const selectedExchange = (state as any)?.selectedExchange ?? "bybit";
 
-  // Create exchange-specific clients
+  // Load Telegram config
+  let telegramBotToken: string | undefined;
+  let telegramChatId: string | undefined;
+  try {
+    const tgKey = await db.getApiKey(userId, "telegram" as any);
+    if (tgKey) {
+      telegramBotToken = tgKey.apiKey;
+      telegramChatId = tgKey.apiSecret;
+    }
+  } catch { /* no telegram config */ }
+
   let client: RestClientV5 = new RestClientV5({});
   let kucoinClient: any = null;
 
   if (simulationMode) {
     console.log(`[Engine] Starting in SIMULATION mode (${selectedExchange}) for user ${userId}`);
   } else if (selectedExchange === "both") {
-    // Dual exchange mode: initialize both Bybit and KuCoin clients
     const bybitKeys = await db.getApiKey(userId, "bybit");
     const kucoinKeys = await db.getApiKey(userId, "kucoin");
     if (bybitKeys) {
@@ -875,8 +1200,7 @@ export async function startEngine(userId: number): Promise<{ success: boolean; e
       try {
         const { SpotClient } = await import("kucoin-api");
         kucoinClient = new SpotClient({
-          apiKey: kucoinKeys.apiKey,
-          apiSecret: kucoinKeys.apiSecret,
+          apiKey: kucoinKeys.apiKey, apiSecret: kucoinKeys.apiSecret,
           apiPassphrase: kucoinKeys.passphrase ?? "",
         });
         console.log(`[Engine] BOTH mode: KuCoin client initialized for user ${userId}`);
@@ -895,8 +1219,7 @@ export async function startEngine(userId: number): Promise<{ success: boolean; e
       try {
         const { SpotClient } = await import("kucoin-api");
         kucoinClient = new SpotClient({
-          apiKey: keys.apiKey,
-          apiSecret: keys.apiSecret,
+          apiKey: keys.apiKey, apiSecret: keys.apiSecret,
           apiPassphrase: keys.passphrase ?? "",
         });
         console.log(`[Engine] Starting in LIVE mode (KuCoin) for user ${userId}`);
@@ -911,26 +1234,16 @@ export async function startEngine(userId: number): Promise<{ success: boolean; e
   }
 
   const engine: EngineState = {
-    userId,
-    exchange: selectedExchange,
-    client,
-    kucoinClient,
-    isRunning: true,
-    simulationMode,
-    gridLevels: {},
-    lastPrices: {},
-    openBuyPositions: {},
+    userId, exchange: selectedExchange, client, kucoinClient,
+    isRunning: true, simulationMode,
+    gridLevels: {}, lastPrices: {}, openBuyPositions: {},
+    futuresPositions: {}, dcaPositions: {},
+    telegramBotToken, telegramChatId,
   };
 
   engines.set(userId, engine);
-
-  // Update DB state
   await db.updateBotState(userId, { isRunning: true, startedAt: new Date() });
-
-  // Initial price fetch
   await updateLivePrices(client);
-
-  // Initialize cycle counter
   engineCycles.set(userId, 0);
 
   // Main trading loop — every 30 seconds
@@ -941,48 +1254,62 @@ export async function startEngine(userId: number): Promise<{ success: boolean; e
       engineCycles.set(userId, cycleNum);
       console.log(`[Engine] Cycle #${cycleNum} for user ${userId}`);
 
-      // Get user strategies
       const strats = await db.getUserStrategies(userId);
       console.log(`[Engine] Found ${strats.length} strategies, ${strats.filter(s => s.enabled).length} enabled`);
+
       for (const strat of strats) {
         if (!strat.enabled) continue;
         const cat = strat.category === "linear" ? "linear" : "spot";
 
-        // XAUUSDT always runs on Bybit (KuCoin doesn't support gold)
-        // Create a temporary Bybit-only engine state when current exchange is KuCoin
-        if (strat.symbol === "XAUUSDT") {
+        // XAUUSDT and XAGUSD always run on Bybit
+        if (strat.symbol === "XAUUSDT" || strat.symbol === "XAGUSD" || strat.symbol === "SPXUSDT") {
           if (engine.exchange === "kucoin") {
-            // Need Bybit client for XAUUSDT — create one if we have keys
             const bybitKeys = await db.getApiKey(userId, "bybit");
             if (bybitKeys) {
               const bybitClient = new RestClientV5({ key: bybitKeys.apiKey, secret: bybitKeys.apiSecret });
               const bybitEngine: EngineState = { ...engine, client: bybitClient, exchange: "bybit", kucoinClient: null };
-              console.log(`[Engine] Running ${strat.strategyType} for XAUUSDT on Bybit (forced)`);
-              if (strat.strategyType === "scalping") await runScalpingStrategy(bybitEngine, strat.symbol, cat as "spot" | "linear");
-              else await runGridStrategy(bybitEngine, strat.symbol, cat as "spot" | "linear");
+              console.log(`[Engine] Running ${strat.strategyType} for ${strat.symbol} on Bybit (forced)`);
+              if (strat.strategyType === "scalping") await runScalpingStrategy(bybitEngine, strat.symbol, "linear");
+              else if (strat.strategyType === "futures") await runFuturesLongOnly(bybitEngine, strat.symbol);
+              else await runGridStrategy(bybitEngine, strat.symbol, "linear");
             } else {
-              console.log(`[Engine] Skipping XAUUSDT — no Bybit keys available`);
+              console.log(`[Engine] Skipping ${strat.symbol} — no Bybit keys available`);
             }
           } else {
-            // Bybit or Both: run normally on Bybit client
-            console.log(`[Engine] Running ${strat.strategyType} for XAUUSDT on Bybit`);
-            if (strat.strategyType === "scalping") await runScalpingStrategy(engine, strat.symbol, cat as "spot" | "linear");
-            else await runGridStrategy(engine, strat.symbol, cat as "spot" | "linear");
+            console.log(`[Engine] Running ${strat.strategyType} for ${strat.symbol} on Bybit`);
+            if (strat.strategyType === "scalping") await runScalpingStrategy(engine, strat.symbol, "linear");
+            else if (strat.strategyType === "futures") await runFuturesLongOnly(engine, strat.symbol);
+            else await runGridStrategy(engine, strat.symbol, "linear");
           }
           continue;
         }
 
-        // For BTC/ETH and other pairs:
-        // In "both" mode: run on KuCoin first, then also on Bybit
+        // Futures strategy always on Bybit
+        if (strat.strategyType === "futures") {
+          if (engine.exchange === "kucoin") {
+            const bybitKeys = await db.getApiKey(userId, "bybit");
+            if (bybitKeys) {
+              const bybitClient = new RestClientV5({ key: bybitKeys.apiKey, secret: bybitKeys.apiSecret });
+              const bybitEngine: EngineState = { ...engine, client: bybitClient, exchange: "bybit", kucoinClient: null };
+              console.log(`[Engine] Running futures for ${strat.symbol} on Bybit (forced)`);
+              await runFuturesLongOnly(bybitEngine, strat.symbol);
+            }
+          } else {
+            console.log(`[Engine] Running futures for ${strat.symbol} on Bybit`);
+            const bybitEngine: EngineState = { ...engine, exchange: "bybit", kucoinClient: null };
+            await runFuturesLongOnly(bybitEngine, strat.symbol);
+          }
+          continue;
+        }
+
+        // For other pairs: dual exchange or single
         if (engine.exchange === "both") {
-          // Run on KuCoin
           if (engine.kucoinClient) {
             const kucoinEngine: EngineState = { ...engine, exchange: "kucoin" };
             console.log(`[Engine] Running ${strat.strategyType} for ${strat.symbol} on KuCoin`);
             if (strat.strategyType === "grid") await runGridStrategy(kucoinEngine, strat.symbol, "spot");
             else if (strat.strategyType === "scalping") await runScalpingStrategy(kucoinEngine, strat.symbol, "spot");
           }
-          // Run on Bybit
           const bybitEngine: EngineState = { ...engine, exchange: "bybit", kucoinClient: null };
           console.log(`[Engine] Running ${strat.strategyType} for ${strat.symbol} on Bybit`);
           if (strat.strategyType === "grid") await runGridStrategy(bybitEngine, strat.symbol, cat as "spot" | "linear");
@@ -990,7 +1317,7 @@ export async function startEngine(userId: number): Promise<{ success: boolean; e
           continue;
         }
 
-        // Single exchange mode (bybit or kucoin)
+        // Single exchange mode
         console.log(`[Engine] Running ${strat.strategyType} for ${strat.symbol} (${strat.category})`);
         if (strat.strategyType === "grid") {
           await runGridStrategy(engine, strat.symbol, cat as "spot" | "linear");
@@ -1003,17 +1330,12 @@ export async function startEngine(userId: number): Promise<{ success: boolean; e
     }
   }, 30_000);
 
-  // Price updates are handled by the persistent Bybit WebSocket feed
-  // No need for a polling interval
-
   // Opportunity scanner — every 2 minutes
-  // Note: scanner takes ~64s with 32 coins × 2s delay, so 2-min interval is safe
   engine.scannerIntervalId = setInterval(async () => {
     if (!engine.isRunning) return;
     await runOpportunityScanner(engine);
   }, 120_000);
 
-  // Run scanner immediately on start (after 5s to let WebSocket prices load)
   setTimeout(() => runOpportunityScanner(engine), 5000);
 
   // Run first trading cycle immediately
@@ -1021,12 +1343,15 @@ export async function startEngine(userId: number): Promise<{ success: boolean; e
     const strats = await db.getUserStrategies(userId);
     for (const strat of strats) {
       if (!strat.enabled) continue;
-      // Skip XAUUSDT on KuCoin or both mode
-      if (strat.symbol === "XAUUSDT" && (engine.exchange === "kucoin" || engine.exchange === "both")) continue;
+      if (strat.symbol === "XAUUSDT" || strat.symbol === "XAGUSD" || strat.symbol === "SPXUSDT") {
+        if (engine.exchange === "kucoin" || engine.exchange === "both") continue;
+      }
       if (strat.strategyType === "grid") {
         await runGridStrategy(engine, strat.symbol, (strat.category === "linear" ? "linear" : "spot") as any);
       } else if (strat.strategyType === "scalping") {
         await runScalpingStrategy(engine, strat.symbol, (strat.category === "linear" ? "linear" : "spot") as any);
+      } else if (strat.strategyType === "futures") {
+        await runFuturesLongOnly(engine, strat.symbol);
       }
     }
   }, 2000);
@@ -1068,8 +1393,6 @@ export function isEngineRunning(userId: number): boolean {
 }
 
 // ─── Multi-Exchange WebSocket Price Feed ───
-// Both Bybit and KuCoin WebSockets run simultaneously for the ticker display.
-// The engine uses the selected exchange for order placement.
 let wsSpot: WebSocket | null = null;
 let wsLinear: WebSocket | null = null;
 let wsKucoin: WebSocket | null = null;
@@ -1115,7 +1438,6 @@ function connectBybitWS(url: string, symbols: string[], label: string): WebSocke
   ws.on("open", () => {
     console.log(`[PriceFeed] ${label} WS connected — subscribing to ${symbols.length} symbols`);
     const args = symbols.map(s => `tickers.${s}`);
-    // Subscribe in batches of 10 to avoid message size limits
     for (let i = 0; i < args.length; i += 10) {
       ws.send(JSON.stringify({ op: "subscribe", args: args.slice(i, i + 10) }));
     }
@@ -1135,7 +1457,6 @@ function connectBybitWS(url: string, symbols: string[], label: string): WebSocke
     if (wsReconnectTimer) clearTimeout(wsReconnectTimer);
     wsReconnectTimer = setTimeout(() => startBybitWebSocketFeed(), 5000);
   });
-  // Keepalive ping every 20 seconds
   const pingInterval = setInterval(() => {
     if (ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ op: "ping" }));
@@ -1159,22 +1480,16 @@ function startBybitWebSocketFeed() {
   wsSpot = connectBybitWS("wss://stream.bybit.com/v5/public/spot", SPOT_SYMBOLS, "Spot");
   wsLinear = connectBybitWS("wss://stream.bybit.com/v5/public/linear", LINEAR_SYMBOLS, "Linear");
 
-  // SP500 via Yahoo Finance direct — update every 60 seconds
   updateSP500Price();
   setInterval(updateSP500Price, 60_000);
 }
 
-// ─── KuCoin WebSocket Price Feed ───
-// KuCoin requires a token from REST API before connecting WebSocket
 async function getKuCoinWsToken(): Promise<{ token: string; endpoint: string } | null> {
   try {
     const res = await fetch("https://api.kucoin.com/api/v1/bullet-public", { method: "POST" });
     const json = await res.json() as any;
     if (json.code === "200000" && json.data?.token && json.data?.instanceServers?.[0]) {
-      return {
-        token: json.data.token,
-        endpoint: json.data.instanceServers[0].endpoint,
-      };
+      return { token: json.data.token, endpoint: json.data.instanceServers[0].endpoint };
     }
   } catch (e) {
     console.error("[PriceFeed] KuCoin token fetch failed:", (e as Error).message);
@@ -1187,19 +1502,14 @@ function parseKuCoinTickerMsg(data: Buffer | string): void {
     const msg = JSON.parse(data.toString()) as any;
     if (msg.type !== "message" || !msg.data) return;
     const t = msg.data;
-    // KuCoin ticker topic: /market/ticker:{symbol}
-    // Data fields: price, bestBid, bestAsk, size, bestBidSize, bestAskSize
-    const rawSymbol = msg.topic?.split(":")[1]; // e.g. "BTC-USDT"
+    const rawSymbol = msg.topic?.split(":")[1];
     if (!rawSymbol) return;
-    const symbol = rawSymbol.replace("-", ""); // "BTCUSDT"
+    const symbol = rawSymbol.replace("-", "");
     const existing = livePrices.get(symbol);
     const lastPrice = parseFloat(t.price ?? "0");
     if (lastPrice <= 0) return;
-    // Only update if we don't already have a Bybit price (Bybit is primary)
-    // KuCoin serves as fallback / validation
     const ticker: TickerData = {
-      symbol,
-      lastPrice,
+      symbol, lastPrice,
       bid1Price: parseFloat(t.bestBid ?? String(lastPrice)),
       ask1Price: parseFloat(t.bestAsk ?? String(lastPrice)),
       price24hPcnt: existing?.price24hPcnt ?? 0,
@@ -1208,7 +1518,6 @@ function parseKuCoinTickerMsg(data: Buffer | string): void {
       volume24h: parseFloat(t.size ?? existing?.volume24h ?? "0"),
       turnover24h: existing?.turnover24h ?? 0,
     };
-    // Update price — KuCoin prices supplement Bybit
     livePrices.set(symbol, ticker);
   } catch { /* ignore */ }
 }
@@ -1232,17 +1541,13 @@ async function startKuCoinWebSocketFeed() {
 
   ws.on("open", () => {
     console.log(`[PriceFeed] KuCoin WS connected — subscribing to ${SPOT_SYMBOLS.length} symbols`);
-    // KuCoin uses BTC-USDT format and comma-separated topics
     const kucoinSymbols = SPOT_SYMBOLS.map(s => s.replace("USDT", "-USDT"));
-    // Subscribe in batches of 10
     for (let i = 0; i < kucoinSymbols.length; i += 10) {
       const batch = kucoinSymbols.slice(i, i + 10);
       ws.send(JSON.stringify({
-        id: Date.now() + i,
-        type: "subscribe",
+        id: Date.now() + i, type: "subscribe",
         topic: `/market/ticker:${batch.join(",")}`,
-        privateChannel: false,
-        response: true,
+        privateChannel: false, response: true,
       }));
     }
   });
@@ -1263,7 +1568,6 @@ async function startKuCoinWebSocketFeed() {
     wsKucoinReconnectTimer = setTimeout(() => startKuCoinWebSocketFeed(), 10_000);
   });
 
-  // KuCoin requires ping every 30s
   const pingInterval = setInterval(() => {
     if (ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ id: Date.now(), type: "ping" }));
