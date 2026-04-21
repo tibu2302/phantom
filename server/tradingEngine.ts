@@ -615,17 +615,21 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
     const holdTimeMs = Date.now() - (pos.openedAt ?? Date.now());
 
     // 1. STOP-LOSS: Cut losses if price drops below threshold
-    if (lossPct >= stopLossPct) {
+    // BTC and ETH are EXEMPT from stop-loss — never sell at a loss, always HOLD
+    const noStopLossSymbols = ["BTCUSDT", "ETHUSDT"];
+    if (lossPct >= stopLossPct && !noStopLossSymbols.includes(symbol)) {
       positionsToSell.push({ pos, reason: `STOP-LOSS (${(lossPct * 100).toFixed(2)}% loss)` });
       openPositions.splice(i, 1);
       continue;
+    } else if (lossPct >= stopLossPct && noStopLossSymbols.includes(symbol)) {
+      console.log(`[Grid] ${symbol} HOLD — ${(lossPct * 100).toFixed(2)}% loss but BTC/ETH exempt from stop-loss`);
     }
 
     // 2. TIME STOP: Only close if held VERY long AND losing money
     // First threshold: if held > maxHoldTime and price is below buy price, just log warning
     // Only force-sell if held > 2x maxHoldTime AND still losing
     const doubleMaxHold = maxHoldTimeMs * 2;
-    if (holdTimeMs > doubleMaxHold && profitPct < -0.002) {
+    if (holdTimeMs > doubleMaxHold && profitPct < -0.002 && !noStopLossSymbols.includes(symbol)) {
       // Only time-stop if the loss is small enough (< stop-loss threshold) — otherwise let stop-loss handle it
       const estGrossPnl = (price - pos.buyPrice) * parseFloat(pos.qty);
       const estNetPnl = calcNetPnl(estGrossPnl, pos.tradeAmount, category, true, engine.exchange);
@@ -637,6 +641,8 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
       } else {
         console.log(`[Grid] ${symbol} TIME-WARNING — held ${(holdTimeMs / 3600000).toFixed(1)}h, loss $${estNetPnl.toFixed(2)} too large for time-stop, waiting for recovery`);
       }
+    } else if (holdTimeMs > doubleMaxHold && profitPct < -0.002 && noStopLossSymbols.includes(symbol)) {
+      console.log(`[Grid] ${symbol} HOLD — held ${(holdTimeMs / 3600000).toFixed(1)}h, BTC/ETH exempt from time-stop`);
     } else if (holdTimeMs > maxHoldTimeMs && profitPct >= 0) {
       // Held long but in profit — let trailing stop handle it, don't force close
       console.log(`[Grid] ${symbol} held ${(holdTimeMs / 3600000).toFixed(1)}h but in profit ${(profitPct * 100).toFixed(2)}%, trailing stop will handle exit`);
@@ -1102,12 +1108,16 @@ async function runFuturesLongOnly(engine: EngineState, symbol: string) {
     const holdTimeMs = Date.now() - pos.openedAt;
     let closeReason = "";
 
-    // 1. STOP-LOSS: Cut losses
-    if (lossPct >= futuresStopLossPct) {
+    // BTC and ETH are EXEMPT from stop-loss and time-stop in futures too
+    const futuresNoSL = ["BTCUSDT", "ETHUSDT"];
+    // 1. STOP-LOSS: Cut losses (not for BTC/ETH)
+    if (lossPct >= futuresStopLossPct && !futuresNoSL.includes(symbol)) {
       closeReason = `STOP-LOSS (${(lossPct * 100).toFixed(2)}% loss, ${pos.leverage}x)`;
+    } else if (lossPct >= futuresStopLossPct && futuresNoSL.includes(symbol)) {
+      console.log(`[Futures] ${symbol} HOLD — ${(lossPct * 100).toFixed(2)}% loss but BTC/ETH exempt from stop-loss`);
     }
-    // 2. TIME STOP: Close if held too long without profit
-    else if (holdTimeMs > futuresMaxHoldHours * 3600000 && profitPct < 0.003) {
+    // 2. TIME STOP: Close if held too long without profit (not for BTC/ETH)
+    else if (holdTimeMs > futuresMaxHoldHours * 3600000 && profitPct < 0.003 && !futuresNoSL.includes(symbol)) {
       closeReason = `TIME-STOP (held ${(holdTimeMs / 3600000).toFixed(1)}h)`;
     }
     // 3. TAKE PROFIT
@@ -1409,6 +1419,26 @@ export async function startEngine(userId: number): Promise<{ success: boolean; e
   await updateLivePrices(client);
   engineCycles.set(userId, 0);
 
+  // ─── Restore open positions from DB (survive restarts) ───
+  try {
+    const savedBybit = await db.loadOpenPositions(userId, "bybit");
+    const savedKucoin = await db.loadOpenPositions(userId, "kucoin");
+    let totalRestored = 0;
+    for (const [sym, positions] of Object.entries(savedBybit)) {
+      engine.openBuyPositions[sym] = [...(engine.openBuyPositions[sym] ?? []), ...positions];
+      totalRestored += positions.length;
+    }
+    for (const [sym, positions] of Object.entries(savedKucoin)) {
+      engine.openBuyPositions[sym] = [...(engine.openBuyPositions[sym] ?? []), ...positions];
+      totalRestored += positions.length;
+    }
+    if (totalRestored > 0) {
+      console.log(`[Engine] Restored ${totalRestored} open positions from DB for user ${userId}`);
+    }
+  } catch (e) {
+    console.error(`[Engine] Failed to restore positions:`, (e as Error).message);
+  }
+
   // Main trading loop — every 30 seconds
   engine.intervalId = setInterval(async () => {
     if (!engine.isRunning) return;
@@ -1416,6 +1446,17 @@ export async function startEngine(userId: number): Promise<{ success: boolean; e
       const cycleNum = (engineCycles.get(userId) ?? 0) + 1;
       engineCycles.set(userId, cycleNum);
       console.log(`[Engine] Cycle #${cycleNum} for user ${userId}`);
+
+      // Periodic position save every 10 cycles (~5 minutes)
+      if (cycleNum % 10 === 0) {
+        try {
+          const posCount = Object.values(engine.openBuyPositions).reduce((s, a) => s + a.length, 0);
+          if (posCount > 0) {
+            await db.saveOpenPositions(userId, engine.openBuyPositions, engine.exchange === "both" ? "bybit" : engine.exchange);
+            console.log(`[Engine] Periodic save: ${posCount} positions saved to DB`);
+          }
+        } catch (e) { /* silent */ }
+      }
 
       const strats = await db.getUserStrategies(userId);
       console.log(`[Engine] Found ${strats.length} strategies, ${strats.filter(s => s.enabled).length} enabled`);
@@ -1569,6 +1610,22 @@ export async function stopEngine(userId: number): Promise<{ success: boolean }> 
   if (engine.intervalId) clearInterval(engine.intervalId);
   if (engine.scannerIntervalId) clearInterval(engine.scannerIntervalId);
   if (engine.priceIntervalId) clearInterval(engine.priceIntervalId);
+
+  // ─── Save open positions to DB before stopping (survive restarts) ───
+  try {
+    const posCount = Object.values(engine.openBuyPositions).reduce((sum, arr) => sum + arr.length, 0);
+    if (posCount > 0) {
+      await db.saveOpenPositions(userId, engine.openBuyPositions, engine.exchange === "both" ? "bybit" : engine.exchange);
+      if (engine.exchange === "both") {
+        // Also save KuCoin positions separately (they share the same openBuyPositions map)
+        await db.saveOpenPositions(userId, engine.openBuyPositions, "kucoin");
+      }
+      console.log(`[Engine] Saved ${posCount} open positions to DB for user ${userId}`);
+    }
+  } catch (e) {
+    console.error(`[Engine] Failed to save positions on stop:`, (e as Error).message);
+  }
+
   engines.delete(userId);
   engineCycles.delete(userId);
 

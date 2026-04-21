@@ -1,6 +1,6 @@
 import { eq, desc, and, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
-import { InsertUser, users, botState, apiKeys, strategies, trades, opportunities, aiAnalyses, pnlHistory } from "../drizzle/schema";
+import { InsertUser, users, botState, apiKeys, strategies, trades, opportunities, aiAnalyses, pnlHistory, openPositions } from "../drizzle/schema";
 import { ENV } from './_core/env';
 
 let _db: ReturnType<typeof drizzle> | null = null;
@@ -246,4 +246,63 @@ export async function updateStrategyStats(strategyId: number, pnl: number, isWin
     trades: newTrades,
     winningTrades: newWinning,
   }).where(eq(strategies.id, strategyId));
+}
+
+
+// ─── Open Positions Persistence ───
+export async function saveOpenPositions(userId: number, positions: Record<string, Array<{ buyPrice: number; qty: string; highestPrice?: number; trailingActive?: boolean; openedAt?: number; tradeAmount?: number }>>, exchange: string) {
+  const db = await getDb();
+  if (!db) return;
+  try {
+    // Delete all existing positions for this user+exchange
+    await db.delete(openPositions).where(and(eq(openPositions.userId, userId), eq(openPositions.exchange, exchange)));
+    // Insert current positions
+    for (const [symbol, posArr] of Object.entries(positions)) {
+      for (const pos of posArr) {
+        // Determine strategy type from context
+        const stratType = symbol === "XAUUSDT" ? "scalping" : "grid";
+        await db.insert(openPositions).values({
+          userId,
+          symbol,
+          strategyType: stratType,
+          exchange,
+          buyPrice: pos.buyPrice.toFixed(8),
+          qty: pos.qty,
+          highestPrice: pos.highestPrice ? pos.highestPrice.toFixed(8) : null,
+          trailingActive: pos.trailingActive ?? false,
+          openedAt: new Date(pos.openedAt ?? Date.now()),
+        });
+      }
+    }
+  } catch (e) {
+    console.error("[DB] Failed to save open positions:", e);
+  }
+}
+
+export async function loadOpenPositions(userId: number, exchange: string): Promise<Record<string, Array<{ symbol: string; buyPrice: number; qty: string; tradeAmount: number; category: "spot" | "linear"; gridLevelPrice: number; highestPrice?: number; openedAt: number }>>> {
+  const db = await getDb();
+  if (!db) return {};
+  try {
+    const rows = await db.select().from(openPositions).where(and(eq(openPositions.userId, userId), eq(openPositions.exchange, exchange)));
+    const result: Record<string, Array<{ symbol: string; buyPrice: number; qty: string; tradeAmount: number; category: "spot" | "linear"; gridLevelPrice: number; highestPrice?: number; openedAt: number }>> = {};
+    for (const row of rows) {
+      if (!result[row.symbol]) result[row.symbol] = [];
+      const bp = parseFloat(row.buyPrice);
+      const q = parseFloat(row.qty);
+      result[row.symbol].push({
+        symbol: row.symbol,
+        buyPrice: bp,
+        qty: row.qty,
+        tradeAmount: bp * q, // reconstruct approximate trade amount
+        category: (row.strategyType === "futures" || row.strategyType === "scalping") ? "linear" : "spot",
+        gridLevelPrice: bp, // approximate: use buy price as grid level
+        highestPrice: row.highestPrice ? parseFloat(row.highestPrice) : undefined,
+        openedAt: row.openedAt.getTime(),
+      });
+    }
+    return result;
+  } catch (e) {
+    console.error("[DB] Failed to load open positions:", e);
+    return {};
+  }
 }

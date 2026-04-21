@@ -241,3 +241,19 @@
 - [x] Subir umbral RSI bearish de 25 a 30 para scalping y futures
 - [x] Configurar Telegram: Bot Token + Chat ID verificado (mensaje de prueba enviado OK)
 - [x] Preparar comandos de monitoreo para el VPS
+
+## Rediseño Dashboard Mobile - Abril 21
+- [x] UI: Layout más profesional, mejor tipografía y espaciado
+- [x] UI: Cards con mejor jerarquía visual, sombras suaves, bordes redondeados
+- [x] UI: Gráfico de rendimiento (PnL chart 14 días) en el dashboard
+- [x] Datos: PnL no realizado visible en dashboard mobile y desktop
+- [x] Datos: Separar PnL realizado vs no realizado
+- [x] Funcionalidad: Botón ocultar balances (privacidad)
+- [x] Funcionalidad: Tiempo activo del bot formateado correctamente
+- [x] Funcionalidad: Pull-to-refresh
+
+## Persistencia de posiciones + Favicon - Abril 21
+- [x] BUG: Posiciones abiertas se pierden al reiniciar — ahora se guardan en tabla open_positions
+- [x] FIX: Posiciones se cargan al iniciar motor y se guardan al detener + cada 5 min
+- [x] Crear favicon profesional para PHANTOM (ghost verde angular con ojos brillantes)
+- [x] FIX: BTC y ETH sin Stop-Loss — exentos de SL y Time-Stop en Grid y Futures

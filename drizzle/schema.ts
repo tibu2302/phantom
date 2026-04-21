@@ -98,6 +98,20 @@ export const pnlHistory = mysqlTable("pnl_history", {
 });
 export type PnlHistory = typeof pnlHistory.$inferSelect;
 
+export const openPositions = mysqlTable("open_positions", {
+  id: int("id").autoincrement().primaryKey(),
+  userId: int("userId").notNull(),
+  symbol: varchar("symbol", { length: 32 }).notNull(),
+  strategyType: varchar("strategyType", { length: 32 }).notNull(), // grid | futures | scalping
+  exchange: varchar("exchange", { length: 32 }).default("bybit").notNull(),
+  buyPrice: decimal("buyPrice", { precision: 18, scale: 8 }).notNull(),
+  qty: decimal("qty", { precision: 18, scale: 8 }).notNull(),
+  highestPrice: decimal("highestPrice", { precision: 18, scale: 8 }),
+  trailingActive: boolean("trailingActive").default(false),
+  openedAt: timestamp("openedAt").defaultNow().notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+
 export const aiAnalyses = mysqlTable("ai_analyses", {
   id: int("id").autoincrement().primaryKey(),
   userId: int("userId").notNull(),
