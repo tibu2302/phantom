@@ -239,6 +239,7 @@ export const appRouter = router({
         trailingActivationPct: z.number().min(0.1).max(10).optional(),
         maxHoldHours: z.number().min(1).max(168).optional(),
         maxOpenPositions: z.number().min(1).max(50).optional(),
+        minProfitUsd: z.number().min(0).max(100).optional(),
       }),
     })).mutation(async ({ input }) => {
       const dbConn = await db.getDb();

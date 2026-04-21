@@ -104,6 +104,7 @@ function StrategyConfig({ strategy, onClose }: { strategy: any; onClose: () => v
   const [trailingActivation, setTrailingActivation] = useState(strategy.config?.trailingActivationPct ?? 0.3);
   const [maxPositions, setMaxPositions] = useState(strategy.config?.maxOpenPositions ?? 5);
   const [maxHoldHours, setMaxHoldHours] = useState(strategy.config?.maxHoldHours ?? (strategy.strategyType === 'futures' ? 12 : 4));
+  const [minProfitUsd, setMinProfitUsd] = useState(strategy.config?.minProfitUsd ?? 5);
 
   const updateConfig = trpc.strategies.updateConfig.useMutation({
     onSuccess: () => {
@@ -218,14 +219,24 @@ function StrategyConfig({ strategy, onClose }: { strategy: any; onClose: () => v
               <p className="text-[10px] text-muted-foreground mt-0.5">Cierra posición si no hay ganancia después de este tiempo</p>
             </div>
             {isGrid && (
-              <div>
-                <div className="flex justify-between text-xs mb-1">
-                  <span className="text-muted-foreground">Máx. posiciones abiertas</span>
-                  <span className="font-bold text-primary">{maxPositions}</span>
+              <>
+                <div>
+                  <div className="flex justify-between text-xs mb-1">
+                    <span className="text-muted-foreground">Máx. posiciones abiertas</span>
+                    <span className="font-bold text-primary">{maxPositions}</span>
+                  </div>
+                  <Slider value={[maxPositions]} onValueChange={([v]) => setMaxPositions(v)} min={1} max={20} step={1} className="w-full" />
+                  <p className="text-[10px] text-muted-foreground mt-0.5">Evita acumular demasiadas compras sin vender</p>
                 </div>
-                <Slider value={[maxPositions]} onValueChange={([v]) => setMaxPositions(v)} min={1} max={20} step={1} className="w-full" />
-                <p className="text-[10px] text-muted-foreground mt-0.5">Evita acumular demasiadas compras sin vender</p>
-              </div>
+                <div>
+                  <div className="flex justify-between text-xs mb-1">
+                    <span className="text-muted-foreground">Ganancia mínima por venta</span>
+                    <span className="font-bold text-[oklch(0.75_0.18_155)]">${minProfitUsd}</span>
+                  </div>
+                  <Slider value={[minProfitUsd]} onValueChange={([v]) => setMinProfitUsd(v)} min={0} max={50} step={1} className="w-full" />
+                  <p className="text-[10px] text-muted-foreground mt-0.5">No vende si la ganancia es menor a este monto (USD)</p>
+                </div>
+              </>
             )}
           </div>
         </div>
@@ -249,6 +260,7 @@ function StrategyConfig({ strategy, onClose }: { strategy: any; onClose: () => v
               trailingActivationPct: (isGrid || isFutures) ? trailingActivation : undefined,
               maxHoldHours: maxHoldHours,
               maxOpenPositions: isGrid ? maxPositions : undefined,
+              minProfitUsd: isGrid ? minProfitUsd : undefined,
             },
           })}
           disabled={updateConfig.isPending}

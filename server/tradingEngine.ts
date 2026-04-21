@@ -597,6 +597,7 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
   const trailingActivation = (stratConfig.trailingActivationPct ?? 0.3) / 100; // Activate trailing after 0.3% profit
   const maxHoldTimeMs = (stratConfig.maxHoldHours ?? 4) * 60 * 60 * 1000; // Default 4 hours max hold
   const maxOpenPositions = stratConfig.maxOpenPositions ?? 5; // Max open positions per symbol
+  const minProfitUsd = stratConfig.minProfitUsd ?? 5; // Minimum $5 USD profit to sell (trailing/normal)
   const positionsToSell: { pos: OpenBuyPosition; reason: string }[] = [];
 
   for (let i = openPositions.length - 1; i >= 0; i--) {
@@ -619,16 +620,24 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
       continue;
     }
 
-    // 3. TRAILING STOP: Lock in profits
+    // 3. TRAILING STOP: Lock in profits (only if estimated profit >= minProfitUsd)
     if (!pos.highestPrice || price > pos.highestPrice) {
       pos.highestPrice = price;
     }
     if (pos.highestPrice && pos.highestPrice > pos.buyPrice * (1 + trailingActivation)) {
       const dropFromHigh = (pos.highestPrice - price) / pos.highestPrice;
       if (dropFromHigh >= trailingPct) {
-        positionsToSell.push({ pos, reason: `TRAILING-STOP (high=${pos.highestPrice.toFixed(2)}, drop=${(dropFromHigh * 100).toFixed(2)}%)` });
-        openPositions.splice(i, 1);
-        continue;
+        // Check minimum profit before selling
+        const estGrossPnl = (price - pos.buyPrice) * parseFloat(pos.qty);
+        const estNetPnl = calcNetPnl(estGrossPnl, pos.tradeAmount, category, true, engine.exchange);
+        if (estNetPnl >= minProfitUsd) {
+          positionsToSell.push({ pos, reason: `TRAILING-STOP (high=${pos.highestPrice.toFixed(2)}, drop=${(dropFromHigh * 100).toFixed(2)}%, est=$${estNetPnl.toFixed(2)})` });
+          openPositions.splice(i, 1);
+          continue;
+        } else {
+          // Profit too small, keep holding — don't sell yet
+          console.log(`[Grid] ${symbol} HOLD — trailing triggered but profit $${estNetPnl.toFixed(2)} < min $${minProfitUsd}`);
+        }
       }
     }
   }
@@ -781,11 +790,18 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
         } else {
           // SELL: pair with oldest open buy (FIFO)
           const openPos = engine.openBuyPositions[symbol] ?? [];
-          const pairedBuy = openPos.shift();
+          const pairedBuy = openPos[0]; // peek, don't shift yet
           if (pairedBuy) {
             const sellQty = parseFloat(qty);
             const grossPnl = (price - pairedBuy.buyPrice) * sellQty;
             pnl = calcNetPnl(grossPnl, pairedBuy.tradeAmount, category, true, engine.exchange);
+            // Minimum profit check: don't sell if profit < minProfitUsd (except stop-loss)
+            if (pnl > 0 && pnl < minProfitUsd) {
+              console.log(`[Grid] HOLD ${symbol} — grid sell profit $${pnl.toFixed(2)} < min $${minProfitUsd}, waiting for better price`);
+              level.filled = false; // unmark so it can trigger again
+              continue;
+            }
+            openPos.shift(); // now actually remove from queue
             console.log(`[Grid] SELL ${symbol} @ ${price.toFixed(2)} buyPrice=${pairedBuy.buyPrice.toFixed(2)} net=${pnl.toFixed(2)} order=${orderId}`);
 
             // Telegram notification

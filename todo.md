@@ -215,3 +215,8 @@
 - [x] FIX: Bybit REST API es ahora la fuente #1 para klines (sin rate limits en VPS)
 - [x] FIX: Filtro de horario removido de Futures y Grid linear
 - [x] FIX: Backfill completo: 15 estrategias default se verifican y crean si faltan al iniciar
+
+## Feature: Ganancia mínima por operación - Abril 21
+- [x] Implementar ganancia mínima de $5 USD por operación de venta en Grid (BTC, ETH)
+- [x] No vender si la ganancia estimada es menor a $5 (trailing stop + grid level sells)
+- [x] Control configurable desde UI en Estrategias (slider $0-$50)
