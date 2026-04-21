@@ -603,11 +603,11 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
   // ─── Protection System: Stop-Loss + Trailing Stop + Time Stop ───
   const stratConfig = config ?? {};
   const stopLossPct = (stratConfig.stopLossPct ?? 5) / 100; // Default 5% stop-loss (crypto is volatile)
-  const trailingPct = (stratConfig.trailingStopPct ?? 0.8) / 100; // 0.8% trailing distance
-  const trailingActivation = (stratConfig.trailingActivationPct ?? 1.0) / 100; // Activate trailing after 1% profit
+  const trailingPct = (stratConfig.trailingStopPct ?? 0.5) / 100; // 0.5% trailing distance
+  const trailingActivation = (stratConfig.trailingActivationPct ?? 1.5) / 100; // Activate trailing after 1.5% profit
   const maxHoldTimeMs = (stratConfig.maxHoldHours ?? 48) * 60 * 60 * 1000; // Default 48 hours max hold
   const maxOpenPositions = stratConfig.maxOpenPositions ?? 5; // Max open positions per symbol
-  const minProfitUsd = stratConfig.minProfitUsd ?? 5; // Minimum $5 USD profit to sell (trailing/normal)
+  const minProfitUsd = stratConfig.minProfitUsd ?? 1; // Minimum $1 USD profit to sell (always win something)
   const positionsToSell: { pos: OpenBuyPosition; reason: string }[] = [];
 
   for (let i = openPositions.length - 1; i >= 0; i--) {
@@ -661,10 +661,13 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
         // Check minimum profit before selling
         const estGrossPnl = (price - pos.buyPrice) * parseFloat(pos.qty);
         const estNetPnl = calcNetPnl(estGrossPnl, pos.tradeAmount, category, true, engine.exchange);
-        if (estNetPnl >= minProfitUsd) {
+        if (estNetPnl >= minProfitUsd && estNetPnl > 0) {
           positionsToSell.push({ pos, reason: `TRAILING-STOP (high=${pos.highestPrice.toFixed(2)}, drop=${(dropFromHigh * 100).toFixed(2)}%, est=$${estNetPnl.toFixed(2)})` });
           openPositions.splice(i, 1);
           continue;
+        } else if (estNetPnl <= 0) {
+          // NEVER sell at a loss from trailing stop
+          console.log(`[Grid] ${symbol} BLOCK SELL — trailing triggered but net PnL $${estNetPnl.toFixed(2)} is NEGATIVE, holding`);
         } else {
           // Profit too small, keep holding — don't sell yet
           console.log(`[Grid] ${symbol} HOLD — trailing triggered but profit $${estNetPnl.toFixed(2)} < min $${minProfitUsd}`);
