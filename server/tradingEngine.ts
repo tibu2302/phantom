@@ -991,7 +991,7 @@ async function runScalpingStrategy(engine: EngineState, symbol: string, category
     if (macd.histogram > 0 && macd.macd > macd.signal) { reasons.push("MACD bullish"); if (!signal) signal = "Buy"; }
   } else {
     // Bearish market: only buy on extreme oversold conditions (counter-trend scalp)
-    if (rsi < 25) { reasons.push(`RSI extreme oversold (${rsi.toFixed(1)})`); signal = "Buy"; }
+    if (rsi < 30) { reasons.push(`RSI extreme oversold (${rsi.toFixed(1)})`); signal = "Buy"; }
     if (price <= bb.lower * 0.995) { reasons.push("Price below lower BB (extreme)"); signal = "Buy"; }
     if (macd.histogram > 0 && macd.macd > macd.signal) { reasons.push("MACD reversal in bearish"); signal = "Buy"; }
   }
@@ -1171,7 +1171,7 @@ async function runFuturesLongOnly(engine: EngineState, symbol: string) {
   // Entry conditions based on market direction:
   // Bullish: standard entry (RSI < 65, MACD > 0)
   // Neutral: cautious entry (RSI < 45, MACD > 0)
-  // Bearish: only extreme oversold counter-trend (RSI < 25)
+  // Bearish: only extreme oversold counter-trend (RSI < 30)
   let canEnter = false;
   if (mtf.direction === "bullish") {
     canEnter = rsi < 65 && macd.histogram > 0;
@@ -1179,7 +1179,7 @@ async function runFuturesLongOnly(engine: EngineState, symbol: string) {
     canEnter = rsi < 45 && macd.histogram > 0;
   } else {
     // Bearish: only enter on extreme oversold for a quick bounce trade
-    canEnter = rsi < 25;
+    canEnter = rsi < 30;
   }
   if (!canEnter) return;
 

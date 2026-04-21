@@ -236,3 +236,8 @@
 - [x] FIX: Scalping minSignals reducido a 1 (antes 2 en live), permite operar más frecuentemente
 - [x] FIX: Futures ahora entra en mercado neutral (RSI<45+MACD>0) y bearish extremo (RSI<25)
 - [x] 38 tests pasando, 0 errores TypeScript
+
+## 3 Pasos solicitados - Abril 21
+- [x] Subir umbral RSI bearish de 25 a 30 para scalping y futures
+- [x] Configurar Telegram: Bot Token + Chat ID verificado (mensaje de prueba enviado OK)
+- [x] Preparar comandos de monitoreo para el VPS
