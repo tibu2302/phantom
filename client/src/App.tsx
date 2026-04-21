@@ -5,8 +5,8 @@ import { Route, Switch } from "wouter";
 import ErrorBoundary from "./components/ErrorBoundary";
 import { ThemeProvider } from "./contexts/ThemeContext";
 import DashboardLayout from "./components/DashboardLayout";
-import { lazy, Suspense } from "react";
-import { Ghost } from "lucide-react";
+import { lazy, Suspense, useState, useCallback } from "react";
+import SplashScreen from "./components/SplashScreen";
 
 const Home = lazy(() => import("./pages/Home"));
 const ApiKeys = lazy(() => import("./pages/ApiKeys"));
@@ -21,7 +21,7 @@ const LocalLogin = lazy(() => import("./pages/LocalLogin"));
 function PageLoader() {
   return (
     <div className="flex items-center justify-center h-64">
-      <Ghost className="h-8 w-8 text-primary animate-pulse" />
+      <div className="h-8 w-8 rounded-lg bg-primary/20 animate-pulse" />
     </div>
   );
 }
@@ -58,11 +58,22 @@ function Router() {
 }
 
 function App() {
+  const [showSplash, setShowSplash] = useState(() => {
+    if (sessionStorage.getItem("phantom-splash-shown")) return false;
+    return true;
+  });
+
+  const handleSplashFinish = useCallback(() => {
+    sessionStorage.setItem("phantom-splash-shown", "1");
+    setShowSplash(false);
+  }, []);
+
   return (
     <ErrorBoundary>
       <ThemeProvider defaultTheme="dark">
         <TooltipProvider>
           <Toaster />
+          {showSplash && <SplashScreen onFinish={handleSplashFinish} />}
           <Router />
         </TooltipProvider>
       </ThemeProvider>

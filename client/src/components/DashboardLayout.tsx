@@ -74,7 +74,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         <div className="flex flex-col items-center gap-8 p-8 max-w-md w-full">
           <div className="flex flex-col items-center gap-4">
             <div className="flex items-center gap-3">
-              <Ghost className="h-10 w-10 text-primary" />
+              <img src="/icon-192.png" alt="PHANTOM" className="h-12 w-12 rounded-lg" />
               <span className="text-3xl font-bold tracking-tight text-primary">PHANTOM</span>
             </div>
             <p className="text-sm text-muted-foreground text-center">
@@ -168,9 +168,9 @@ function DashboardLayoutContent({ children, setSidebarWidth }: DashboardLayoutCo
     return (
       <div className="flex flex-col min-h-screen bg-background">
         {/* Mobile Top Header */}
-        <header className="sticky top-0 z-50 flex items-center justify-between px-4 h-14 bg-background/95 backdrop-blur border-b border-border/50">
+        <header className="sticky top-0 z-50 flex items-center justify-between px-4 bg-background/95 backdrop-blur border-b border-border/20" style={{ paddingTop: 'max(env(safe-area-inset-top, 0px), 12px)', height: 'calc(56px + max(env(safe-area-inset-top, 0px), 12px))' }}>
           <div className="flex items-center gap-2">
-            <Ghost className="h-5 w-5 text-primary" />
+            <img src="/icon-192.png" alt="PHANTOM" className="h-7 w-7 rounded-md" />
             <span className="font-bold tracking-tight text-primary text-lg">PHANTOM</span>
           </div>
           <div className="flex items-center gap-2">
@@ -204,13 +204,13 @@ function DashboardLayoutContent({ children, setSidebarWidth }: DashboardLayoutCo
         </header>
 
         {/* Main Content */}
-        <main className="flex-1 overflow-y-auto pb-20 px-3 py-4">
+        <main className="flex-1 overflow-y-auto pb-24 px-4 py-4">
           {children}
         </main>
 
         {/* Mobile Bottom Navigation */}
-        <nav className="fixed bottom-0 left-0 right-0 z-50 bg-background/95 backdrop-blur border-t border-border/50 safe-area-bottom">
-          <div className="flex items-stretch h-16">
+        <nav className="fixed bottom-0 left-0 right-0 z-50 bg-background/98 backdrop-blur-xl border-t border-border/15" style={{ paddingBottom: 'env(safe-area-inset-bottom, 0px)' }}>
+          <div className="flex items-stretch h-[60px]">
             {bottomNavItems.map((item) => {
               if (item.path === "__more__") {
                 return (
@@ -260,13 +260,14 @@ function DashboardLayoutContent({ children, setSidebarWidth }: DashboardLayoutCo
                   onClick={() => navigate(item.path)}
                   className="flex-1 flex flex-col items-center justify-center gap-1 transition-colors focus:outline-none"
                 >
-                  <item.icon className={`h-5 w-5 transition-colors ${isActive ? "text-primary" : "text-muted-foreground"}`} />
-                  <span className={`text-[10px] transition-colors font-medium ${isActive ? "text-primary" : "text-muted-foreground"}`}>
-                    {item.label}
-                  </span>
-                  {isActive && (
-                    <span className="absolute bottom-0 w-8 h-0.5 bg-primary rounded-t-full" />
-                  )}
+                  <div className={`relative flex flex-col items-center justify-center gap-0.5 transition-all duration-200 ${isActive ? 'scale-105' : ''}`}>
+                    <div className={`p-1.5 rounded-xl transition-all duration-200 ${isActive ? 'bg-primary/12' : ''}`}>
+                      <item.icon className={`h-[18px] w-[18px] transition-colors duration-200 ${isActive ? "text-primary" : "text-muted-foreground/60"}`} />
+                    </div>
+                    <span className={`text-[9px] transition-colors duration-200 font-semibold tracking-wide ${isActive ? "text-primary" : "text-muted-foreground/60"}`}>
+                      {item.label}
+                    </span>
+                  </div>
                 </button>
               );
             })}
@@ -292,7 +293,7 @@ function DashboardLayoutContent({ children, setSidebarWidth }: DashboardLayoutCo
               </button>
               {!isCollapsed && (
                 <div className="flex items-center gap-2 min-w-0">
-                  <Ghost className="h-5 w-5 text-primary shrink-0" />
+                  <img src="/icon-192.png" alt="PHANTOM" className="h-6 w-6 rounded-md shrink-0" />
                   <span className="font-bold tracking-tight text-primary truncate">PHANTOM</span>
                 </div>
               )}

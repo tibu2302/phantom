@@ -84,6 +84,11 @@
   font-family: "Inter", "SF Pro Display", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
 }
 
+.tabular-nums {
+  font-family: "JetBrains Mono", "SF Mono", "Fira Code", monospace;
+  font-variant-numeric: tabular-nums;
+}
+
 .dark {
   --background: oklch(0.12 0.005 260);
   --foreground: oklch(0.93 0.005 260);
@@ -167,10 +172,25 @@
 
   /* Glass card effect */
   .glass-card {
-    background: oklch(0.16 0.006 260 / 60%);
-    backdrop-filter: blur(12px);
+    background: oklch(0.15 0.006 260 / 75%);
+    backdrop-filter: blur(20px);
     border: 1px solid oklch(1 0 0 / 6%);
-    border-radius: 0.75rem;
+    border-radius: 1rem;
+    box-shadow: 0 1px 3px oklch(0 0 0 / 8%), 0 0 0 1px oklch(1 0 0 / 2%) inset;
+    transition: border-color 0.25s ease, box-shadow 0.25s ease, transform 0.2s ease;
+  }
+  .glass-card:hover {
+    border-color: oklch(1 0 0 / 10%);
+    box-shadow: 0 2px 8px oklch(0 0 0 / 12%), 0 0 0 1px oklch(1 0 0 / 3%) inset;
+  }
+
+  /* Elevated glass card */
+  .glass-card-elevated {
+    background: oklch(0.17 0.007 260 / 85%);
+    backdrop-filter: blur(24px);
+    border: 1px solid oklch(1 0 0 / 8%);
+    border-radius: 1rem;
+    box-shadow: 0 8px 32px oklch(0 0 0 / 25%), 0 2px 8px oklch(0 0 0 / 15%), 0 0 0 1px oklch(1 0 0 / 3%) inset;
   }
 
   /* Glow effects */
@@ -179,6 +199,22 @@
   }
   .glow-red {
     box-shadow: 0 0 20px oklch(0.63 0.24 25 / 15%), 0 0 60px oklch(0.63 0.24 25 / 5%);
+  }
+
+  /* Subtle shimmer for hero cards */
+  .shimmer-bg {
+    position: relative;
+    overflow: hidden;
+  }
+  .shimmer-bg::after {
+    content: '';
+    position: absolute;
+    top: -50%;
+    left: -50%;
+    width: 200%;
+    height: 200%;
+    background: radial-gradient(ellipse at 30% 20%, oklch(0.72 0.19 160 / 4%) 0%, transparent 60%);
+    pointer-events: none;
   }
 
   /* Pulse animation for live indicators */
@@ -190,24 +226,44 @@
     50% { opacity: 0.5; }
   }
 
-  /* Mobile safe area for bottom navigation */
+  /* Mobile safe areas */
   .safe-area-bottom {
     padding-bottom: env(safe-area-inset-bottom, 0);
+  }
+  .safe-area-top {
+    padding-top: env(safe-area-inset-top, 0);
   }
 
   /* Scrollbar styling */
   ::-webkit-scrollbar {
-    width: 6px;
-    height: 6px;
+    width: 5px;
+    height: 5px;
   }
   ::-webkit-scrollbar-track {
     background: transparent;
   }
   ::-webkit-scrollbar-thumb {
-    background: oklch(0.3 0.008 260);
-    border-radius: 3px;
+    background: oklch(0.3 0.008 260 / 60%);
+    border-radius: 100px;
   }
   ::-webkit-scrollbar-thumb:hover {
-    background: oklch(0.4 0.008 260);
+    background: oklch(0.4 0.008 260 / 80%);
+  }
+
+  /* Hide scrollbar utility */
+  .scrollbar-none {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+  .scrollbar-none::-webkit-scrollbar {
+    display: none;
+  }
+
+  /* Smooth transitions for interactive elements */
+  .interactive-card {
+    transition: transform 0.15s ease, box-shadow 0.2s ease;
+  }
+  .interactive-card:active {
+    transform: scale(0.98);
   }
 }
