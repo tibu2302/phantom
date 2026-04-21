@@ -1028,19 +1028,26 @@ async function runScalpingStrategy(engine: EngineState, symbol: string, category
     const tradeAmount = balance * allocation / 100 * 0.1;
     const qty = (tradeAmount / price).toFixed(6);
 
+    // Pre-check: estimate PnL before placing order — NEVER scalp at a loss
+    let estGrossPnl: number;
+    if (engine.simulationMode) {
+      estGrossPnl = tradeAmount * (Math.random() * 0.008 - 0.002);
+    } else {
+      const emaDiff = Math.abs(ema9Current - ema21Current) / price;
+      const direction = signal === "Buy" ? 1 : -1;
+      estGrossPnl = tradeAmount * emaDiff * direction * 0.5;
+    }
+    const estNetPnl = calcNetPnl(estGrossPnl, tradeAmount, category, true, engine.exchange);
+    
+    // SKIP if estimated net PnL is negative — scalping must ALWAYS win
+    if (estNetPnl <= 0) {
+      console.log(`[Scalp] SKIP ${symbol} ${signal} — estimated net PnL $${estNetPnl.toFixed(2)} (would lose money after fees)`);
+      return;
+    }
+
     const orderId = await placeOrder(engine, symbol, signal, qty, category);
     if (orderId) {
-      let grossPnl: number;
-      if (engine.simulationMode) {
-        const pnlPct = (Math.random() * 0.008 - 0.002);
-        grossPnl = tradeAmount * pnlPct;
-      } else {
-        const emaDiff = Math.abs(ema9Current - ema21Current) / price;
-        const direction = signal === "Buy" ? 1 : -1;
-        grossPnl = tradeAmount * emaDiff * direction * 0.5;
-      }
-
-      const pnl = calcNetPnl(grossPnl, tradeAmount, category, true, engine.exchange);
+      const pnl = estNetPnl; // Use pre-calculated PnL (already includes fees)
 
       await db.insertTrade({
         userId: engine.userId, symbol, side: signal.toLowerCase(),
@@ -1101,8 +1108,8 @@ async function runFuturesLongOnly(engine: EngineState, symbol: string) {
   const futStrats = await db.getUserStrategies(engine.userId);
   const futStrat = futStrats.find(s => s.symbol === symbol && s.strategyType === "futures");
   const futConfig = futStrat?.config as any ?? {};
-  const futuresStopLossPct = (futConfig.stopLossPct ?? 2.0) / 100; // Default 2% stop-loss for futures
-  const futuresMaxHoldHours = futConfig.maxHoldHours ?? 12; // Max 12 hours for futures
+  const futuresStopLossPct = (futConfig.stopLossPct ?? 0) / 100; // Default 0 = disabled for futures
+  const futuresMaxHoldHours = futConfig.maxHoldHours ?? 0; // Default 0 = disabled for futures
 
   for (let i = positions.length - 1; i >= 0; i--) {
     const pos = positions[i];
@@ -1111,21 +1118,31 @@ async function runFuturesLongOnly(engine: EngineState, symbol: string) {
     const holdTimeMs = Date.now() - pos.openedAt;
     let closeReason = "";
 
-    // BTC and ETH are EXEMPT from stop-loss and time-stop in futures too
+    // ALL futures: NEVER close at a loss. Only close when profitable.
+    // stopLossPct === 0 means stop-loss is DISABLED
+    // maxHoldHours === 0 means time-stop is DISABLED
+    
+    // 1. STOP-LOSS: Only if explicitly enabled (stopLossPct > 0) and NOT BTC/ETH
     const futuresNoSL = ["BTCUSDT", "ETHUSDT"];
-    // 1. STOP-LOSS: Cut losses (not for BTC/ETH)
-    if (lossPct >= futuresStopLossPct && !futuresNoSL.includes(symbol)) {
+    if (futuresStopLossPct > 0 && lossPct >= futuresStopLossPct && !futuresNoSL.includes(symbol)) {
       closeReason = `STOP-LOSS (${(lossPct * 100).toFixed(2)}% loss, ${pos.leverage}x)`;
-    } else if (lossPct >= futuresStopLossPct && futuresNoSL.includes(symbol)) {
-      console.log(`[Futures] ${symbol} HOLD — ${(lossPct * 100).toFixed(2)}% loss but BTC/ETH exempt from stop-loss`);
+    } else if (lossPct > 0.01) {
+      console.log(`[Futures] ${symbol} HOLD — ${(lossPct * 100).toFixed(2)}% loss, waiting for recovery`);
     }
-    // 2. TIME STOP: Close if held too long without profit (not for BTC/ETH)
-    else if (holdTimeMs > futuresMaxHoldHours * 3600000 && profitPct < 0.003 && !futuresNoSL.includes(symbol)) {
+    // 2. TIME STOP: Only if explicitly enabled (maxHoldHours > 0) and NOT BTC/ETH
+    if (!closeReason && futuresMaxHoldHours > 0 && holdTimeMs > futuresMaxHoldHours * 3600000 && profitPct < 0.003 && !futuresNoSL.includes(symbol)) {
       closeReason = `TIME-STOP (held ${(holdTimeMs / 3600000).toFixed(1)}h)`;
     }
-    // 3. TAKE PROFIT
-    else if (profitPct >= pos.takeProfitPct / 100) {
-      closeReason = `TAKE-PROFIT (${(profitPct * 100).toFixed(2)}%)`;
+    // 3. TAKE PROFIT: Only close when there's actual profit after fees
+    if (!closeReason && profitPct >= pos.takeProfitPct / 100) {
+      // Verify net profit after fees before closing
+      const estGrossPnl = (price - pos.entryPrice) * parseFloat(pos.qty) * pos.leverage;
+      const estNetPnl = calcNetPnl(estGrossPnl, pos.tradeAmount * pos.leverage, "linear", true, "bybit");
+      if (estNetPnl > 0) {
+        closeReason = `TAKE-PROFIT (${(profitPct * 100).toFixed(2)}%, net=$${estNetPnl.toFixed(2)})`;
+      } else {
+        console.log(`[Futures] ${symbol} HOLD — take-profit triggered but net PnL $${estNetPnl.toFixed(2)} after fees, waiting`);
+      }
     }
 
     if (closeReason) {
