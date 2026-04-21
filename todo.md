@@ -189,3 +189,21 @@
 - [x] Verificar que XAUUSDT scalping y futures coexisten en DB con test automatizado (38 tests passing)
 - [x] Verificar que Bybit klines fallback funciona para XAUUSDT cuando Yahoo falla
 - [x] Agregar migración/backfill para usuarios existentes que perdieron XAUUSDT scalping (auto-backfill en bot.start)
+
+## Protección contra pérdidas - Abril 21
+- [x] BUG: Compras Grid muestran PnL +0.00 — es correcto: compras no tienen PnL hasta venta, ahora se muestra PnL No Realizado en dashboard
+- [x] Implementar Stop-Loss automático: Grid (1.5% default), Futures (2% default), configurable desde UI
+- [x] Implementar Take-Profit automático: Futures con TP configurable, Grid con trailing stop
+- [x] Implementar Trailing Stop mejorado: activación configurable, distancia configurable
+- [x] Time Stop: cerrar posiciones que llevan demasiado tiempo sin ganancia (Grid 4h, Futures 12h)
+- [x] Límite de posiciones abiertas: máximo 5 por símbolo (configurable), evita acumulación excesiva
+- [x] PnL No Realizado visible en dashboard: muestra posiciones abiertas con ganancia/pérdida actual
+- [x] Max Drawdown tracking: registra la mayor pérdida para monitoreo de riesgo
+- [x] Notificaciones Telegram para Stop-Loss: alerta inmediata cuando se corta una pérdida
+- [x] Futures Stop-Loss: implementado (antes solo tenía Take Profit, ahora tiene SL + TP + Time Stop)
+- [x] 38 tests pasando, 0 errores TypeScript
+
+## Gaps resueltos
+- [x] Agregar controles UI para stopLossPct, trailingStopPct, trailingActivationPct, maxOpenPositions en Estrategias
+- [x] Mostrar PnL no realizado y posiciones abiertas en vista desktop y mobile del dashboard
+- [x] Verificación final TypeScript (npx tsc --noEmit) — 0 errores, 38 tests pasando

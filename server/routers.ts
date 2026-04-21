@@ -5,7 +5,7 @@ import { publicProcedure, protectedProcedure, router } from "./_core/trpc";
 import { z } from "zod";
 import * as db from "./db";
 import { invokeLLM } from "./_core/llm";
-import { startEngine, stopEngine, emergencyStopEngine, getLivePrices, isEngineRunning, getEngineCycles } from "./tradingEngine";
+import { startEngine, stopEngine, emergencyStopEngine, getLivePrices, isEngineRunning, getEngineCycles, getOpenPositions } from "./tradingEngine";
 
 export const appRouter = router({
   system: systemRouter,
@@ -25,6 +25,9 @@ export const appRouter = router({
       const recentOpps = await db.getUserOpportunities(ctx.user.id, 10);
       const prices = getLivePrices();
       const engineRunning = isEngineRunning(ctx.user.id);
+      const openPositions = getOpenPositions(ctx.user.id);
+      const totalUnrealizedPnl = [...openPositions.grid, ...openPositions.futures]
+        .reduce((sum, p) => sum + p.unrealizedPnl, 0);
       return {
         state,
         unreadNotifications: unread,
@@ -32,6 +35,8 @@ export const appRouter = router({
         livePrices: prices,
         engineRunning,
         cycles: getEngineCycles(ctx.user.id),
+        openPositions,
+        totalUnrealizedPnl,
       };
     }),
     start: protectedProcedure.mutation(async ({ ctx }) => {
@@ -210,6 +215,10 @@ export const appRouter = router({
         leverage: z.number().min(1).max(10).optional(),
         takeProfitPct: z.number().min(0.1).max(20).optional(),
         stopLossPct: z.number().min(0.1).max(10).optional(),
+        trailingStopPct: z.number().min(0.1).max(10).optional(),
+        trailingActivationPct: z.number().min(0.1).max(10).optional(),
+        maxHoldHours: z.number().min(1).max(168).optional(),
+        maxOpenPositions: z.number().min(1).max(50).optional(),
       }),
     })).mutation(async ({ input }) => {
       const dbConn = await db.getDb();

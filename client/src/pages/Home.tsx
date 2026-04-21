@@ -85,6 +85,9 @@ export default function Home() {
   const unread = data?.unreadNotifications ?? 0;
   const notifications = data?.recentOpportunities ?? [];
   const selectedExchange = (state as any)?.selectedExchange ?? "bybit";
+  const unrealizedPnl = (data as any)?.totalUnrealizedPnl ?? 0;
+  const openPositions = (data as any)?.openPositions ?? { grid: [], futures: [] };
+  const totalOpenPositions = (openPositions.grid?.length ?? 0) + (openPositions.futures?.length ?? 0);
 
   const updateSettings = trpc.bot.updateSettings.useMutation({
     onSuccess: () => { utils.bot.status.invalidate(); },
@@ -289,7 +292,7 @@ export default function Home() {
           <p className={`text-base mt-0.5 ${pnlColor}`}>{fmtPct(pnlPct)}</p>
         </div>
 
-        {/* Mobile Stats Grid 2x2 */}
+        {/* Mobile Stats Grid */}
         <div className="grid grid-cols-2 gap-2.5">
           {[
             { icon: Wallet, label: "SALDO", value: fmtUsd(balance) },
@@ -305,17 +308,52 @@ export default function Home() {
           ))}
         </div>
 
-        {/* Mobile Stats Row */}
-        <div className="grid grid-cols-2 gap-2.5">
-          <div className="glass-card p-4 text-center">
-            <Activity className="h-4 w-4 mx-auto text-muted-foreground mb-1.5" />
-            <p className="text-[9px] font-semibold tracking-[0.15em] text-muted-foreground">OPERACIONES</p>
-            <p className="text-base font-bold mt-1 tabular-nums">{totalTrades}</p>
+        {/* Unrealized PnL + Open Positions */}
+        {totalOpenPositions > 0 && (
+          <div className={`glass-card p-4 ${unrealizedPnl >= 0 ? 'border-[oklch(0.72_0.19_160)]/20' : 'border-[oklch(0.63_0.24_25)]/20'} border`}>
+            <div className="flex items-center justify-between mb-2">
+              <div className="flex items-center gap-2">
+                <Shield className="h-4 w-4 text-primary" />
+                <span className="text-xs font-semibold">Posiciones Abiertas</span>
+              </div>
+              <Badge variant="outline" className="text-[10px]">{totalOpenPositions} activas</Badge>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-xs text-muted-foreground">PnL No Realizado</span>
+              <span className={`text-sm font-bold tabular-nums ${unrealizedPnl >= 0 ? 'text-[oklch(0.72_0.19_160)]' : 'text-[oklch(0.63_0.24_25)]'}`}>
+                {fmt(unrealizedPnl)}
+              </span>
+            </div>
+            {openPositions.grid?.length > 0 && (
+              <div className="mt-2 space-y-1">
+                {openPositions.grid.slice(0, 3).map((p: any, i: number) => (
+                  <div key={i} className="flex items-center justify-between text-[10px]">
+                    <span className="text-muted-foreground">{p.symbol?.replace('USDT', '')} @ ${fmtPrice(p.buyPrice)}</span>
+                    <span className={p.unrealizedPnl >= 0 ? 'text-[oklch(0.72_0.19_160)]' : 'text-[oklch(0.63_0.24_25)]'}>{fmt(p.unrealizedPnl)}</span>
+                  </div>
+                ))}
+                {openPositions.grid.length > 3 && <p className="text-[10px] text-muted-foreground text-center">+{openPositions.grid.length - 3} más</p>}
+              </div>
+            )}
           </div>
-          <div className="glass-card p-4 text-center">
-            <Clock className="h-4 w-4 mx-auto text-muted-foreground mb-1.5" />
+        )}
+
+        {/* Mobile Stats Row */}
+        <div className="grid grid-cols-3 gap-2.5">
+          <div className="glass-card p-3 text-center">
+            <Activity className="h-3.5 w-3.5 mx-auto text-muted-foreground mb-1" />
+            <p className="text-[9px] font-semibold tracking-[0.15em] text-muted-foreground">TRADES</p>
+            <p className="text-sm font-bold mt-0.5 tabular-nums">{totalTrades}</p>
+          </div>
+          <div className="glass-card p-3 text-center">
+            <Shield className="h-3.5 w-3.5 mx-auto text-muted-foreground mb-1" />
+            <p className="text-[9px] font-semibold tracking-[0.15em] text-muted-foreground">DRAWDOWN</p>
+            <p className="text-sm font-bold mt-0.5 tabular-nums text-[oklch(0.63_0.24_25)]">{maxDrawdown > 0 ? '-$' + maxDrawdown.toFixed(2) : '$0'}</p>
+          </div>
+          <div className="glass-card p-3 text-center">
+            <Clock className="h-3.5 w-3.5 mx-auto text-muted-foreground mb-1" />
             <p className="text-[9px] font-semibold tracking-[0.15em] text-muted-foreground">ACTIVO</p>
-            <p className="text-base font-bold mt-1 tabular-nums">{isRunning ? uptime : "—"}</p>
+            <p className="text-sm font-bold mt-0.5 tabular-nums">{isRunning ? uptime : "—"}</p>
           </div>
         </div>
 
@@ -547,6 +585,54 @@ export default function Home() {
           </div>
         ))}
       </div>
+
+      {/* Open Positions + Unrealized PnL (Desktop) */}
+      {totalOpenPositions > 0 && (
+        <div className={`glass-card p-5 ${unrealizedPnl >= 0 ? 'border-[oklch(0.72_0.19_160)]/20' : 'border-[oklch(0.63_0.24_25)]/20'} border`}>
+          <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center gap-2">
+              <Shield className="h-4 w-4 text-primary" />
+              <h3 className="font-semibold text-sm">Posiciones Abiertas</h3>
+            </div>
+            <div className="flex items-center gap-3">
+              <Badge variant="outline" className="text-xs">{totalOpenPositions} activas</Badge>
+              <span className={`text-lg font-bold tabular-nums ${unrealizedPnl >= 0 ? 'text-[oklch(0.72_0.19_160)]' : 'text-[oklch(0.63_0.24_25)]'}`}>
+                PnL: {fmt(unrealizedPnl)}
+              </span>
+            </div>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
+            {openPositions.grid?.map((p: any, i: number) => (
+              <div key={`g${i}`} className="flex items-center justify-between p-2.5 bg-secondary/30 rounded-lg">
+                <div>
+                  <div className="flex items-center gap-1.5">
+                    <Badge variant="outline" className="text-[9px]">Grid</Badge>
+                    <span className="text-sm font-medium">{p.symbol?.replace('USDT', '')}</span>
+                  </div>
+                  <p className="text-[10px] text-muted-foreground mt-0.5">Compra: ${fmtPrice(p.buyPrice)} → ${fmtPrice(p.currentPrice)}</p>
+                </div>
+                <span className={`text-sm font-bold tabular-nums ${p.unrealizedPnl >= 0 ? 'text-[oklch(0.72_0.19_160)]' : 'text-[oklch(0.63_0.24_25)]'}`}>
+                  {fmt(p.unrealizedPnl)}
+                </span>
+              </div>
+            ))}
+            {openPositions.futures?.map((p: any, i: number) => (
+              <div key={`f${i}`} className="flex items-center justify-between p-2.5 bg-secondary/30 rounded-lg">
+                <div>
+                  <div className="flex items-center gap-1.5">
+                    <Badge variant="outline" className="text-[9px] border-[oklch(0.8_0.15_85)] text-[oklch(0.8_0.15_85)]">Futures {p.leverage}x</Badge>
+                    <span className="text-sm font-medium">{p.symbol?.replace('USDT', '')}</span>
+                  </div>
+                  <p className="text-[10px] text-muted-foreground mt-0.5">Entrada: ${fmtPrice(p.entryPrice)} → ${fmtPrice(p.currentPrice)}</p>
+                </div>
+                <span className={`text-sm font-bold tabular-nums ${p.unrealizedPnl >= 0 ? 'text-[oklch(0.72_0.19_160)]' : 'text-[oklch(0.63_0.24_25)]'}`}>
+                  {fmt(p.unrealizedPnl)}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Charts + Recent Trades */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">

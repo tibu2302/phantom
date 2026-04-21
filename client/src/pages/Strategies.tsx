@@ -98,6 +98,12 @@ function StrategyConfig({ strategy, onClose }: { strategy: any; onClose: () => v
   const [allocation, setAllocation] = useState(strategy.allocationPct ?? 30);
   const [leverage, setLeverage] = useState(strategy.config?.leverage ?? 2);
   const [takeProfit, setTakeProfit] = useState(strategy.config?.takeProfitPct ?? 1.0);
+  // Protection settings
+  const [stopLoss, setStopLoss] = useState(strategy.config?.stopLossPct ?? (strategy.strategyType === 'futures' ? 2.0 : 1.5));
+  const [trailingStop, setTrailingStop] = useState(strategy.config?.trailingStopPct ?? 0.3);
+  const [trailingActivation, setTrailingActivation] = useState(strategy.config?.trailingActivationPct ?? 0.3);
+  const [maxPositions, setMaxPositions] = useState(strategy.config?.maxOpenPositions ?? 5);
+  const [maxHoldHours, setMaxHoldHours] = useState(strategy.config?.maxHoldHours ?? (strategy.strategyType === 'futures' ? 12 : 4));
 
   const updateConfig = trpc.strategies.updateConfig.useMutation({
     onSuccess: () => {
@@ -133,24 +139,14 @@ function StrategyConfig({ strategy, onClose }: { strategy: any; onClose: () => v
                 <span className="text-muted-foreground">Niveles del grid</span>
                 <span className="font-bold text-primary">{gridLevels}</span>
               </div>
-              <Slider
-                value={[gridLevels]}
-                onValueChange={([v]) => setGridLevels(v)}
-                min={4} max={30} step={2}
-                className="w-full"
-              />
+              <Slider value={[gridLevels]} onValueChange={([v]) => setGridLevels(v)} min={4} max={30} step={2} className="w-full" />
             </div>
             <div>
               <div className="flex justify-between text-xs mb-1">
                 <span className="text-muted-foreground">Spread del grid</span>
                 <span className="font-bold text-primary">{gridSpread}%</span>
               </div>
-              <Slider
-                value={[gridSpread]}
-                onValueChange={([v]) => setGridSpread(v)}
-                min={0.1} max={5} step={0.1}
-                className="w-full"
-              />
+              <Slider value={[gridSpread]} onValueChange={([v]) => setGridSpread(v)} min={0.1} max={5} step={0.1} className="w-full" />
             </div>
           </>
         ) : isFutures ? (
@@ -160,25 +156,15 @@ function StrategyConfig({ strategy, onClose }: { strategy: any; onClose: () => v
                 <span className="text-muted-foreground">Apalancamiento</span>
                 <span className="font-bold text-primary">{leverage}x</span>
               </div>
-              <Slider
-                value={[leverage]}
-                onValueChange={([v]) => setLeverage(v)}
-                min={1} max={5} step={1}
-                className="w-full"
-              />
-              <p className="text-[10px] text-muted-foreground mt-1">Bajo apalancamiento = menor riesgo de liquidaci\u00f3n</p>
+              <Slider value={[leverage]} onValueChange={([v]) => setLeverage(v)} min={1} max={5} step={1} className="w-full" />
+              <p className="text-[10px] text-muted-foreground mt-1">Bajo apalancamiento = menor riesgo de liquidación</p>
             </div>
             <div>
               <div className="flex justify-between text-xs mb-1">
                 <span className="text-muted-foreground">Take Profit</span>
                 <span className="font-bold text-primary">{takeProfit}%</span>
               </div>
-              <Slider
-                value={[takeProfit]}
-                onValueChange={([v]) => setTakeProfit(v)}
-                min={0.3} max={5} step={0.1}
-                className="w-full"
-              />
+              <Slider value={[takeProfit]} onValueChange={([v]) => setTakeProfit(v)} min={0.3} max={5} step={0.1} className="w-full" />
             </div>
           </>
         ) : (
@@ -187,14 +173,62 @@ function StrategyConfig({ strategy, onClose }: { strategy: any; onClose: () => v
               <span className="text-muted-foreground">Umbral de scalping</span>
               <span className="font-bold text-primary">{scalpThreshold}%</span>
             </div>
-            <Slider
-              value={[scalpThreshold]}
-              onValueChange={([v]) => setScalpThreshold(v)}
-              min={0.1} max={3} step={0.1}
-              className="w-full"
-            />
+            <Slider value={[scalpThreshold]} onValueChange={([v]) => setScalpThreshold(v)} min={0.1} max={3} step={0.1} className="w-full" />
           </div>
         )}
+
+        {/* ─── Protección contra pérdidas (todos los tipos) ─── */}
+        <div className="border-t border-white/10 pt-3 mt-2">
+          <p className="text-[10px] font-semibold tracking-[0.15em] text-muted-foreground mb-3">⚠️ PROTECCIÓN</p>
+          <div className="space-y-3">
+            <div>
+              <div className="flex justify-between text-xs mb-1">
+                <span className="text-muted-foreground">Stop-Loss</span>
+                <span className="font-bold text-[oklch(0.63_0.24_25)]">{stopLoss}%</span>
+              </div>
+              <Slider value={[stopLoss]} onValueChange={([v]) => setStopLoss(v)} min={0.5} max={10} step={0.5} className="w-full" />
+              <p className="text-[10px] text-muted-foreground mt-0.5">Corta pérdida automáticamente si cae este %</p>
+            </div>
+            {(isGrid || isFutures) && (
+              <>
+                <div>
+                  <div className="flex justify-between text-xs mb-1">
+                    <span className="text-muted-foreground">Trailing Stop</span>
+                    <span className="font-bold text-primary">{trailingStop}%</span>
+                  </div>
+                  <Slider value={[trailingStop]} onValueChange={([v]) => setTrailingStop(v)} min={0.1} max={3} step={0.1} className="w-full" />
+                  <p className="text-[10px] text-muted-foreground mt-0.5">Distancia de seguimiento desde el máximo</p>
+                </div>
+                <div>
+                  <div className="flex justify-between text-xs mb-1">
+                    <span className="text-muted-foreground">Activación trailing</span>
+                    <span className="font-bold text-primary">{trailingActivation}%</span>
+                  </div>
+                  <Slider value={[trailingActivation]} onValueChange={([v]) => setTrailingActivation(v)} min={0.1} max={3} step={0.1} className="w-full" />
+                  <p className="text-[10px] text-muted-foreground mt-0.5">Ganancia mínima para activar trailing stop</p>
+                </div>
+              </>
+            )}
+            <div>
+              <div className="flex justify-between text-xs mb-1">
+                <span className="text-muted-foreground">Tiempo máximo (horas)</span>
+                <span className="font-bold text-primary">{maxHoldHours}h</span>
+              </div>
+              <Slider value={[maxHoldHours]} onValueChange={([v]) => setMaxHoldHours(v)} min={1} max={48} step={1} className="w-full" />
+              <p className="text-[10px] text-muted-foreground mt-0.5">Cierra posición si no hay ganancia después de este tiempo</p>
+            </div>
+            {isGrid && (
+              <div>
+                <div className="flex justify-between text-xs mb-1">
+                  <span className="text-muted-foreground">Máx. posiciones abiertas</span>
+                  <span className="font-bold text-primary">{maxPositions}</span>
+                </div>
+                <Slider value={[maxPositions]} onValueChange={([v]) => setMaxPositions(v)} min={1} max={20} step={1} className="w-full" />
+                <p className="text-[10px] text-muted-foreground mt-0.5">Evita acumular demasiadas compras sin vender</p>
+              </div>
+            )}
+          </div>
+        </div>
       </div>
       <div className="flex gap-2">
         <Button
@@ -209,6 +243,12 @@ function StrategyConfig({ strategy, onClose }: { strategy: any; onClose: () => v
               leverage: isFutures ? leverage : undefined,
               takeProfitPct: isFutures ? takeProfit : undefined,
               allocationPct: allocation,
+              // Protection settings
+              stopLossPct: stopLoss,
+              trailingStopPct: (isGrid || isFutures) ? trailingStop : undefined,
+              trailingActivationPct: (isGrid || isFutures) ? trailingActivation : undefined,
+              maxHoldHours: maxHoldHours,
+              maxOpenPositions: isGrid ? maxPositions : undefined,
             },
           })}
           disabled={updateConfig.isPending}

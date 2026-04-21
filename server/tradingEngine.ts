@@ -60,6 +60,9 @@ interface OpenBuyPosition {
   gridLevelPrice: number;
   // Trailing stop fields
   highestPrice?: number; // highest price since buy (for trailing)
+  // Stop-loss fields
+  openedAt: number; // timestamp when position was opened
+  stopLossPct?: number; // custom stop-loss % (default from config)
 }
 
 interface FuturesPosition {
@@ -591,32 +594,52 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
     console.log(`[Grid] ${symbol} price=${price.toFixed(2)} nearestBuy=${nearestBuy?.price?.toFixed(2) ?? 'none'} nearestSell=${nearestSell?.price?.toFixed(2) ?? 'none'} unfilled=${unfilledBuys.length}B/${unfilledSells.length}S trend=${trendLabel}`);
   }
 
-  // ─── Trailing Stop: update highest price for open positions ───
   const openPositions = engine.openBuyPositions[symbol] ?? [];
-  for (const pos of openPositions) {
+
+  // ─── Protection System: Stop-Loss + Trailing Stop + Time Stop ───
+  const stratConfig = config ?? {};
+  const stopLossPct = (stratConfig.stopLossPct ?? 1.5) / 100; // Default 1.5% stop-loss
+  const trailingPct = (stratConfig.trailingStopPct ?? 0.3) / 100; // 0.3% trailing distance
+  const trailingActivation = (stratConfig.trailingActivationPct ?? 0.3) / 100; // Activate trailing after 0.3% profit
+  const maxHoldTimeMs = (stratConfig.maxHoldHours ?? 4) * 60 * 60 * 1000; // Default 4 hours max hold
+  const maxOpenPositions = stratConfig.maxOpenPositions ?? 5; // Max open positions per symbol
+  const positionsToSell: { pos: OpenBuyPosition; reason: string }[] = [];
+
+  for (let i = openPositions.length - 1; i >= 0; i--) {
+    const pos = openPositions[i];
+    const lossPct = (pos.buyPrice - price) / pos.buyPrice;
+    const profitPct = (price - pos.buyPrice) / pos.buyPrice;
+    const holdTimeMs = Date.now() - (pos.openedAt ?? Date.now());
+
+    // 1. STOP-LOSS: Cut losses if price drops below threshold
+    if (lossPct >= stopLossPct) {
+      positionsToSell.push({ pos, reason: `STOP-LOSS (${(lossPct * 100).toFixed(2)}% loss)` });
+      openPositions.splice(i, 1);
+      continue;
+    }
+
+    // 2. TIME STOP: Close if held too long without significant profit
+    if (holdTimeMs > maxHoldTimeMs && profitPct < 0.005) {
+      positionsToSell.push({ pos, reason: `TIME-STOP (held ${(holdTimeMs / 3600000).toFixed(1)}h, profit ${(profitPct * 100).toFixed(2)}%)` });
+      openPositions.splice(i, 1);
+      continue;
+    }
+
+    // 3. TRAILING STOP: Lock in profits
     if (!pos.highestPrice || price > pos.highestPrice) {
       pos.highestPrice = price;
     }
-  }
-
-  // ─── Trailing Stop Sell Check ───
-  // If price has risen above buy price and then dropped by trailing %, sell for profit
-  const trailingPct = 0.003; // 0.3% trailing distance
-  const positionsToSell: OpenBuyPosition[] = [];
-  for (let i = openPositions.length - 1; i >= 0; i--) {
-    const pos = openPositions[i];
-    if (pos.highestPrice && pos.highestPrice > pos.buyPrice * 1.003) {
-      // Price has risen at least 0.3% above buy price
+    if (pos.highestPrice && pos.highestPrice > pos.buyPrice * (1 + trailingActivation)) {
       const dropFromHigh = (pos.highestPrice - price) / pos.highestPrice;
       if (dropFromHigh >= trailingPct) {
-        // Price dropped from high — trailing stop triggered, sell for profit
-        positionsToSell.push(pos);
+        positionsToSell.push({ pos, reason: `TRAILING-STOP (high=${pos.highestPrice.toFixed(2)}, drop=${(dropFromHigh * 100).toFixed(2)}%)` });
         openPositions.splice(i, 1);
+        continue;
       }
     }
   }
 
-  for (const pos of positionsToSell) {
+  for (const { pos, reason } of positionsToSell) {
     const orderId = await placeOrder(engine, symbol, "Sell", pos.qty, category);
     if (orderId) {
       const grossPnl = (price - pos.buyPrice) * parseFloat(pos.qty);
@@ -643,18 +666,28 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
         await db.upsertDailyPnl(engine.userId, parseFloat(updatedState.totalPnl ?? "0"), parseFloat(updatedState.currentBalance ?? "5000"), updatedState.totalTrades ?? 0);
       }
 
-      console.log(`[Grid] TRAILING SELL ${symbol} @ ${price.toFixed(2)} buyPrice=${pos.buyPrice.toFixed(2)} high=${pos.highestPrice?.toFixed(2)} pnl=${pnl.toFixed(2)} order=${orderId}`);
-
-      // Telegram notification for completed profitable cycle
-      if (pnl > 0) {
-        await sendTelegramNotification(engine,
-          `✅ <b>PHANTOM Grid Profit</b>\n` +
-          `Par: ${symbol}\n` +
-          `Compra: $${pos.buyPrice.toFixed(2)}\n` +
-          `Venta: $${price.toFixed(2)} (trailing)\n` +
-          `Ganancia: <b>$${pnl.toFixed(2)}</b>`
-        );
+      // Track max drawdown
+      if (pnl < 0) {
+        const state = await db.getOrCreateBotState(engine.userId);
+        const currentDrawdown = Math.abs(pnl);
+        const maxDrawdown = parseFloat(state?.maxDrawdown ?? "0");
+        if (currentDrawdown > maxDrawdown) {
+          await db.updateBotState(engine.userId, { maxDrawdown: currentDrawdown.toFixed(2) });
+        }
       }
+
+      console.log(`[Grid] ${reason} ${symbol} @ ${price.toFixed(2)} buyPrice=${pos.buyPrice.toFixed(2)} high=${pos.highestPrice?.toFixed(2)} pnl=${pnl.toFixed(2)} order=${orderId}`);
+
+      // Telegram notification
+      const emoji = pnl > 0 ? "✅" : "🛑";
+      const label = pnl > 0 ? "Profit" : "Stop-Loss";
+      await sendTelegramNotification(engine,
+        `${emoji} <b>PHANTOM Grid ${label}</b>\n` +
+        `Par: ${symbol}\n` +
+        `Compra: $${pos.buyPrice.toFixed(2)}\n` +
+        `Venta: $${price.toFixed(2)} (${reason.split(" ")[0]})\n` +
+        `Resultado: <b>$${pnl.toFixed(2)}</b>`
+      );
       traded = true;
     }
   }
@@ -708,6 +741,12 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
         continue;
       }
 
+      // ─── Max open positions guard: don't accumulate too many buys ───
+      if (level.side === "Buy" && (engine.openBuyPositions[symbol]?.length ?? 0) >= maxOpenPositions) {
+        console.log(`[Grid] SKIP BUY ${symbol} @ ${level.price.toFixed(2)} — max open positions (${maxOpenPositions})`);
+        continue;
+      }
+
       // ─── Profitability guard ───
       if (level.side === "Buy") {
         const feeRoundTrip = 0.002;
@@ -741,6 +780,7 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
           engine.openBuyPositions[symbol].push({
             symbol, buyPrice: price, qty, tradeAmount, category,
             gridLevelPrice: level.price, highestPrice: price,
+            openedAt: Date.now(),
           });
           pnl = 0;
           console.log(`[Grid] BUY ${symbol} @ ${price.toFixed(2)} qty=${qty} pnl=$0.00 (trailing stop active) order=${orderId}`);
@@ -829,6 +869,7 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
         engine.openBuyPositions[symbol].push({
           symbol, buyPrice: price, qty: dcaQty, tradeAmount: dcaAmount,
           category, gridLevelPrice: price, highestPrice: price,
+          openedAt: Date.now(),
         });
       }
     }
@@ -999,13 +1040,34 @@ async function runFuturesLongOnly(engine: EngineState, symbol: string) {
   if (!engine.futuresPositions[symbol]) engine.futuresPositions[symbol] = [];
   const positions = engine.futuresPositions[symbol];
 
-  // ─── Manage existing positions: check Take Profit ───
+  // ─── Manage existing positions: Stop-Loss + Take Profit + Trailing ───
+  const futStrats = await db.getUserStrategies(engine.userId);
+  const futStrat = futStrats.find(s => s.symbol === symbol && s.strategyType === "futures");
+  const futConfig = futStrat?.config as any ?? {};
+  const futuresStopLossPct = (futConfig.stopLossPct ?? 2.0) / 100; // Default 2% stop-loss for futures
+  const futuresMaxHoldHours = futConfig.maxHoldHours ?? 12; // Max 12 hours for futures
+
   for (let i = positions.length - 1; i >= 0; i--) {
     const pos = positions[i];
     const profitPct = (price - pos.entryPrice) / pos.entryPrice;
+    const lossPct = (pos.entryPrice - price) / pos.entryPrice;
+    const holdTimeMs = Date.now() - pos.openedAt;
+    let closeReason = "";
 
-    if (profitPct >= pos.takeProfitPct / 100) {
-      // Take profit hit — close position
+    // 1. STOP-LOSS: Cut losses
+    if (lossPct >= futuresStopLossPct) {
+      closeReason = `STOP-LOSS (${(lossPct * 100).toFixed(2)}% loss, ${pos.leverage}x)`;
+    }
+    // 2. TIME STOP: Close if held too long without profit
+    else if (holdTimeMs > futuresMaxHoldHours * 3600000 && profitPct < 0.003) {
+      closeReason = `TIME-STOP (held ${(holdTimeMs / 3600000).toFixed(1)}h)`;
+    }
+    // 3. TAKE PROFIT
+    else if (profitPct >= pos.takeProfitPct / 100) {
+      closeReason = `TAKE-PROFIT (${(profitPct * 100).toFixed(2)}%)`;
+    }
+
+    if (closeReason) {
       const orderId = await placeOrder(engine, symbol, "Sell", pos.qty, "linear");
       if (orderId) {
         const grossPnl = (price - pos.entryPrice) * parseFloat(pos.qty) * pos.leverage;
@@ -1027,10 +1089,21 @@ async function runFuturesLongOnly(engine: EngineState, symbol: string) {
           });
         }
 
-        console.log(`[Futures] TAKE PROFIT ${symbol} @ ${price.toFixed(2)} entry=${pos.entryPrice.toFixed(2)} pnl=$${pnl.toFixed(2)} (${pos.leverage}x)`);
+        // Track max drawdown
+        if (pnl < 0) {
+          const state = await db.getOrCreateBotState(engine.userId);
+          const currentDrawdown = Math.abs(pnl);
+          const maxDrawdown = parseFloat(state?.maxDrawdown ?? "0");
+          if (currentDrawdown > maxDrawdown) {
+            await db.updateBotState(engine.userId, { maxDrawdown: currentDrawdown.toFixed(2) });
+          }
+        }
+
+        const emoji = pnl > 0 ? "🎯" : "🛑";
+        console.log(`[Futures] ${closeReason} ${symbol} @ ${price.toFixed(2)} entry=${pos.entryPrice.toFixed(2)} pnl=$${pnl.toFixed(2)} (${pos.leverage}x)`);
 
         await sendTelegramNotification(engine,
-          `🎯 <b>PHANTOM Futures TP</b>\nPar: ${symbol}\nEntrada: $${pos.entryPrice.toFixed(2)}\nSalida: $${price.toFixed(2)}\nApalancamiento: ${pos.leverage}x\nGanancia: <b>$${pnl.toFixed(2)}</b>`
+          `${emoji} <b>PHANTOM Futures ${closeReason.split(" ")[0]}</b>\nPar: ${symbol}\nEntrada: $${pos.entryPrice.toFixed(2)}\nSalida: $${price.toFixed(2)}\nApalancamiento: ${pos.leverage}x\nResultado: <b>$${pnl.toFixed(2)}</b>`
         );
 
         positions.splice(i, 1);
@@ -1051,8 +1124,8 @@ async function runFuturesLongOnly(engine: EngineState, symbol: string) {
   if (rsi > 65) return; // don't enter overbought
   if (macd.histogram <= 0) return; // need bullish MACD
 
-  const strats = await db.getUserStrategies(engine.userId);
-  const strat = strats.find(s => s.symbol === symbol && s.strategyType === "futures");
+  const futStrats2 = await db.getUserStrategies(engine.userId);
+  const strat = futStrats2.find(s => s.symbol === symbol && s.strategyType === "futures");
   const config = strat?.config as any;
   const leverage = config?.leverage ?? 2;
   const takeProfitPct = config?.takeProfitPct ?? 1.0;
@@ -1460,6 +1533,48 @@ export function getLivePrices(): Record<string, TickerData> {
 
 export function isEngineRunning(userId: number): boolean {
   return engines.has(userId);
+}
+
+// Get open positions with unrealized PnL for dashboard
+export function getOpenPositions(userId: number): { grid: { symbol: string; buyPrice: number; currentPrice: number; qty: string; unrealizedPnl: number; holdTime: number; highestPrice: number }[]; futures: { symbol: string; entryPrice: number; currentPrice: number; qty: string; leverage: number; unrealizedPnl: number; holdTime: number }[] } {
+  const engine = engines.get(userId);
+  if (!engine) return { grid: [], futures: [] };
+
+  const gridPositions: { symbol: string; buyPrice: number; currentPrice: number; qty: string; unrealizedPnl: number; holdTime: number; highestPrice: number }[] = [];
+  for (const [symbol, positions] of Object.entries(engine.openBuyPositions)) {
+    const currentPrice = engine.lastPrices[symbol] ?? livePrices.get(symbol)?.lastPrice ?? 0;
+    for (const pos of positions) {
+      const unrealizedPnl = (currentPrice - pos.buyPrice) * parseFloat(pos.qty);
+      gridPositions.push({
+        symbol,
+        buyPrice: pos.buyPrice,
+        currentPrice,
+        qty: pos.qty,
+        unrealizedPnl,
+        holdTime: Date.now() - (pos.openedAt ?? Date.now()),
+        highestPrice: pos.highestPrice ?? currentPrice,
+      });
+    }
+  }
+
+  const futuresPos: { symbol: string; entryPrice: number; currentPrice: number; qty: string; leverage: number; unrealizedPnl: number; holdTime: number }[] = [];
+  for (const [symbol, positions] of Object.entries(engine.futuresPositions)) {
+    const currentPrice = engine.lastPrices[symbol] ?? livePrices.get(symbol)?.lastPrice ?? 0;
+    for (const pos of positions) {
+      const unrealizedPnl = (currentPrice - pos.entryPrice) * parseFloat(pos.qty) * pos.leverage;
+      futuresPos.push({
+        symbol,
+        entryPrice: pos.entryPrice,
+        currentPrice,
+        qty: pos.qty,
+        leverage: pos.leverage,
+        unrealizedPnl,
+        holdTime: Date.now() - pos.openedAt,
+      });
+    }
+  }
+
+  return { grid: gridPositions, futures: futuresPos };
 }
 
 // ─── Multi-Exchange WebSocket Price Feed ───
