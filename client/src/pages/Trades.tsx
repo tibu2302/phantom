@@ -73,8 +73,8 @@ export default function Trades() {
             const isBuy = t.side?.toLowerCase() === "buy";
             return (
               <div key={t.id} className="glass-card p-4">
-                <div className="flex items-center justify-between mb-2">
-                  <div className="flex items-center gap-2">
+                <div className="flex items-center justify-between mb-2.5">
+                  <div className="flex items-center gap-2 flex-wrap">
                     <Badge
                       variant={isBuy ? "default" : "destructive"}
                       className="text-[10px] px-2"
@@ -90,10 +90,19 @@ export default function Trades() {
                     {pnl >= 0 ? "+" : ""}{pnl.toFixed(2)}
                   </span>
                 </div>
-                <div className="flex items-center justify-between text-xs text-muted-foreground">
-                  <span>Precio: <span className="text-foreground font-mono">${fmtPrice(parseFloat(String(t.price)))}</span></span>
-                  <span>Qty: <span className="text-foreground font-mono">{t.qty}</span></span>
-                  <span>{new Date(t.createdAt).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}</span>
+                <div className="grid grid-cols-3 gap-2 text-xs text-muted-foreground text-center">
+                  <div>
+                    <p className="text-[9px] uppercase tracking-wider mb-0.5">Precio</p>
+                    <p className="text-foreground font-mono font-medium">${fmtPrice(parseFloat(String(t.price)))}</p>
+                  </div>
+                  <div>
+                    <p className="text-[9px] uppercase tracking-wider mb-0.5">Cantidad</p>
+                    <p className="text-foreground font-mono font-medium">{t.qty}</p>
+                  </div>
+                  <div>
+                    <p className="text-[9px] uppercase tracking-wider mb-0.5">Fecha</p>
+                    <p className="text-foreground font-medium">{new Date(t.createdAt).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}</p>
+                  </div>
                 </div>
               </div>
             );
