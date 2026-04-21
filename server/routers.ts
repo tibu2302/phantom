@@ -129,6 +129,45 @@ export const appRouter = router({
     livePrices: protectedProcedure.query(async () => {
       return getLivePrices();
     }),
+    exchangeBalances: protectedProcedure.query(async ({ ctx }) => {
+      const results: { bybit?: { balance: string; error?: string }; kucoin?: { balance: string; error?: string } } = {};
+      // Bybit balance
+      try {
+        const bybitKeys = await db.getApiKey(ctx.user.id, "bybit");
+        if (bybitKeys) {
+          const { RestClientV5 } = await import("bybit-api");
+          const client = new RestClientV5({ key: bybitKeys.apiKey, secret: bybitKeys.apiSecret });
+          const res = await client.getWalletBalance({ accountType: "UNIFIED" });
+          if (res.retCode === 0) {
+            const totalUsd = (res.result as any)?.list?.[0]?.totalEquity ?? "0";
+            results.bybit = { balance: parseFloat(totalUsd).toFixed(2) };
+          } else {
+            results.bybit = { balance: "0", error: res.retMsg };
+          }
+        }
+      } catch (e: any) {
+        results.bybit = { balance: "0", error: e.message };
+      }
+      // KuCoin balance
+      try {
+        const kucoinKeys = await db.getApiKey(ctx.user.id, "kucoin");
+        if (kucoinKeys) {
+          const { SpotClient } = await import("kucoin-api");
+          const client = new SpotClient({ apiKey: kucoinKeys.apiKey, apiSecret: kucoinKeys.apiSecret, apiPassphrase: kucoinKeys.passphrase ?? "" });
+          const res = await client.getAccountSummary();
+          if (res.code === "200000") {
+            const summary = res.data as any;
+            const totalUsd = parseFloat(summary?.totalBalance ?? summary?.availableBalance ?? "0");
+            results.kucoin = { balance: totalUsd.toFixed(2) };
+          } else {
+            results.kucoin = { balance: "0", error: (res as any).msg };
+          }
+        }
+      } catch (e: any) {
+        results.kucoin = { balance: "0", error: e.message };
+      }
+      return results;
+    }),
   }),
 
   // Public prices endpoint — works without login

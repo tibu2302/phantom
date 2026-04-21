@@ -257,3 +257,8 @@
 - [x] FIX: Posiciones se cargan al iniciar motor y se guardan al detener + cada 5 min
 - [x] Crear favicon profesional para PHANTOM (ghost verde angular con ojos brillantes)
 - [x] FIX: BTC y ETH sin Stop-Loss — exentos de SL y Time-Stop en Grid y Futures
+
+## Dashboard Stats - Saldos por Exchange - Abril 21
+- [x] Agregar endpoint para consultar balance real de Bybit y KuCoin en vivo
+- [x] Mostrar Saldo Bybit y Saldo KuCoin en las cards del dashboard en vez de SALDO e INICIAL
+- [x] Filtrar Telegram: solo mensajes importantes (ventas con ganancia, stop-loss, errores críticos, no cada compra)

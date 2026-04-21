@@ -1075,10 +1075,10 @@ async function runScalpingStrategy(engine: EngineState, symbol: string, category
       }
       console.log(`[Scalp] ${signal} ${symbol} @ ${price.toFixed(2)} qty=${qty} net=${pnl.toFixed(2)} reasons=${reasons.join(", ")}`);
 
-      // Telegram notification for scalp trades
-      if (pnl > 0.1) {
+      // Telegram notification for scalp trades — only profitable SELLS (not buys)
+      if (signal === "Sell" && pnl > 1) {
         await sendTelegramNotification(engine,
-          `⚡ <b>PHANTOM Scalp ${signal}</b>\nPar: ${symbol}\nPrecio: $${price.toFixed(2)}\nGanancia: <b>$${pnl.toFixed(2)}</b>`
+          `⚡ <b>PHANTOM Scalp Profit</b>\nPar: ${symbol}\nPrecio: $${price.toFixed(2)}\nGanancia: <b>$${pnl.toFixed(2)}</b>`
         );
       }
     }
@@ -1241,9 +1241,7 @@ async function runFuturesLongOnly(engine: EngineState, symbol: string) {
 
     console.log(`[Futures] LONG ${symbol} @ ${price.toFixed(2)} qty=${qty} leverage=${leverage}x TP=${takeProfitPct}% order=${orderId}`);
 
-    await sendTelegramNotification(engine,
-      `📈 <b>PHANTOM Futures Long</b>\nPar: ${symbol}\nEntrada: $${price.toFixed(2)}\nApalancamiento: ${leverage}x\nTP: ${takeProfitPct}%`
-    );
+    // Futures BUY notification removed — only send on close (profit/stop-loss)
   }
 }
 
@@ -1312,9 +1310,12 @@ async function runOpportunityScanner(engine: EngineState) {
             });
           } catch { /* non-blocking */ }
 
-          await sendTelegramNotification(engine,
-            `📊 <b>PHANTOM Scanner: ${signal}</b>\nPar: ${symbol}\nPrecio: $${price.toFixed(4)}\nConfianza: ${confidence}%\n${reasons.join("\n")}`
-          );
+          // Only send Telegram for very high confidence scanner alerts (≥85%)
+          if (confidence >= 85) {
+            await sendTelegramNotification(engine,
+              `📊 <b>PHANTOM Scanner: ${signal}</b>\nPar: ${symbol}\nPrecio: $${price.toFixed(4)}\nConfianza: ${confidence}%\n${reasons.join("\n")}`
+            );
+          }
         }
       }
 

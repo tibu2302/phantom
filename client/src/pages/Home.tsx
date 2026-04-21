@@ -36,6 +36,7 @@ export default function Home() {
   const strategiesQuery = trpc.strategies.list.useQuery(undefined, { retry: false });
   const tradesQuery = trpc.trades.list.useQuery({ limit: 50 }, { retry: false });
   const pnlHistory = trpc.pnl.history.useQuery({ days: 14 }, { retry: false, staleTime: 60_000 });
+  const exchangeBalances = trpc.bot.exchangeBalances.useQuery(undefined, { refetchInterval: 30_000, retry: false });
   const utils = trpc.useUtils();
 
   const startBot = trpc.bot.start.useMutation({
@@ -311,24 +312,24 @@ export default function Home() {
           </div>
         </div>
 
-        {/* ── Stats Grid: 2x2 ── */}
+        {/* ── Stats Grid: 2x3 ── */}
         <div className="grid grid-cols-2 gap-2">
           <div className="glass-card p-3.5 flex items-center gap-3">
-            <div className="w-9 h-9 rounded-xl bg-primary/10 flex items-center justify-center shrink-0">
-              <Wallet className="h-4 w-4 text-primary" />
+            <div className="w-9 h-9 rounded-xl bg-[oklch(0.8_0.18_80)]/10 flex items-center justify-center shrink-0">
+              <DollarSign className="h-4 w-4 text-[oklch(0.8_0.18_80)]" />
             </div>
             <div>
-              <p className="text-[9px] font-semibold tracking-wider text-muted-foreground uppercase">Saldo</p>
-              <p className="text-sm font-bold tabular-nums mt-0.5">{hideBalances ? "••••••" : fmtUsd(balance)}</p>
+              <p className="text-[9px] font-semibold tracking-wider text-muted-foreground uppercase">Bybit</p>
+              <p className="text-sm font-bold tabular-nums mt-0.5">{hideBalances ? "••••••" : exchangeBalances.data?.bybit ? fmtUsd(parseFloat(exchangeBalances.data.bybit.balance)) : "—"}</p>
             </div>
           </div>
           <div className="glass-card p-3.5 flex items-center gap-3">
-            <div className="w-9 h-9 rounded-xl bg-[oklch(0.75_0.14_200)]/10 flex items-center justify-center shrink-0">
-              <Target className="h-4 w-4 text-[oklch(0.75_0.14_200)]" />
+            <div className="w-9 h-9 rounded-xl bg-[oklch(0.75_0.14_170)]/10 flex items-center justify-center shrink-0">
+              <DollarSign className="h-4 w-4 text-[oklch(0.75_0.14_170)]" />
             </div>
             <div>
-              <p className="text-[9px] font-semibold tracking-wider text-muted-foreground uppercase">Inicial</p>
-              <p className="text-sm font-bold tabular-nums mt-0.5">{hideBalances ? "••••••" : fmtUsd(initial)}</p>
+              <p className="text-[9px] font-semibold tracking-wider text-muted-foreground uppercase">KuCoin</p>
+              <p className="text-sm font-bold tabular-nums mt-0.5">{hideBalances ? "••••••" : exchangeBalances.data?.kucoin ? fmtUsd(parseFloat(exchangeBalances.data.kucoin.balance)) : "—"}</p>
             </div>
           </div>
           <div className="glass-card p-3.5 flex items-center gap-3">
@@ -653,8 +654,8 @@ export default function Home() {
         {/* Stats Column */}
         <div className="space-y-3">
           {[
-            { icon: Wallet, label: "Saldo", value: hideBalances ? "••••••" : fmtUsd(balance), color: "text-primary", bg: "bg-primary/10" },
-            { icon: Target, label: "Inicial", value: hideBalances ? "••••••" : fmtUsd(initial), color: "text-[oklch(0.75_0.14_200)]", bg: "bg-[oklch(0.75_0.14_200)]/10" },
+            { icon: DollarSign, label: "Bybit", value: hideBalances ? "••••••" : exchangeBalances.data?.bybit ? fmtUsd(parseFloat(exchangeBalances.data.bybit.balance)) : "—", color: "text-[oklch(0.8_0.18_80)]", bg: "bg-[oklch(0.8_0.18_80)]/10" },
+            { icon: DollarSign, label: "KuCoin", value: hideBalances ? "••••••" : exchangeBalances.data?.kucoin ? fmtUsd(parseFloat(exchangeBalances.data.kucoin.balance)) : "—", color: "text-[oklch(0.75_0.14_170)]", bg: "bg-[oklch(0.75_0.14_170)]/10" },
             { icon: Trophy, label: "Win Rate", value: winRate.toFixed(1) + "%", color: "text-[oklch(0.8_0.15_85)]", bg: "bg-[oklch(0.8_0.15_85)]/10" },
             { icon: Activity, label: "Trades", value: String(totalTrades), color: "text-[oklch(0.65_0.2_300)]", bg: "bg-[oklch(0.65_0.2_300)]/10" },
           ].map((s) => (
