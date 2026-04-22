@@ -312,3 +312,8 @@
 ## Feature: Telegram Notifications v2 - Abril 22
 - [x] Notificaciones Telegram para errores de órdenes (Bybit y KuCoin) con detalles del error
 - [x] Resumen diario automático por Telegram a las 23:00 (balance total, trades del día, win rate, PnL)
+
+## Bug Fix: Falsos positivos en notificaciones Telegram - Abril 22
+- [x] KuCoin sells con "Error: OK" son falsos positivos — ahora dice "Balance insuficiente en KuCoin"
+- [x] Mejorar manejo de errores: anti-spam cooldown 5min por par+lado, mensajes claros
+- [x] Limpieza de posiciones fantasma: si sell falla en modo live, se elimina la posición para no reintentar

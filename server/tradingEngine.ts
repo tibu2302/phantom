@@ -99,6 +99,17 @@ interface EngineState {
 const engines: Map<number, EngineState> = new Map();
 const livePrices: Map<string, TickerData> = new Map();
 const engineCycles: Map<number, number> = new Map();
+// Anti-spam: track last error notification per symbol+side to avoid flooding Telegram
+const lastErrorNotif: Map<string, number> = new Map();
+const ERROR_NOTIF_COOLDOWN = 300_000; // 5 minutes between same error notifications
+
+function shouldNotifyError(key: string): boolean {
+  const now = Date.now();
+  const last = lastErrorNotif.get(key) ?? 0;
+  if (now - last < ERROR_NOTIF_COOLDOWN) return false;
+  lastErrorNotif.set(key, now);
+  return true;
+}
 
 export function getEngineCycles(userId: number): number {
   return engineCycles.get(userId) ?? 0;
@@ -479,7 +490,12 @@ async function placeOrder(engine: EngineState, symbol: string, side: "Buy" | "Se
         } catch (e) {
           const errMsg = (e as Error).message;
           console.error(`[Engine] BOTH/KuCoin order failed:`, errMsg);
-          await sendTelegramNotification(engine, `❌ <b>Orden Fallida</b>\nExchange: KuCoin\nPar: ${symbol}\nLado: ${side}\nQty: ${qty}\nError: ${errMsg}`);
+          const isBalanceErr = errMsg === "OK" || errMsg.includes("Balance insufficient") || errMsg.includes("balance");
+          const nKey = `kc_${symbol}_${side}`;
+          if (shouldNotifyError(nKey)) {
+            const reason = isBalanceErr ? "Balance insuficiente en KuCoin" : errMsg;
+            await sendTelegramNotification(engine, `❌ <b>Orden Fallida</b>\nExchange: KuCoin\nPar: ${symbol}\nLado: ${side}\nQty: ${qty}\nRazón: ${reason}`);
+          }
         }
       }
       // Bybit
@@ -490,7 +506,10 @@ async function placeOrder(engine: EngineState, symbol: string, side: "Buy" | "Se
       } catch (e) {
         const errMsg = (e as Error).message;
         console.error(`[Engine] BOTH/Bybit order failed:`, errMsg);
-        await sendTelegramNotification(engine, `❌ <b>Orden Fallida</b>\nExchange: Bybit\nPar: ${symbol}\nLado: ${side}\nQty: ${qty}\nError: ${errMsg}`);
+        const nKey = `by_${symbol}_${side}`;
+        if (shouldNotifyError(nKey)) {
+          await sendTelegramNotification(engine, `❌ <b>Orden Fallida</b>\nExchange: Bybit\nPar: ${symbol}\nLado: ${side}\nQty: ${qty}\nError: ${errMsg}`);
+        }
       }
       return orderIds.length > 0 ? orderIds.join(",") : null;
     } else if (engine.exchange === "kucoin" && engine.kucoinClient) {
@@ -536,7 +555,11 @@ async function placeOrder(engine: EngineState, symbol: string, side: "Buy" | "Se
         // KuCoin returned success HTTP but no orderId (insufficient balance, min size, etc.)
         const errMsg = res?.msg || res?.code || JSON.stringify(res?.data ?? res);
         console.log(`[Engine] KuCoin order rejected ${side} ${symbol}: ${errMsg}`);
-        await sendTelegramNotification(engine, `⚠️ <b>Orden Rechazada</b>\nExchange: KuCoin\nPar: ${symbol}\nLado: ${side}\nError: ${errMsg}`);
+        const nKey = `kc_${symbol}_${side}_rej`;
+        if (shouldNotifyError(nKey)) {
+          const reason = errMsg === "OK" ? "Balance insuficiente o par no disponible" : errMsg;
+          await sendTelegramNotification(engine, `⚠️ <b>Orden Rechazada</b>\nExchange: KuCoin\nPar: ${symbol}\nLado: ${side}\nRazón: ${reason}`);
+        }
         return null;
       }
     } else {
@@ -546,7 +569,12 @@ async function placeOrder(engine: EngineState, symbol: string, side: "Buy" | "Se
   } catch (e) {
     const errMsg = (e as Error).message;
     console.error(`[Engine] Order failed ${side} ${symbol} (${engine.exchange}):`, errMsg);
-    await sendTelegramNotification(engine, `❌ <b>Orden Fallida</b>\nExchange: ${engine.exchange}\nPar: ${symbol}\nLado: ${side}\nQty: ${qty}\nError: ${errMsg}`);
+    const isBalanceErr = errMsg === "OK" || errMsg.includes("Balance insufficient") || errMsg.includes("balance");
+    const nKey = `${engine.exchange}_${symbol}_${side}`;
+    if (shouldNotifyError(nKey)) {
+      const reason = isBalanceErr ? `Balance insuficiente en ${engine.exchange}` : errMsg;
+      await sendTelegramNotification(engine, `❌ <b>Orden Fallida</b>\nExchange: ${engine.exchange}\nPar: ${symbol}\nLado: ${side}\nQty: ${qty}\nRazón: ${reason}`);
+    }
     return null;
   }
 }
@@ -756,6 +784,15 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
 
   for (const { pos, reason } of positionsToSell) {
     const orderId = await placeOrder(engine, symbol, "Sell", pos.qty, category);
+    if (!orderId && !engine.simulationMode) {
+      // Sell failed (likely insufficient balance) — remove phantom position to stop retrying
+      const idx = engine.openBuyPositions[symbol]?.findIndex(p => p.buyPrice === pos.buyPrice && p.qty === pos.qty);
+      if (idx !== undefined && idx >= 0) {
+        engine.openBuyPositions[symbol]!.splice(idx, 1);
+        console.log(`[Grid] Removed phantom position ${symbol} buyPrice=${pos.buyPrice} qty=${pos.qty} — sell failed, likely no balance`);
+      }
+      continue;
+    }
     if (orderId) {
       const grossPnl = (price - pos.buyPrice) * parseFloat(pos.qty);
       const pnl = calcNetPnl(grossPnl, pos.tradeAmount, category, true, engine.exchange);
@@ -1233,6 +1270,15 @@ async function runFuturesLongOnly(engine: EngineState, symbol: string) {
 
     if (closeReason) {
       const orderId = await placeOrder(engine, symbol, "Sell", pos.qty, "linear");
+      if (!orderId && !engine.simulationMode) {
+        // Sell failed — remove phantom futures position
+        const idx = engine.futuresPositions[symbol]?.findIndex(p => p.entryPrice === pos.entryPrice && p.qty === pos.qty);
+        if (idx !== undefined && idx >= 0) {
+          engine.futuresPositions[symbol]!.splice(idx, 1);
+          console.log(`[Futures] Removed phantom position ${symbol} entry=${pos.entryPrice} qty=${pos.qty} — sell failed`);
+        }
+        continue;
+      }
       if (orderId) {
         const grossPnl = (price - pos.entryPrice) * parseFloat(pos.qty) * pos.leverage;
         const pnl = calcNetPnl(grossPnl, pos.tradeAmount * pos.leverage, "linear", true, "bybit");
