@@ -1753,35 +1753,24 @@ export async function startEngine(userId: number): Promise<{ success: boolean; e
   engineCycles.set(userId, 0);
 
   // ─── Restore open positions from DB (survive restarts) ───
-  if (simulationMode) {
-    // Only restore positions in simulation mode
-    try {
-      const savedBybit = await db.loadOpenPositions(userId, "bybit");
-      const savedKucoin = await db.loadOpenPositions(userId, "kucoin");
-      let totalRestored = 0;
-      for (const [sym, positions] of Object.entries(savedBybit)) {
-        engine.openBuyPositions[sym] = [...(engine.openBuyPositions[sym] ?? []), ...positions];
-        totalRestored += positions.length;
-      }
-      for (const [sym, positions] of Object.entries(savedKucoin)) {
-        engine.openBuyPositions[sym] = [...(engine.openBuyPositions[sym] ?? []), ...positions];
-        totalRestored += positions.length;
-      }
-      if (totalRestored > 0) {
-        console.log(`[Engine] Restored ${totalRestored} open positions from DB for user ${userId}`);
-      }
-    } catch (e) {
-      console.error(`[Engine] Failed to restore positions:`, (e as Error).message);
+  // Always restore positions (both LIVE and simulation) so sells can find paired buys
+  try {
+    const savedBybit = await db.loadOpenPositions(userId, "bybit");
+    const savedKucoin = await db.loadOpenPositions(userId, "kucoin");
+    let totalRestored = 0;
+    for (const [sym, positions] of Object.entries(savedBybit)) {
+      engine.openBuyPositions[sym] = [...(engine.openBuyPositions[sym] ?? []), ...positions];
+      totalRestored += positions.length;
     }
-  } else {
-    // LIVE mode: clear all phantom positions from DB to start fresh
-    // In live mode, the exchange IS the source of truth, not our DB
-    try {
-      await db.clearAllOpenPositions(userId);
-      console.log(`[Engine] LIVE mode: cleared all saved positions from DB (exchange is source of truth)`);
-    } catch (e) {
-      console.error(`[Engine] Failed to clear positions:`, (e as Error).message);
+    for (const [sym, positions] of Object.entries(savedKucoin)) {
+      engine.openBuyPositions[sym] = [...(engine.openBuyPositions[sym] ?? []), ...positions];
+      totalRestored += positions.length;
     }
+    if (totalRestored > 0) {
+      console.log(`[Engine] Restored ${totalRestored} open positions from DB for user ${userId} (mode: ${simulationMode ? 'SIM' : 'LIVE'})`);
+    }
+  } catch (e) {
+    console.error(`[Engine] Failed to restore positions:`, (e as Error).message);
   }
 
   // Main trading loop — every 30 seconds
@@ -1798,6 +1787,9 @@ export async function startEngine(userId: number): Promise<{ success: boolean; e
           const posCount = Object.values(engine.openBuyPositions).reduce((s, a) => s + a.length, 0);
           if (posCount > 0) {
             await db.saveOpenPositions(userId, engine.openBuyPositions, engine.exchange === "both" ? "bybit" : engine.exchange);
+            if (engine.exchange === "both") {
+              await db.saveOpenPositions(userId, engine.openBuyPositions, "kucoin");
+            }
             console.log(`[Engine] Periodic save: ${posCount} positions saved to DB`);
           }
         } catch (e) { /* silent */ }

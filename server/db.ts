@@ -268,6 +268,7 @@ export async function saveOpenPositions(userId: number, positions: Record<string
           exchange,
           buyPrice: pos.buyPrice.toFixed(8),
           qty: pos.qty,
+          tradeAmount: pos.tradeAmount ? pos.tradeAmount.toFixed(2) : (pos.buyPrice * parseFloat(pos.qty)).toFixed(2),
           highestPrice: pos.highestPrice ? pos.highestPrice.toFixed(8) : null,
           trailingActive: pos.trailingActive ?? false,
           openedAt: new Date(pos.openedAt ?? Date.now()),
@@ -323,7 +324,7 @@ export async function loadOpenPositions(userId: number, exchange: string): Promi
         symbol: row.symbol,
         buyPrice: bp,
         qty: row.qty,
-        tradeAmount: bp * q, // reconstruct approximate trade amount
+        tradeAmount: row.tradeAmount ? parseFloat(row.tradeAmount) : bp * q, // use saved tradeAmount or reconstruct
         category: (row.strategyType === "futures" || row.strategyType === "scalping") ? "linear" : "spot",
         gridLevelPrice: bp, // approximate: use buy price as grid level
         highestPrice: row.highestPrice ? parseFloat(row.highestPrice) : undefined,

@@ -388,3 +388,11 @@
 ### 5. Fees corregidos
 - [x] Fees de trading verificados: Bybit 0.1%/0.055%, KuCoin 0.1%/0.06% (correctos)
 - [x] Funding rate estimado agregado a calcNetPnl para futuros
+
+## Bug: Todas las operaciones grid muestran PnL $0 - Abril 22
+- [x] Investigar por qué los trades del grid registran pnl: "0" en la DB
+- [x] Causa raíz: posiciones se perdían al reiniciar (solo se restauraban en modo simulación)
+- [x] Fix: restaurar posiciones en LIVE y simulación (ambos modos)
+- [x] Fix: guardar también posiciones de KuCoin en periodic save (exchange=both)
+- [x] Fix: agregar columna tradeAmount a open_positions para PnL preciso al restaurar
+- [x] Fix: loadOpenPositions usa tradeAmount guardado en vez de recalcular

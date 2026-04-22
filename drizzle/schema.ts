@@ -106,6 +106,7 @@ export const openPositions = mysqlTable("open_positions", {
   exchange: varchar("exchange", { length: 32 }).default("bybit").notNull(),
   buyPrice: decimal("buyPrice", { precision: 18, scale: 8 }).notNull(),
   qty: decimal("qty", { precision: 18, scale: 8 }).notNull(),
+  tradeAmount: decimal("tradeAmount", { precision: 18, scale: 2 }),
   highestPrice: decimal("highestPrice", { precision: 18, scale: 8 }),
   trailingActive: boolean("trailingActive").default(false),
   openedAt: timestamp("openedAt").defaultNow().notNull(),

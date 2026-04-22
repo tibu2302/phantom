@@ -1,0 +1,1 @@
+ALTER TABLE `open_positions` ADD `tradeAmount` decimal(18,2);
