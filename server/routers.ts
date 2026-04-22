@@ -237,15 +237,15 @@ export const appRouter = router({
       const totalBal = bybitBal + kucoinBal;
       results.totalBalance = totalBal.toFixed(2);
 
-      // Initial deposit from bot state
+      // Initial deposit from DB (user-configurable)
       const state = await db.getOrCreateBotState(ctx.user.id);
-      const initialDeposit = parseFloat(state?.initialBalance ?? "5000");
-      results.initialDeposit = initialDeposit.toFixed(2);
+      const totalInitial = parseFloat(state?.initialBalance ?? "2500");
+      results.initialDeposit = totalInitial.toFixed(2);
 
       // Real profit = current exchange balance - initial deposit
-      const realProfit = totalBal - initialDeposit;
+      const realProfit = totalBal - totalInitial;
       results.realProfit = realProfit.toFixed(2);
-      results.realProfitPct = initialDeposit > 0 ? ((realProfit / initialDeposit) * 100).toFixed(2) : "0";
+      results.realProfitPct = totalInitial > 0 ? ((realProfit / totalInitial) * 100).toFixed(2) : "0";
 
       // Today's PnL from trades table
       try {

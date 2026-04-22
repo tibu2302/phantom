@@ -287,3 +287,15 @@
 - [x] KuCoin muestra $0 en dashboard — fondos están en cuenta Trading, no Spot
 - [x] Consultar cuenta Trading de KuCoin en vez de (o además de) Spot
 - [x] Ahora suma main + trade + trade_hf y convierte crypto a USD con precios en vivo
+
+## Fix: Capital inicial y cálculos de ganancia - Abril 21
+- [ ] Capital inicial correcto: Bybit $1,500 + KuCoin $1,000 = $2,500 total
+- [ ] Ganancia real = (balance Bybit + KuCoin) - $2,500
+- [ ] % rendimiento = ganancia / $2,500
+- [ ] Mostrar ganancia por exchange (Bybit profit + KuCoin profit separados)
+
+## Feature: Capital invertido editable - Abril 21
+- [ ] Guardar capital invertido en DB (botState.initialBalance)
+- [ ] Endpoint para actualizar capital invertido
+- [ ] UI: campo editable en dashboard para poner el capital invertido manualmente
+- [ ] Ganancia = balance total - capital invertido (configurable)

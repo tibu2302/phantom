@@ -3,11 +3,13 @@ import {
   Bell, Play, Square, AlertTriangle, TrendingUp, TrendingDown,
   Wallet, Target, Trophy, Activity, BarChart3, Shield, Wifi, WifiOff,
   Clock, Zap, ArrowUpRight, ArrowDownRight, RefreshCw, Eye, EyeOff,
-  ChevronRight, Flame
+  ChevronRight, Flame, Pencil
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
 import { AreaChart, Area, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
 import { toast } from "sonner";
 import { useState, useMemo, useEffect, useCallback } from "react";
@@ -57,6 +59,8 @@ export default function Home() {
   const [currentTime, setCurrentTime] = useState(new Date());
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [hideBalances, setHideBalances] = useState(false);
+  const [editDepositOpen, setEditDepositOpen] = useState(false);
+  const [editDepositValue, setEditDepositValue] = useState("");
 
   useEffect(() => {
     const timer = setInterval(() => setCurrentTime(new Date()), 1000);
@@ -88,10 +92,12 @@ export default function Home() {
   const bybitBal = parseFloat(eb?.bybit?.balance ?? "0");
   const bybitAvail = parseFloat(eb?.bybit?.available ?? "0");
   const bybitUnrealized = parseFloat(eb?.bybit?.unrealizedPnl ?? "0");
+  const bybitProfit = parseFloat((eb?.bybit as any)?.profit ?? "0");
   const kucoinBal = parseFloat(eb?.kucoin?.balance ?? "0");
   const kucoinAvail = parseFloat(eb?.kucoin?.available ?? "0");
+  const kucoinProfit = parseFloat((eb?.kucoin as any)?.profit ?? "0");
   const totalBalance = parseFloat(eb?.totalBalance ?? "0");
-  const initialDeposit = parseFloat(eb?.initialDeposit ?? "5000");
+  const initialDeposit = parseFloat(eb?.initialDeposit ?? "2500");
   const realProfit = parseFloat(eb?.realProfit ?? "0");
   const realProfitPct = parseFloat(eb?.realProfitPct ?? "0");
   const todayPnl = parseFloat(eb?.todayPnl ?? "0");
@@ -102,8 +108,15 @@ export default function Home() {
   const openPosCount = eb?.openPositions?.count ?? totalOpenPositions;
 
   const updateSettings = trpc.bot.updateSettings.useMutation({
-    onSuccess: () => { utils.bot.status.invalidate(); },
+    onSuccess: () => { utils.bot.status.invalidate(); utils.bot.exchangeBalances.invalidate(); },
   });
+  const handleSaveDeposit = () => {
+    const val = parseFloat(editDepositValue);
+    if (isNaN(val) || val < 0) { toast.error("Ingresá un monto válido"); return; }
+    updateSettings.mutate({ initialBalance: val.toFixed(2) });
+    setEditDepositOpen(false);
+    toast.success(`Capital invertido actualizado: ${fmtUsd(val)}`);
+  };
   const exchangeLabel = (ex: string) => ex === "kucoin" ? "KuCoin" : ex === "bybit" ? "Bybit" : "Ambos";
   const handleExchangeChange = (exchange: string) => {
     if (typeof navigator !== "undefined" && "vibrate" in navigator) navigator.vibrate(15);
@@ -155,8 +168,40 @@ export default function Home() {
     );
   }
 
+  const depositDialog = (
+    <Dialog open={editDepositOpen} onOpenChange={setEditDepositOpen}>
+      <DialogContent className="sm:max-w-[340px]" style={{ background: 'oklch(0.14 0.005 260)', border: '1px solid oklch(1 0 0 / 10%)' }}>
+        <DialogHeader>
+          <DialogTitle className="text-foreground">Capital Invertido</DialogTitle>
+        </DialogHeader>
+        <div className="space-y-4 pt-2">
+          <p className="text-xs text-muted-foreground">Ingresá el monto total que depositaste en los exchanges (Bybit + KuCoin).</p>
+          <div className="flex items-center gap-2">
+            <span className="text-muted-foreground font-bold">$</span>
+            <Input
+              type="number"
+              step="0.01"
+              min="0"
+              value={editDepositValue}
+              onChange={(e) => setEditDepositValue(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && handleSaveDeposit()}
+              className="text-lg font-bold tabular-nums"
+              placeholder="2500.00"
+              autoFocus
+            />
+          </div>
+          <div className="flex gap-2">
+            <Button variant="outline" className="flex-1" onClick={() => setEditDepositOpen(false)}>Cancelar</Button>
+            <Button className="flex-1" onClick={handleSaveDeposit}>Guardar</Button>
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+
   if (isMobile) {
     return (
+      <>{depositDialog}
       <div className="space-y-4 pb-2">
         {/* ── Header: Exchange + Status + Actions ── */}
         <div className="flex items-center justify-between">
@@ -301,7 +346,10 @@ export default function Home() {
             <p className="text-[42px] font-black tracking-tight tabular-nums leading-none text-foreground">
               {hideBalances ? "••••••" : fmtUsd(totalBalance)}
             </p>
-            <p className="text-[10px] text-muted-foreground/50 mt-1 tabular-nums">Invertido: {hideBalances ? "•••" : fmtUsd(initialDeposit)}</p>
+            <div className="flex items-center gap-1.5 mt-1">
+              <p className="text-[10px] text-muted-foreground/50 tabular-nums">Invertido: {hideBalances ? "•••" : fmtUsd(initialDeposit)}</p>
+              <button onClick={() => { setEditDepositValue(initialDeposit.toFixed(2)); setEditDepositOpen(true); }} className="text-muted-foreground/40 hover:text-primary transition-colors"><Pencil className="h-2.5 w-2.5" /></button>
+            </div>
 
             {/* Ganancia Real */}
             <div className="mt-4 pt-3 border-t border-white/[0.06]">
@@ -550,11 +598,13 @@ export default function Home() {
           </div>
         </div>
       </div>
+    </>
     );
   }
 
   // ─── Desktop Layout ───
   return (
+    <>{depositDialog}
     <div className="space-y-6">
       {/* Header */}
       <div className="flex items-center justify-between">
@@ -679,7 +729,10 @@ export default function Home() {
               </span>
             </div>
             <p className="text-5xl font-black tracking-tight tabular-nums leading-none text-foreground">{hideBalances ? "••••••••" : fmtUsd(totalBalance)}</p>
-            <p className="text-xs text-muted-foreground/50 mt-1.5 tabular-nums">Invertido: {hideBalances ? "•••" : fmtUsd(initialDeposit)}</p>
+            <div className="flex items-center gap-2 mt-1.5">
+              <p className="text-xs text-muted-foreground/50 tabular-nums">Invertido: {hideBalances ? "•••" : fmtUsd(initialDeposit)}</p>
+              <button onClick={() => { setEditDepositValue(initialDeposit.toFixed(2)); setEditDepositOpen(true); }} className="text-muted-foreground/40 hover:text-primary transition-colors"><Pencil className="h-3 w-3" /></button>
+            </div>
             <div className="mt-5 pt-4 border-t border-white/[0.06]">
               <div className="flex items-center justify-between mb-4">
                 <span className="text-[10px] font-bold tracking-[0.15em] text-muted-foreground/60 uppercase">Ganancia Real</span>
@@ -910,5 +963,6 @@ export default function Home() {
         </div>
       </div>
     </div>
+  </>
   );
 }
