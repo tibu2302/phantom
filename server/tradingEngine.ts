@@ -626,7 +626,7 @@ function calcNetPnl(grossPnl: number, tradeAmount: number, category: "spot" | "l
 }
 
 // ─── Grid Trading Strategy (with Trailing Stop, Dynamic Spread, DCA, MTF, Volume Filter, Hours) ───
-function generateGridLevels(currentPrice: number, gridCount: number = 10, gridSpread: number = 0.008): GridLevel[] {
+function generateGridLevels(currentPrice: number, gridCount: number = 10, gridSpread: number = 0.005): GridLevel[] {
   const levels: GridLevel[] = [];
   const step = currentPrice * gridSpread / (gridCount / 2);
   for (let i = -gridCount / 2; i <= gridCount / 2; i++) {
@@ -692,7 +692,7 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
   const strat = strats.find(s => s.symbol === symbol);
   const config = strat?.config as any;
   const gridLevels = config?.gridLevels ?? 10;
-  const baseGridSpread = config?.gridSpreadPct ? config.gridSpreadPct / 100 : 0.008;
+  const baseGridSpread = config?.gridSpreadPct ? config.gridSpreadPct / 100 : 0.005;
 
   // ─── Dynamic Grid: adjust spread based on volatility ───
   let effectiveSpread = baseGridSpread;
@@ -746,14 +746,14 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
 
   // ─── Protection System: Stop-Loss + Trailing Stop + Time Stop ───
   const stratConfig = config ?? {};
-  const stopLossPct = (stratConfig.stopLossPct ?? 5) / 100; // Default 5% stop-loss (crypto is volatile)
+  const stopLossPct = (stratConfig.stopLossPct ?? 3) / 100; // Default 3% stop-loss (crypto is volatile)
   const trailingPct = (stratConfig.trailingStopPct ?? 0.5) / 100; // 0.5% trailing distance
-  const trailingActivation = (stratConfig.trailingActivationPct ?? 1.0) / 100; // Activate trailing after 1.0% profit (optimized for more cycles)
-  const maxHoldTimeMs = (stratConfig.maxHoldHours ?? 48) * 60 * 60 * 1000; // Default 48 hours max hold
-  const maxOpenPositions = stratConfig.maxOpenPositions ?? 5; // Max open positions per symbol
+  const trailingActivation = (stratConfig.trailingActivationPct ?? 0.5) / 100; // Activate trailing after 0.5% profit (optimized for more cycles)
+  const maxHoldTimeMs = (stratConfig.maxHoldHours ?? 4) * 60 * 60 * 1000; // Default 48 hours max hold
+  const maxOpenPositions = stratConfig.maxOpenPositions ?? 3; // Max open positions per symbol
   // Dynamic minProfitUsd: proportional to trade amount (0.3% of tradeAmount, min $0.30, max $2)
   const tradeAmountForMin = strat?.allocationPct ? (parseFloat((await db.getOrCreateBotState(engine.userId))?.currentBalance ?? "5000") * strat.allocationPct / 100) : 100;
-  const dynamicMinProfit = Math.max(0.30, Math.min(2.0, tradeAmountForMin * 0.003));
+  const dynamicMinProfit = Math.max(0.15, Math.min(1.0, tradeAmountForMin * 0.002));
   const minProfitUsd = stratConfig.minProfitUsd ?? dynamicMinProfit; // Proportional to position size
   const positionsToSell: { pos: OpenBuyPosition; reason: string }[] = [];
 
@@ -766,7 +766,7 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
     // 1. STOP-LOSS: Cut losses if price drops below threshold
     // BTC and ETH are EXEMPT from stop-loss — never sell at a loss, always HOLD
     // stopLossPct === 0 means stop-loss is DISABLED
-    const noStopLossSymbols = ["BTCUSDT", "ETHUSDT"];
+    const noStopLossSymbols: string[] = []; // No exemptions — all symbols rotate capital
     if (stopLossPct > 0 && lossPct >= stopLossPct && !noStopLossSymbols.includes(symbol)) {
       positionsToSell.push({ pos, reason: `STOP-LOSS (${(lossPct * 100).toFixed(2)}% loss)` });
       openPositions.splice(i, 1);
@@ -778,12 +778,12 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
     // 2. TIME STOP: Only close if held VERY long AND losing money
     // First threshold: if held > maxHoldTime and price is below buy price, just log warning
     // Only force-sell if held > 2x maxHoldTime AND still losing
-    const doubleMaxHold = maxHoldTimeMs * 2;
+    const doubleMaxHold = maxHoldTimeMs; // Close after maxHoldTime (4h) to rotate capital faster
     if (maxHoldTimeMs > 0 && holdTimeMs > doubleMaxHold && profitPct < -0.002 && !noStopLossSymbols.includes(symbol)) {
       // Only time-stop if the loss is small enough (< stop-loss threshold) — otherwise let stop-loss handle it
       const estGrossPnl = (price - pos.buyPrice) * parseFloat(pos.qty);
       const estNetPnl = calcNetPnl(estGrossPnl, pos.tradeAmount, category, true, engine.exchange);
-      if (Math.abs(estNetPnl) < minProfitUsd) {
+      if (Math.abs(estNetPnl) < pos.tradeAmount * 0.01) { // Accept up to 1% loss to free capital
         // Loss is tiny, close to free up capital
         positionsToSell.push({ pos, reason: `TIME-STOP (held ${(holdTimeMs / 3600000).toFixed(1)}h, loss $${estNetPnl.toFixed(2)})` });
         openPositions.splice(i, 1);
@@ -995,7 +995,7 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
               continue;
             }
             // Minimum profit check: don't sell if profit < minProfitUsd
-            if (pnl < minProfitUsd) {
+            if (pnl < 0.10) { // Allow any sell with > $0.10 profit
               console.log(`[Grid] HOLD ${symbol} — grid sell profit $${pnl.toFixed(2)} < min $${minProfitUsd}, waiting for better price`);
               level.filled = false;
               continue;
@@ -1016,7 +1016,7 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
             const grossPnl = (price - level.price) * parseFloat(qty);
             pnl = calcNetPnl(grossPnl, tradeAmount, category, true, engine.exchange);
             // Block sell if it would result in a loss or profit < minimum
-            if (pnl < minProfitUsd) {
+            if (pnl < 0.10) { // Allow any sell with > $0.10 profit
               console.log(`[Grid] HOLD ${symbol} — no-paired sell profit $${pnl.toFixed(2)} < min $${minProfitUsd}, skipping`);
               level.filled = false;
               continue;
@@ -1188,10 +1188,10 @@ async function runScalpingStrategy(engine: EngineState, symbol: string, category
   if (signal && reasons.length >= minSignals) {
     const strats = await db.getUserStrategies(engine.userId);
     const strat = strats.find(s => s.symbol === symbol && s.strategyType === "scalping") ?? strats.find(s => s.symbol === symbol);
-    const allocation = strat?.allocationPct ?? 20;
+    const allocation = strat?.allocationPct ?? 30;
     const state = await db.getOrCreateBotState(engine.userId);
     const balance = parseFloat(state?.currentBalance ?? "5000");
-    const tradeAmount = balance * allocation / 100 * 0.5; // 50% of allocation per scalp (was 10%, too small to cover fees)
+    const tradeAmount = balance * allocation / 100 * 0.7; // 70% of allocation per scalp (was 10%, too small to cover fees)
     const qty = (tradeAmount / price).toFixed(6);
 
     // ─── Position-Tracked Scalping ───
@@ -1524,7 +1524,7 @@ async function runFuturesStrategy(engine: EngineState, symbol: string) {
   const futStrats2 = await db.getUserStrategies(engine.userId);
   const strat = futStrats2.find(s => s.symbol === symbol && s.strategyType === "futures");
   const config = strat?.config as any;
-  const leverage = config?.leverage ?? 5;
+  const leverage = config?.leverage ?? 10;
   const allocation = strat?.allocationPct ?? 25;
   const state = await db.getOrCreateBotState(engine.userId);
   const balance = parseFloat(state?.currentBalance ?? "5000");
@@ -1874,7 +1874,7 @@ export async function startEngine(userId: number): Promise<{ success: boolean; e
           }
           const bybitEngine: EngineState = { ...engine, exchange: "bybit", kucoinClient: null };
           console.log(`[Engine] Running ${strat.strategyType} for ${strat.symbol} on Bybit`);
-          if (strat.strategyType === "grid") await runGridStrategy(bybitEngine, strat.symbol, cat as "spot" | "linear");
+          if (strat.strategyType === "grid") await runGridStrategy(bybitEngine, strat.symbol, "linear"); // Force linear on Bybit to avoid locking capital in coins
           else if (strat.strategyType === "scalping") await runScalpingStrategy(bybitEngine, strat.symbol, cat as "spot" | "linear");
           continue;
         }
@@ -1882,7 +1882,7 @@ export async function startEngine(userId: number): Promise<{ success: boolean; e
         // Single exchange mode
         console.log(`[Engine] Running ${strat.strategyType} for ${strat.symbol} (${strat.category})`);
         if (strat.strategyType === "grid") {
-          await runGridStrategy(engine, strat.symbol, cat as "spot" | "linear");
+          await runGridStrategy(engine, strat.symbol, engine.exchange === "kucoin" ? "spot" : "linear"); // Linear on Bybit, spot on KuCoin
         } else if (strat.strategyType === "scalping") {
           await runScalpingStrategy(engine, strat.symbol, cat as "spot" | "linear");
         }
@@ -1890,7 +1890,7 @@ export async function startEngine(userId: number): Promise<{ success: boolean; e
     } catch (e) {
       console.error("[Engine] Trading loop error:", (e as Error).message);
     }
-  }, 30_000);
+  }, 20_000);
 
   // Opportunity scanner — every 2 minutes
   engine.scannerIntervalId = setInterval(async () => {
@@ -1947,11 +1947,11 @@ export async function startEngine(userId: number): Promise<{ success: boolean; e
         }
         const bybitEngine: EngineState = { ...engine, exchange: "bybit", kucoinClient: null };
         console.log(`[Engine] First cycle: ${strat.strategyType} ${strat.symbol} on Bybit`);
-        if (strat.strategyType === "grid") await runGridStrategy(bybitEngine, strat.symbol, cat as "spot" | "linear");
+        if (strat.strategyType === "grid") await runGridStrategy(bybitEngine, strat.symbol, "linear"); // Force linear on Bybit to avoid locking capital in coins
         else if (strat.strategyType === "scalping") await runScalpingStrategy(bybitEngine, strat.symbol, cat as "spot" | "linear");
       } else {
         console.log(`[Engine] First cycle: ${strat.strategyType} ${strat.symbol}`);
-        if (strat.strategyType === "grid") await runGridStrategy(engine, strat.symbol, cat as "spot" | "linear");
+        if (strat.strategyType === "grid") await runGridStrategy(engine, strat.symbol, engine.exchange === "kucoin" ? "spot" : "linear"); // Linear on Bybit, spot on KuCoin
         else if (strat.strategyType === "scalping") await runScalpingStrategy(engine, strat.symbol, cat as "spot" | "linear");
       }
     }
@@ -2499,7 +2499,7 @@ async function startKuCoinWebSocketFeed() {
     } else {
       clearInterval(pingInterval);
     }
-  }, 30_000);
+  }, 20_000);
 }
 
 async function updateSP500Price() {

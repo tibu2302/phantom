@@ -396,3 +396,26 @@
 - [x] Fix: guardar también posiciones de KuCoin en periodic save (exchange=both)
 - [x] Fix: agregar columna tradeAmount a open_positions para PnL preciso al restaurar
 - [x] Fix: loadOpenPositions usa tradeAmount guardado en vez de recalcular
+
+## Feature: Reestructuración para 1% diario - Abril 22
+
+### Grid: Switch a Linear + Optimización
+- [ ] Cambiar grid de spot a linear en Bybit (no bloquea capital en monedas)
+- [ ] Reducir pares de grid a 4-5 de alta liquidez (BTC, ETH, SOL, XRP, DOGE)
+- [ ] Grid spread más tight: 0.4% en BTC/ETH, 0.6% en altcoins
+- [ ] Auto-liquidar posiciones grid >2h sin ganancia (liberar capital)
+- [ ] Reducir time-stop de 12h a 4h para rotar capital más rápido
+
+### Scalping: Más capital y más frecuente
+- [ ] Subir allocation de scalping a 30% (era 20%)
+- [ ] Usar 70% del allocation por trade (era 50%)
+- [ ] Ciclo principal de 30s a 20s para más oportunidades
+
+### Futures: Leverage y frecuencia
+- [ ] Default leverage 10x (era 5x) para amplificar ganancias
+- [ ] Más pares de futuros: BTC, ETH, SOL, XRP, DOGE
+
+### Capital Rotation
+- [ ] Force-close posiciones grid con pérdida < -0.3% después de 2h
+- [ ] Reinvertir capital liberado inmediatamente
+- [ ] Priorizar pares con mayor volumen 24h
