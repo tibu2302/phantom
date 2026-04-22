@@ -604,7 +604,7 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
   const stratConfig = config ?? {};
   const stopLossPct = (stratConfig.stopLossPct ?? 5) / 100; // Default 5% stop-loss (crypto is volatile)
   const trailingPct = (stratConfig.trailingStopPct ?? 0.5) / 100; // 0.5% trailing distance
-  const trailingActivation = (stratConfig.trailingActivationPct ?? 1.5) / 100; // Activate trailing after 1.5% profit
+  const trailingActivation = (stratConfig.trailingActivationPct ?? 1.0) / 100; // Activate trailing after 1.0% profit (optimized for more cycles)
   const maxHoldTimeMs = (stratConfig.maxHoldHours ?? 48) * 60 * 60 * 1000; // Default 48 hours max hold
   const maxOpenPositions = stratConfig.maxOpenPositions ?? 5; // Max open positions per symbol
   const minProfitUsd = stratConfig.minProfitUsd ?? 1; // Minimum $1 USD profit to sell (always win something)
@@ -731,7 +731,7 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
 
   // Simulation initial buys
   if (isNewGrid && engine.simulationMode) {
-    const allocation = strat?.allocationPct ?? 30;
+    const allocation = strat?.allocationPct ?? 50;
     const state = await db.getOrCreateBotState(engine.userId);
     const balance = parseFloat(state?.currentBalance ?? "5000");
     const buyLevels = levels.filter(l => l.side === "Buy").sort((a, b) => b.price - a.price).slice(0, 3);
@@ -796,7 +796,7 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
       }
 
       // ─── Reinvestment: use current balance (includes profits) for order sizing ───
-      const allocation = strat?.allocationPct ?? 30;
+      const allocation = strat?.allocationPct ?? 50;
       const state = await db.getOrCreateBotState(engine.userId);
       const balance = parseFloat(state?.currentBalance ?? "5000");
       const tradeAmount = (balance * allocation / 100) / (levels.length / 2);
@@ -900,7 +900,7 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
   const dca = engine.dcaPositions[symbol];
   if (dca.entries > 0 && price < dca.avgPrice * (1 - dcaThreshold) && trendLabel !== "bearish" && trendLabel !== "bearish-mtf") {
     // DCA: buy more to lower average
-    const allocation = strat?.allocationPct ?? 30;
+    const allocation = strat?.allocationPct ?? 50;
     const state = await db.getOrCreateBotState(engine.userId);
     const balance = parseFloat(state?.currentBalance ?? "5000");
     const dcaAmount = (balance * allocation / 100) * 0.05; // 5% of allocation per DCA
@@ -1025,7 +1025,7 @@ async function runScalpingStrategy(engine: EngineState, symbol: string, category
   if (signal && reasons.length >= minSignals) {
     const strats = await db.getUserStrategies(engine.userId);
     const strat = strats.find(s => s.symbol === symbol && s.strategyType === "scalping") ?? strats.find(s => s.symbol === symbol);
-    const allocation = strat?.allocationPct ?? 30;
+    const allocation = strat?.allocationPct ?? 20;
     const state = await db.getOrCreateBotState(engine.userId);
     const balance = parseFloat(state?.currentBalance ?? "5000");
     const tradeAmount = balance * allocation / 100 * 0.1;
@@ -1219,9 +1219,9 @@ async function runFuturesLongOnly(engine: EngineState, symbol: string) {
   const futStrats2 = await db.getUserStrategies(engine.userId);
   const strat = futStrats2.find(s => s.symbol === symbol && s.strategyType === "futures");
   const config = strat?.config as any;
-  const leverage = config?.leverage ?? 2;
-  const takeProfitPct = config?.takeProfitPct ?? 1.0;
-  const allocation = strat?.allocationPct ?? 20;
+  const leverage = config?.leverage ?? 5;
+  const takeProfitPct = config?.takeProfitPct ?? 1.5;
+  const allocation = strat?.allocationPct ?? 25;
   const state = await db.getOrCreateBotState(engine.userId);
   const balance = parseFloat(state?.currentBalance ?? "5000");
   const tradeAmount = (balance * allocation / 100) / maxPositions;
@@ -1734,7 +1734,7 @@ const SPOT_SYMBOLS = [
   "PEPEUSDT", "FLOKIUSDT", "BONKUSDT", "JUPUSDT", "AAVEUSDT",
   "MKRUSDT", "FILUSDT",
 ];
-const LINEAR_SYMBOLS = ["XAUUSDT", "SPXUSDT"];
+const LINEAR_SYMBOLS = ["XAUUSDT", "SPXUSDT", "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "AVAXUSDT"];
 
 function parseWsTickerMsg(data: Buffer | string): void {
   try {

@@ -262,3 +262,12 @@
 - [x] Agregar endpoint para consultar balance real de Bybit y KuCoin en vivo
 - [x] Mostrar Saldo Bybit y Saldo KuCoin en las cards del dashboard en vez de SALDO e INICIAL
 - [x] Filtrar Telegram: solo mensajes importantes (ventas con ganancia, stop-loss, errores críticos, no cada compra)
+
+## Engine Optimization - Max Profit - Abril 21
+- [x] Futures: subir leverage default de 2x a 5x para BTC/ETH
+- [x] Futures: agregar pares XRP, AVAX con 3x leverage (SOL ya existía)
+- [x] Grid: subir allocation default de 30% a 50%
+- [x] Grid: reducir trailing activation de 1.5% a 1.0%
+- [x] Scalping: agregar pares DOGE, ADA, LINK
+- [x] LINEAR_SYMBOLS: agregar BTC, ETH, SOL, XRP, AVAX al WebSocket de futuros
+- [x] Force-sync: al iniciar bot, SOBREESCRIBE todas las estrategias con valores optimizados

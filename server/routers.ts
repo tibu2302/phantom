@@ -42,55 +42,64 @@ export const appRouter = router({
     start: protectedProcedure.mutation(async ({ ctx }) => {
       // Auto-seed default strategies if none exist
       const existingStrats = await db.getUserStrategies(ctx.user.id);
-      // Backfill: ensure ALL strategies exist for existing users (adds any missing ones)
+      // Force-sync: ALWAYS upsert all strategies with optimized values (overwrite existing)
       if (existingStrats.length > 0) {
-        const has = (sym: string, type: string) => existingStrats.some(s => s.symbol === sym && s.strategyType === type);
         const defaultStrats: Array<{ symbol: string; strategyType: string; market: string; category: string; allocationPct: number; enabled: boolean; config?: any }> = [
-          // Grid strategies
-          { symbol: "BTCUSDT", strategyType: "grid", market: "crypto", category: "spot", allocationPct: 30, enabled: true },
-          { symbol: "ETHUSDT", strategyType: "grid", market: "crypto", category: "spot", allocationPct: 30, enabled: true },
-          { symbol: "SOLUSDT", strategyType: "grid", market: "crypto", category: "spot", allocationPct: 20, enabled: true },
-          { symbol: "XRPUSDT", strategyType: "grid", market: "crypto", category: "spot", allocationPct: 15, enabled: true },
-          { symbol: "DOGEUSDT", strategyType: "grid", market: "crypto", category: "spot", allocationPct: 10, enabled: true },
-          { symbol: "ADAUSDT", strategyType: "grid", market: "crypto", category: "spot", allocationPct: 10, enabled: true },
-          { symbol: "AVAXUSDT", strategyType: "grid", market: "crypto", category: "spot", allocationPct: 10, enabled: true },
-          { symbol: "LINKUSDT", strategyType: "grid", market: "crypto", category: "spot", allocationPct: 10, enabled: true },
+          // Grid strategies (higher allocation for BTC/ETH)
+          { symbol: "BTCUSDT", strategyType: "grid", market: "crypto", category: "spot", allocationPct: 50, enabled: true },
+          { symbol: "ETHUSDT", strategyType: "grid", market: "crypto", category: "spot", allocationPct: 50, enabled: true },
+          { symbol: "SOLUSDT", strategyType: "grid", market: "crypto", category: "spot", allocationPct: 30, enabled: true },
+          { symbol: "XRPUSDT", strategyType: "grid", market: "crypto", category: "spot", allocationPct: 20, enabled: true },
+          { symbol: "DOGEUSDT", strategyType: "grid", market: "crypto", category: "spot", allocationPct: 15, enabled: true },
+          { symbol: "ADAUSDT", strategyType: "grid", market: "crypto", category: "spot", allocationPct: 15, enabled: true },
+          { symbol: "AVAXUSDT", strategyType: "grid", market: "crypto", category: "spot", allocationPct: 15, enabled: true },
+          { symbol: "LINKUSDT", strategyType: "grid", market: "crypto", category: "spot", allocationPct: 15, enabled: true },
           { symbol: "ARBUSDT", strategyType: "grid", market: "crypto", category: "spot", allocationPct: 10, enabled: true },
           { symbol: "SUIUSDT", strategyType: "grid", market: "crypto", category: "spot", allocationPct: 10, enabled: true },
-          // Scalping
+          // Scalping (expanded: XAUUSDT + DOGE, ADA, LINK)
           { symbol: "XAUUSDT", strategyType: "scalping", market: "tradfi", category: "linear", allocationPct: 20, enabled: true },
-          // Futures
-          { symbol: "BTCUSDT", strategyType: "futures", market: "crypto", category: "linear", allocationPct: 20, enabled: true, config: { leverage: 2, takeProfitPct: 1.0 } },
-          { symbol: "ETHUSDT", strategyType: "futures", market: "crypto", category: "linear", allocationPct: 20, enabled: true, config: { leverage: 2, takeProfitPct: 1.0 } },
-          { symbol: "SOLUSDT", strategyType: "futures", market: "crypto", category: "linear", allocationPct: 15, enabled: true, config: { leverage: 2, takeProfitPct: 1.0 } },
-          { symbol: "XAUUSDT", strategyType: "futures", market: "tradfi", category: "linear", allocationPct: 15, enabled: true, config: { leverage: 2, takeProfitPct: 1.0 } },
+          { symbol: "DOGEUSDT", strategyType: "scalping", market: "crypto", category: "spot", allocationPct: 15, enabled: true },
+          { symbol: "ADAUSDT", strategyType: "scalping", market: "crypto", category: "spot", allocationPct: 15, enabled: true },
+          { symbol: "LINKUSDT", strategyType: "scalping", market: "crypto", category: "spot", allocationPct: 15, enabled: true },
+          // Futures (BTC/ETH 5x, SOL/XRP/AVAX 3x, TP 1.5%)
+          { symbol: "BTCUSDT", strategyType: "futures", market: "crypto", category: "linear", allocationPct: 25, enabled: true, config: { leverage: 5, takeProfitPct: 1.5 } },
+          { symbol: "ETHUSDT", strategyType: "futures", market: "crypto", category: "linear", allocationPct: 25, enabled: true, config: { leverage: 5, takeProfitPct: 1.5 } },
+          { symbol: "SOLUSDT", strategyType: "futures", market: "crypto", category: "linear", allocationPct: 20, enabled: true, config: { leverage: 3, takeProfitPct: 1.5 } },
+          { symbol: "XRPUSDT", strategyType: "futures", market: "crypto", category: "linear", allocationPct: 15, enabled: true, config: { leverage: 3, takeProfitPct: 1.5 } },
+          { symbol: "AVAXUSDT", strategyType: "futures", market: "crypto", category: "linear", allocationPct: 15, enabled: true, config: { leverage: 3, takeProfitPct: 1.5 } },
+          { symbol: "XAUUSDT", strategyType: "futures", market: "tradfi", category: "linear", allocationPct: 15, enabled: true, config: { leverage: 3, takeProfitPct: 1.5 } },
         ];
-        let backfilled = 0;
+        let synced = 0;
         for (const strat of defaultStrats) {
-          if (!has(strat.symbol, strat.strategyType)) {
-            await db.upsertStrategy(ctx.user.id, strat as any);
-            backfilled++;
-            console.log(`[Bot] Backfilled ${strat.symbol} ${strat.strategyType} for user ${ctx.user.id}`);
-          }
+          await db.upsertStrategy(ctx.user.id, strat as any);
+          synced++;
         }
-        if (backfilled > 0) console.log(`[Bot] Backfilled ${backfilled} missing strategies for user ${ctx.user.id}`);
+        console.log(`[Bot] Force-synced ${synced} strategies with optimized values for user ${ctx.user.id}`);
       }
       if (existingStrats.length === 0) {
-        await db.upsertStrategy(ctx.user.id, { symbol: "BTCUSDT", strategyType: "grid", market: "crypto", category: "spot", allocationPct: 30, enabled: true });
-        await db.upsertStrategy(ctx.user.id, { symbol: "ETHUSDT", strategyType: "grid", market: "crypto", category: "spot", allocationPct: 30, enabled: true });
-        await db.upsertStrategy(ctx.user.id, { symbol: "SOLUSDT", strategyType: "grid", market: "crypto", category: "spot", allocationPct: 20, enabled: true });
-        await db.upsertStrategy(ctx.user.id, { symbol: "XRPUSDT", strategyType: "grid", market: "crypto", category: "spot", allocationPct: 15, enabled: true });
-        await db.upsertStrategy(ctx.user.id, { symbol: "DOGEUSDT", strategyType: "grid", market: "crypto", category: "spot", allocationPct: 10, enabled: true });
-        await db.upsertStrategy(ctx.user.id, { symbol: "ADAUSDT", strategyType: "grid", market: "crypto", category: "spot", allocationPct: 10, enabled: true });
-        await db.upsertStrategy(ctx.user.id, { symbol: "AVAXUSDT", strategyType: "grid", market: "crypto", category: "spot", allocationPct: 10, enabled: true });
-        await db.upsertStrategy(ctx.user.id, { symbol: "LINKUSDT", strategyType: "grid", market: "crypto", category: "spot", allocationPct: 10, enabled: true });
+        // Grid (higher allocation BTC/ETH)
+        await db.upsertStrategy(ctx.user.id, { symbol: "BTCUSDT", strategyType: "grid", market: "crypto", category: "spot", allocationPct: 50, enabled: true });
+        await db.upsertStrategy(ctx.user.id, { symbol: "ETHUSDT", strategyType: "grid", market: "crypto", category: "spot", allocationPct: 50, enabled: true });
+        await db.upsertStrategy(ctx.user.id, { symbol: "SOLUSDT", strategyType: "grid", market: "crypto", category: "spot", allocationPct: 30, enabled: true });
+        await db.upsertStrategy(ctx.user.id, { symbol: "XRPUSDT", strategyType: "grid", market: "crypto", category: "spot", allocationPct: 20, enabled: true });
+        await db.upsertStrategy(ctx.user.id, { symbol: "DOGEUSDT", strategyType: "grid", market: "crypto", category: "spot", allocationPct: 15, enabled: true });
+        await db.upsertStrategy(ctx.user.id, { symbol: "ADAUSDT", strategyType: "grid", market: "crypto", category: "spot", allocationPct: 15, enabled: true });
+        await db.upsertStrategy(ctx.user.id, { symbol: "AVAXUSDT", strategyType: "grid", market: "crypto", category: "spot", allocationPct: 15, enabled: true });
+        await db.upsertStrategy(ctx.user.id, { symbol: "LINKUSDT", strategyType: "grid", market: "crypto", category: "spot", allocationPct: 15, enabled: true });
         await db.upsertStrategy(ctx.user.id, { symbol: "ARBUSDT", strategyType: "grid", market: "crypto", category: "spot", allocationPct: 10, enabled: true });
         await db.upsertStrategy(ctx.user.id, { symbol: "SUIUSDT", strategyType: "grid", market: "crypto", category: "spot", allocationPct: 10, enabled: true });
+        // Scalping (expanded)
         await db.upsertStrategy(ctx.user.id, { symbol: "XAUUSDT", strategyType: "scalping", market: "tradfi", category: "linear", allocationPct: 20, enabled: true });
-        await db.upsertStrategy(ctx.user.id, { symbol: "BTCUSDT", strategyType: "futures", market: "crypto", category: "linear", allocationPct: 20, enabled: true, config: { leverage: 2, takeProfitPct: 1.0 } } as any);
-        await db.upsertStrategy(ctx.user.id, { symbol: "ETHUSDT", strategyType: "futures", market: "crypto", category: "linear", allocationPct: 20, enabled: true, config: { leverage: 2, takeProfitPct: 1.0 } } as any);
-        await db.upsertStrategy(ctx.user.id, { symbol: "SOLUSDT", strategyType: "futures", market: "crypto", category: "linear", allocationPct: 15, enabled: true, config: { leverage: 2, takeProfitPct: 1.0 } } as any);
-        await db.upsertStrategy(ctx.user.id, { symbol: "XAUUSDT", strategyType: "futures", market: "tradfi", category: "linear", allocationPct: 15, enabled: true, config: { leverage: 2, takeProfitPct: 1.0 } } as any);
+        await db.upsertStrategy(ctx.user.id, { symbol: "DOGEUSDT", strategyType: "scalping", market: "crypto", category: "spot", allocationPct: 15, enabled: true });
+        await db.upsertStrategy(ctx.user.id, { symbol: "ADAUSDT", strategyType: "scalping", market: "crypto", category: "spot", allocationPct: 15, enabled: true });
+        await db.upsertStrategy(ctx.user.id, { symbol: "LINKUSDT", strategyType: "scalping", market: "crypto", category: "spot", allocationPct: 15, enabled: true });
+        // Futures (BTC/ETH 5x, SOL/XRP/AVAX 3x, TP 1.5%)
+        await db.upsertStrategy(ctx.user.id, { symbol: "BTCUSDT", strategyType: "futures", market: "crypto", category: "linear", allocationPct: 25, enabled: true, config: { leverage: 5, takeProfitPct: 1.5 } } as any);
+        await db.upsertStrategy(ctx.user.id, { symbol: "ETHUSDT", strategyType: "futures", market: "crypto", category: "linear", allocationPct: 25, enabled: true, config: { leverage: 5, takeProfitPct: 1.5 } } as any);
+        await db.upsertStrategy(ctx.user.id, { symbol: "SOLUSDT", strategyType: "futures", market: "crypto", category: "linear", allocationPct: 20, enabled: true, config: { leverage: 3, takeProfitPct: 1.5 } } as any);
+        await db.upsertStrategy(ctx.user.id, { symbol: "XRPUSDT", strategyType: "futures", market: "crypto", category: "linear", allocationPct: 15, enabled: true, config: { leverage: 3, takeProfitPct: 1.5 } } as any);
+        await db.upsertStrategy(ctx.user.id, { symbol: "AVAXUSDT", strategyType: "futures", market: "crypto", category: "linear", allocationPct: 15, enabled: true, config: { leverage: 3, takeProfitPct: 1.5 } } as any);
+        await db.upsertStrategy(ctx.user.id, { symbol: "XAUUSDT", strategyType: "futures", market: "tradfi", category: "linear", allocationPct: 15, enabled: true, config: { leverage: 3, takeProfitPct: 1.5 } } as any);
         console.log(`[Bot] Seeded default strategies for user ${ctx.user.id}`);
       }
       const result = await startEngine(ctx.user.id);
