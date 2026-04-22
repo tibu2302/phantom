@@ -39,7 +39,7 @@ export default function SplashScreen({ onFinish }: { onFinish: () => void }) {
         }`}
       >
         <img
-          src="/icon-512.png"
+          src="/manus-storage/phantom-pwa-icon_c8d2a920.png"
           alt="PHANTOM"
           className="h-24 w-24 md:h-32 md:w-32 rounded-2xl"
           style={{

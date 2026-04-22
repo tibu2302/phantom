@@ -21,7 +21,7 @@ const LocalLogin = lazy(() => import("./pages/LocalLogin"));
 function PageLoader() {
   return (
     <div className="flex items-center justify-center h-64">
-      <div className="h-8 w-8 rounded-lg bg-primary/20 animate-pulse" />
+      <img src="/manus-storage/phantom-logo_69adf5bb.png" alt="Loading" className="h-8 w-8 animate-pulse rounded-md" />
     </div>
   );
 }
@@ -59,6 +59,7 @@ function Router() {
 
 function App() {
   const [showSplash, setShowSplash] = useState(() => {
+    // Only show splash once per session
     if (sessionStorage.getItem("phantom-splash-shown")) return false;
     return true;
   });
