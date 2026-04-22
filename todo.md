@@ -317,3 +317,8 @@
 - [x] KuCoin sells con "Error: OK" son falsos positivos — ahora dice "Balance insuficiente en KuCoin"
 - [x] Mejorar manejo de errores: anti-spam cooldown 5min por par+lado, mensajes claros
 - [x] Limpieza de posiciones fantasma: si sell falla en modo live, se elimina la posición para no reintentar
+
+## Bug Fix: 8088 posiciones fantasma en DB - Abril 22
+- [x] Limpiar posiciones fantasma de la DB — en LIVE mode se limpian todas al arrancar (exchange es source of truth)
+- [x] Al eliminar posición fantasma de memoria, también se elimina de la DB (deleteOpenPosition)
+- [x] En LIVE mode no se restauran posiciones de DB; en SIMULATION sí se restauran

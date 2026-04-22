@@ -785,12 +785,15 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
   for (const { pos, reason } of positionsToSell) {
     const orderId = await placeOrder(engine, symbol, "Sell", pos.qty, category);
     if (!orderId && !engine.simulationMode) {
-      // Sell failed (likely insufficient balance) — remove phantom position to stop retrying
+      // Sell failed (likely insufficient balance) — remove phantom position from memory AND DB
       const idx = engine.openBuyPositions[symbol]?.findIndex(p => p.buyPrice === pos.buyPrice && p.qty === pos.qty);
       if (idx !== undefined && idx >= 0) {
         engine.openBuyPositions[symbol]!.splice(idx, 1);
         console.log(`[Grid] Removed phantom position ${symbol} buyPrice=${pos.buyPrice} qty=${pos.qty} — sell failed, likely no balance`);
       }
+      // Also delete from DB so it doesn't come back on restart
+      await db.deleteOpenPosition(engine.userId, symbol, pos.buyPrice, pos.qty, engine.exchange === "both" ? "bybit" : engine.exchange);
+      await db.deleteOpenPosition(engine.userId, symbol, pos.buyPrice, pos.qty, "kucoin");
       continue;
     }
     if (orderId) {
@@ -1271,12 +1274,13 @@ async function runFuturesLongOnly(engine: EngineState, symbol: string) {
     if (closeReason) {
       const orderId = await placeOrder(engine, symbol, "Sell", pos.qty, "linear");
       if (!orderId && !engine.simulationMode) {
-        // Sell failed — remove phantom futures position
+        // Sell failed — remove phantom futures position from memory AND DB
         const idx = engine.futuresPositions[symbol]?.findIndex(p => p.entryPrice === pos.entryPrice && p.qty === pos.qty);
         if (idx !== undefined && idx >= 0) {
           engine.futuresPositions[symbol]!.splice(idx, 1);
           console.log(`[Futures] Removed phantom position ${symbol} entry=${pos.entryPrice} qty=${pos.qty} — sell failed`);
         }
+        await db.deleteOpenPosition(engine.userId, symbol, pos.entryPrice, pos.qty, "bybit");
         continue;
       }
       if (orderId) {
@@ -1577,23 +1581,35 @@ export async function startEngine(userId: number): Promise<{ success: boolean; e
   engineCycles.set(userId, 0);
 
   // ─── Restore open positions from DB (survive restarts) ───
-  try {
-    const savedBybit = await db.loadOpenPositions(userId, "bybit");
-    const savedKucoin = await db.loadOpenPositions(userId, "kucoin");
-    let totalRestored = 0;
-    for (const [sym, positions] of Object.entries(savedBybit)) {
-      engine.openBuyPositions[sym] = [...(engine.openBuyPositions[sym] ?? []), ...positions];
-      totalRestored += positions.length;
+  if (simulationMode) {
+    // Only restore positions in simulation mode
+    try {
+      const savedBybit = await db.loadOpenPositions(userId, "bybit");
+      const savedKucoin = await db.loadOpenPositions(userId, "kucoin");
+      let totalRestored = 0;
+      for (const [sym, positions] of Object.entries(savedBybit)) {
+        engine.openBuyPositions[sym] = [...(engine.openBuyPositions[sym] ?? []), ...positions];
+        totalRestored += positions.length;
+      }
+      for (const [sym, positions] of Object.entries(savedKucoin)) {
+        engine.openBuyPositions[sym] = [...(engine.openBuyPositions[sym] ?? []), ...positions];
+        totalRestored += positions.length;
+      }
+      if (totalRestored > 0) {
+        console.log(`[Engine] Restored ${totalRestored} open positions from DB for user ${userId}`);
+      }
+    } catch (e) {
+      console.error(`[Engine] Failed to restore positions:`, (e as Error).message);
     }
-    for (const [sym, positions] of Object.entries(savedKucoin)) {
-      engine.openBuyPositions[sym] = [...(engine.openBuyPositions[sym] ?? []), ...positions];
-      totalRestored += positions.length;
+  } else {
+    // LIVE mode: clear all phantom positions from DB to start fresh
+    // In live mode, the exchange IS the source of truth, not our DB
+    try {
+      await db.clearAllOpenPositions(userId);
+      console.log(`[Engine] LIVE mode: cleared all saved positions from DB (exchange is source of truth)`);
+    } catch (e) {
+      console.error(`[Engine] Failed to clear positions:`, (e as Error).message);
     }
-    if (totalRestored > 0) {
-      console.log(`[Engine] Restored ${totalRestored} open positions from DB for user ${userId}`);
-    }
-  } catch (e) {
-    console.error(`[Engine] Failed to restore positions:`, (e as Error).message);
   }
 
   // Main trading loop — every 30 seconds

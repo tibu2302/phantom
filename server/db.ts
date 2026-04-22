@@ -279,6 +279,36 @@ export async function saveOpenPositions(userId: number, positions: Record<string
   }
 }
 
+export async function deleteOpenPosition(userId: number, symbol: string, buyPrice: number, qty: string, exchange: string) {
+  const db = await getDb();
+  if (!db) return;
+  try {
+    await db.delete(openPositions).where(
+      and(
+        eq(openPositions.userId, userId),
+        eq(openPositions.symbol, symbol),
+        eq(openPositions.exchange, exchange),
+        eq(openPositions.buyPrice, buyPrice.toFixed(8)),
+        eq(openPositions.qty, qty),
+      )
+    );
+    console.log(`[DB] Deleted phantom position ${symbol} buyPrice=${buyPrice} qty=${qty} exchange=${exchange}`);
+  } catch (e) {
+    console.error("[DB] Failed to delete open position:", e);
+  }
+}
+
+export async function clearAllOpenPositions(userId: number) {
+  const db = await getDb();
+  if (!db) return;
+  try {
+    const result = await db.delete(openPositions).where(eq(openPositions.userId, userId));
+    console.log(`[DB] Cleared all open positions for user ${userId}`);
+  } catch (e) {
+    console.error("[DB] Failed to clear open positions:", e);
+  }
+}
+
 export async function loadOpenPositions(userId: number, exchange: string): Promise<Record<string, Array<{ symbol: string; buyPrice: number; qty: string; tradeAmount: number; category: "spot" | "linear"; gridLevelPrice: number; highestPrice?: number; openedAt: number }>>> {
   const db = await getDb();
   if (!db) return {};
