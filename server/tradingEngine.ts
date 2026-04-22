@@ -120,12 +120,9 @@ const ERROR_NOTIF_COOLDOWN = 1_800_000; // 30 minutes between same error notific
 const balanceErrorNotified: Set<string> = new Set();
 
 function shouldNotifyError(key: string, isBalanceError = false): boolean {
-  // Balance errors: only notify once per session (permanent suppression)
-  if (isBalanceError) {
-    if (balanceErrorNotified.has(key)) return false;
-    balanceErrorNotified.add(key);
-    return true;
-  }
+  // Balance errors: NEVER notify via Telegram (only logged to console)
+  // These are persistent issues that won't resolve on their own
+  if (isBalanceError) return false;
   // Other errors: 30 min cooldown
   const now = Date.now();
   const last = lastErrorNotif.get(key) ?? 0;
@@ -495,7 +492,7 @@ async function placeOrder(engine: EngineState, symbol: string, side: "Buy" | "Se
                 else {
                   const errDetail = JSON.stringify(res?.data ?? res);
                   console.log(`[Engine] KuCoin order no ID: ${errDetail}`);
-                  const isBal = !errDetail.includes("orderId");
+                  const isBal = true; // KuCoin no-ID = balance/rejection issue
                   if (shouldNotifyError(`kc_${symbol}_${side}_noId`, isBal)) {
                     await sendTelegramNotification(engine, `⚠️ <b>Orden Rechazada</b>\nExchange: KuCoin\nPar: ${symbol}\nLado: ${side}\nFunds: $${funds}\nError: ${errDetail}`);
                   }
@@ -509,7 +506,7 @@ async function placeOrder(engine: EngineState, symbol: string, side: "Buy" | "Se
               else {
                 const errDetail = JSON.stringify(res?.data ?? res);
                 console.log(`[Engine] KuCoin order no ID: ${errDetail}`);
-                const isBal2 = !errDetail.includes("orderId");
+                const isBal2 = true; // KuCoin no-ID = balance/rejection issue
                 if (shouldNotifyError(`kc_${symbol}_${side}_noId2`, isBal2)) {
                   await sendTelegramNotification(engine, `⚠️ <b>Orden Rechazada</b>\nExchange: KuCoin\nPar: ${symbol}\nLado: ${side}\nQty: ${qty}\nError: ${errDetail}`);
                 }
@@ -1922,20 +1919,16 @@ export async function startEngine(userId: number): Promise<{ success: boolean; e
 async function sendStatusReport(engine: EngineState) {
   try {
     const state = await db.getOrCreateBotState(engine.userId);
-    const totalPnl = parseFloat(state?.totalPnl ?? "0");
-    const todayPnl = parseFloat(state?.todayPnl ?? "0");
-    const totalTrades = state?.totalTrades ?? 0;
-    const winningTrades = state?.winningTrades ?? 0;
-    const winRate = totalTrades > 0 ? ((winningTrades / totalTrades) * 100).toFixed(1) : "0";
+    const initialDeposit = parseFloat(state?.initialBalance ?? "2500");
 
     // Count open positions
     const gridCount = Object.values(engine.openBuyPositions).reduce((s, a) => s + a.length, 0);
     const futCount = Object.values(engine.futuresPositions).reduce((s, a) => s + a.length, 0);
     const scalpCount = Object.values(engine.scalpPositions).reduce((s, a) => s + a.length, 0);
 
-    // Get live exchange balances
-    let bybitBal = "N/A";
-    let kucoinBal = "N/A";
+    // Get live exchange balances (numeric for real profit calc)
+    let bybitBalNum = 0;
+    let kucoinBalNum = 0;
     try {
       const bybitKeys = await db.getApiKey(engine.userId, "bybit");
       if (bybitKeys && !engine.simulationMode) {
@@ -1943,8 +1936,7 @@ async function sendStatusReport(engine: EngineState) {
         const cl = new RestClientV5({ key: bybitKeys.apiKey, secret: bybitKeys.apiSecret });
         const res = await cl.getWalletBalance({ accountType: "UNIFIED" });
         if (res.retCode === 0) {
-          const eq = parseFloat((res.result as any)?.list?.[0]?.totalEquity ?? "0");
-          bybitBal = `$${eq.toFixed(2)}`;
+          bybitBalNum = parseFloat((res.result as any)?.list?.[0]?.totalEquity ?? "0");
         }
       }
     } catch { /* skip */ }
@@ -1953,36 +1945,49 @@ async function sendStatusReport(engine: EngineState) {
       if (kucoinKeys && !engine.simulationMode) {
         const { SpotClient } = await import("kucoin-api");
         const cl = new SpotClient({ apiKey: kucoinKeys.apiKey, apiSecret: kucoinKeys.apiSecret, apiPassphrase: kucoinKeys.passphrase ?? "" });
-        const [mainRes, tradeRes] = await Promise.allSettled([
+        const [mainRes, tradeRes, hfRes] = await Promise.allSettled([
           cl.getBalances({ type: "main" }),
           cl.getBalances({ type: "trade" }),
+          cl.getBalances({ type: "trade_hf" as any }),
         ]);
-        let kcTotal = 0;
         const prices = getLivePrices();
         const proc = (r: any) => {
           if (r.status !== "fulfilled" || r.value?.code !== "200000") return;
           for (const acc of (r.value.data as any[] ?? [])) {
             const cur = acc.currency;
             const bal = parseFloat(acc.balance ?? "0");
-            if (cur === "USDT" || cur === "USDC" || cur === "USD") kcTotal += bal;
+            if (cur === "USDT" || cur === "USDC" || cur === "USD") kucoinBalNum += bal;
             else {
               const p = prices[`${cur}USDT`]?.lastPrice ?? 0;
-              if (p > 0) kcTotal += bal * p;
+              if (p > 0) kucoinBalNum += bal * p;
             }
           }
         };
-        proc(mainRes); proc(tradeRes);
-        kucoinBal = `$${kcTotal.toFixed(2)}`;
+        proc(mainRes); proc(tradeRes); proc(hfRes);
       }
     } catch { /* skip */ }
 
-    // Get today's trades for breakdown
+    const bybitBal = bybitBalNum > 0 ? `$${bybitBalNum.toFixed(2)}` : "N/A";
+    const kucoinBal = kucoinBalNum > 0 ? `$${kucoinBalNum.toFixed(2)}` : "N/A";
+    const totalBal = bybitBalNum + kucoinBalNum;
+
+    // Real profit = current balance - initial deposit (the TRUE total PnL)
+    const realProfit = totalBal - initialDeposit;
+    const realProfitPct = initialDeposit > 0 ? ((realProfit / initialDeposit) * 100).toFixed(1) : "0";
+
+    // TODAY's PnL: calculated from actual trades created today (authoritative source)
     const allTrades = await db.getUserTrades(engine.userId, 5000);
     const now = new Date();
     const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     const todayTrades = allTrades.filter(t => new Date(t.createdAt) >= todayStart);
+    const todayPnl = todayTrades.reduce((sum, t) => sum + parseFloat(t.pnl ?? "0"), 0);
 
-    // Per-strategy breakdown
+    // Win rate from all sell trades
+    const sellTrades = allTrades.filter(t => t.side === "sell");
+    const winTrades = sellTrades.filter(t => parseFloat(t.pnl ?? "0") > 0);
+    const winRate = sellTrades.length > 0 ? ((winTrades.length / sellTrades.length) * 100).toFixed(1) : "0";
+
+    // Per-strategy breakdown for today
     const stratBreakdown: Record<string, { count: number; pnl: number }> = {};
     for (const t of todayTrades) {
       const key = t.strategy ?? "unknown";
@@ -1996,19 +2001,20 @@ async function sendStatusReport(engine: EngineState) {
       stratLines += `\n  ${icon} ${strat}: ${data.count} ops, ${data.pnl >= 0 ? "+" : ""}$${data.pnl.toFixed(2)}`;
     }
 
-    const pnlEmoji = todayPnl >= 0 ? "\u{1F7E2}" : "\u{1F534}";
+    const todayEmoji = todayPnl >= 0 ? "\u{1F7E2}" : "\u{1F534}";
+    const totalEmoji = realProfit >= 0 ? "\u{1F7E2}" : "\u{1F534}";
     const mode = engine.simulationMode ? "\u{1F9EA} SIMULACI\u00D3N" : "\u{1F534} LIVE";
     const uptime = engine.intervalId ? "\u2705 Activo" : "\u26A0\uFE0F Detenido";
 
-    const message = `\u{1F47B} <b>PHANTOM — Estado Actual</b>\n${mode} | ${uptime}\n\n` +
-      `\u{1F4B0} <b>Balances</b>\n  Bybit: ${bybitBal}\n  KuCoin: ${kucoinBal}\n\n` +
-      `${pnlEmoji} <b>PnL Hoy</b>: ${todayPnl >= 0 ? "+" : ""}$${todayPnl.toFixed(2)}\n` +
-      `\u{1F4C8} <b>PnL Total</b>: ${totalPnl >= 0 ? "+" : ""}$${totalPnl.toFixed(2)}\n\n` +
+    const message = `\u{1F47B} <b>PHANTOM \u2014 Estado Actual</b>\n${mode} | ${uptime}\n\n` +
+      `\u{1F4B0} <b>Balances</b>\n  Bybit: ${bybitBal}\n  KuCoin: ${kucoinBal}\n  Total: $${totalBal.toFixed(2)}\n  Capital: $${initialDeposit.toFixed(2)}\n\n` +
+      `${todayEmoji} <b>PnL Hoy</b>: ${todayPnl >= 0 ? "+" : ""}$${todayPnl.toFixed(2)}\n` +
+      `${totalEmoji} <b>Ganancia Real</b>: ${realProfit >= 0 ? "+" : ""}$${realProfit.toFixed(2)} (${realProfitPct}%)\n\n` +
       `\u{1F4E6} <b>Posiciones Abiertas</b>\n  Grid: ${gridCount}\n  Scalping: ${scalpCount}\n  Futures: ${futCount}\n\n` +
       `\u{1F3AF} <b>Operaciones Hoy</b>: ${todayTrades.length}\n` +
-      `\u{1F3C6} <b>Win Rate</b>: ${winRate}% (${totalTrades} total)\n` +
+      `\u{1F3C6} <b>Win Rate</b>: ${winRate}% (${sellTrades.length} sells)\n` +
       (stratLines ? `\n\u{1F4CA} <b>Desglose Hoy</b>:${stratLines}\n` : "") +
-      `\n—\n<i>PHANTOM Trading Bot</i>`;
+      `\n\u2014\n<i>PHANTOM Trading Bot</i>`;
 
     await sendTelegramNotification(engine, message);
     console.log(`[Engine] /status report sent via Telegram for user ${engine.userId}`);
@@ -2031,23 +2037,18 @@ async function sendDailySummary(engine: EngineState) {
     const todayWins = todaySells.filter(t => parseFloat(t.pnl ?? "0") > 0);
     const todayWinRate = todaySells.length > 0 ? ((todayWins.length / todaySells.length) * 100).toFixed(1) : "0";
 
-    // Get balances from DB state
+    // Get initial deposit from DB
     const state = await db.getOrCreateBotState(engine.userId);
-    const totalBalance = parseFloat(state?.currentBalance ?? "0");
     const initialDeposit = parseFloat(state?.initialBalance ?? "2500");
-    const totalPnl = parseFloat(state?.totalPnl ?? "0");
-    const totalTrades = state?.totalTrades ?? 0;
-    const winningTrades = state?.winningTrades ?? 0;
-    const overallWinRate = totalTrades > 0 ? ((winningTrades / totalTrades) * 100).toFixed(1) : "0";
 
     // Count open positions
     const gridCount = Object.values(engine.openBuyPositions).reduce((s, a) => s + a.length, 0);
     const futCount = Object.values(engine.futuresPositions).reduce((s, a) => s + a.length, 0);
+    const scalpCount = Object.values(engine.scalpPositions).reduce((s, a) => s + a.length, 0);
 
-    // Get live exchange balances if possible
-    let bybitBal = "N/A";
-    let kucoinBal = "N/A";
-    let totalExBal = "N/A";
+    // Get live exchange balances (numeric for real profit calc)
+    let bybitBalNum = 0;
+    let kucoinBalNum = 0;
     try {
       const bybitKeys = await db.getApiKey(engine.userId, "bybit");
       if (bybitKeys && !engine.simulationMode) {
@@ -2055,8 +2056,7 @@ async function sendDailySummary(engine: EngineState) {
         const cl = new RestClientV5({ key: bybitKeys.apiKey, secret: bybitKeys.apiSecret });
         const res = await cl.getWalletBalance({ accountType: "UNIFIED" });
         if (res.retCode === 0) {
-          const eq = parseFloat((res.result as any)?.list?.[0]?.totalEquity ?? "0");
-          bybitBal = `$${eq.toFixed(2)}`;
+          bybitBalNum = parseFloat((res.result as any)?.list?.[0]?.totalEquity ?? "0");
         }
       }
     } catch { /* skip */ }
@@ -2065,28 +2065,40 @@ async function sendDailySummary(engine: EngineState) {
       if (kucoinKeys && !engine.simulationMode) {
         const { SpotClient } = await import("kucoin-api");
         const cl = new SpotClient({ apiKey: kucoinKeys.apiKey, apiSecret: kucoinKeys.apiSecret, apiPassphrase: kucoinKeys.passphrase ?? "" });
-        const [mainRes, tradeRes] = await Promise.allSettled([
+        const [mainRes, tradeRes, hfRes] = await Promise.allSettled([
           cl.getBalances({ type: "main" }),
           cl.getBalances({ type: "trade" }),
+          cl.getBalances({ type: "trade_hf" as any }),
         ]);
-        let kcTotal = 0;
         const prices = getLivePrices();
         const proc = (r: any) => {
           if (r.status !== "fulfilled" || r.value?.code !== "200000") return;
           for (const acc of (r.value.data as any[] ?? [])) {
             const cur = acc.currency;
             const bal = parseFloat(acc.balance ?? "0");
-            if (cur === "USDT" || cur === "USDC" || cur === "USD") kcTotal += bal;
+            if (cur === "USDT" || cur === "USDC" || cur === "USD") kucoinBalNum += bal;
             else {
               const p = prices[`${cur}USDT`]?.lastPrice ?? 0;
-              if (p > 0) kcTotal += bal * p;
+              if (p > 0) kucoinBalNum += bal * p;
             }
           }
         };
-        proc(mainRes); proc(tradeRes);
-        kucoinBal = `$${kcTotal.toFixed(2)}`;
+        proc(mainRes); proc(tradeRes); proc(hfRes);
       }
     } catch { /* skip */ }
+
+    const bybitBal = bybitBalNum > 0 ? `$${bybitBalNum.toFixed(2)}` : "N/A";
+    const kucoinBal = kucoinBalNum > 0 ? `$${kucoinBalNum.toFixed(2)}` : "N/A";
+    const totalBal = bybitBalNum + kucoinBalNum;
+
+    // Real profit = current balance - initial deposit
+    const realProfit = totalBal - initialDeposit;
+    const realProfitPct = initialDeposit > 0 ? ((realProfit / initialDeposit) * 100).toFixed(1) : "0";
+
+    // Win rate from all sell trades
+    const sellTrades = allTrades.filter(t => t.side === "sell");
+    const winTrades = sellTrades.filter(t => parseFloat(t.pnl ?? "0") > 0);
+    const overallWinRate = sellTrades.length > 0 ? ((winTrades.length / sellTrades.length) * 100).toFixed(1) : "0";
 
     // Build per-strategy breakdown for today
     const stratBreakdown: Record<string, { count: number; pnl: number }> = {};
@@ -2102,17 +2114,18 @@ async function sendDailySummary(engine: EngineState) {
       stratLines += `\n  ${icon} ${strat}: ${data.count} ops, ${data.pnl >= 0 ? "+" : ""}$${data.pnl.toFixed(2)}`;
     }
 
-    const pnlEmoji = todayPnl >= 0 ? "🟢" : "🔴";
+    const todayEmoji = todayPnl >= 0 ? "🟢" : "🔴";
+    const totalEmoji = realProfit >= 0 ? "🟢" : "🔴";
     const dateFormatted = now.toLocaleDateString("es-AR", { day: "2-digit", month: "2-digit", year: "numeric" });
 
     const message = `📊 <b>PHANTOM — Resumen Diario</b>\n📅 ${dateFormatted}\n\n` +
-      `💰 <b>Balances</b>\n  Bybit: ${bybitBal}\n  KuCoin: ${kucoinBal}\n  Capital Invertido: $${initialDeposit.toFixed(2)}\n\n` +
-      `${pnlEmoji} <b>PnL del Día</b>: ${todayPnl >= 0 ? "+" : ""}$${todayPnl.toFixed(2)}\n` +
-      `📈 <b>PnL Total</b>: ${totalPnl >= 0 ? "+" : ""}$${totalPnl.toFixed(2)}\n\n` +
+      `💰 <b>Balances</b>\n  Bybit: ${bybitBal}\n  KuCoin: ${kucoinBal}\n  Total: $${totalBal.toFixed(2)}\n  Capital: $${initialDeposit.toFixed(2)}\n\n` +
+      `${todayEmoji} <b>PnL del Día</b>: ${todayPnl >= 0 ? "+" : ""}$${todayPnl.toFixed(2)}\n` +
+      `${totalEmoji} <b>Ganancia Real</b>: ${realProfit >= 0 ? "+" : ""}$${realProfit.toFixed(2)} (${realProfitPct}%)\n\n` +
       `🎯 <b>Operaciones Hoy</b>: ${todayTrades.length}\n` +
       `🏆 <b>Win Rate Hoy</b>: ${todayWinRate}%\n` +
-      `📊 <b>Win Rate Total</b>: ${overallWinRate}% (${totalTrades} ops)\n\n` +
-      `📦 <b>Posiciones Abiertas</b>: ${gridCount} grid + ${futCount} futures\n\n` +
+      `📊 <b>Win Rate Total</b>: ${overallWinRate}% (${sellTrades.length} sells)\n\n` +
+      `📦 <b>Posiciones Abiertas</b>: ${gridCount} grid + ${scalpCount} scalp + ${futCount} futures\n\n` +
       (stratLines ? `📊 <b>Desglose por Estrategia</b>:${stratLines}\n\n` : "") +
       `—\n<i>PHANTOM Trading Bot • Resumen automático 23:00</i>`;
 

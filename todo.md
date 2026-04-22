@@ -347,3 +347,10 @@
 - [x] Suprimir notificaciones repetidas de "Balance insuficiente" — solo notificar 1 vez por símbolo por sesión
 - [x] Anti-spam más agresivo para errores de balance (no cada 5 min, sino 1 vez por sesión del bot)
 - [x] Cooldown general de errores subido de 5 min a 30 min
+
+## Fix: PnL Hoy vs PnL Total — lógica correcta - Abril 22
+- [x] PnL Hoy en /status: calcular sumando PnL de trades de hoy (desde 00:00), no del acumulador todayPnl de DB
+- [x] PnL Total en /status: calcular como balance actual - capital invertido (ganancia real)
+- [x] Aplicar misma lógica al resumen diario de las 23:00
+- [x] Dashboard (exchangeBalances endpoint) ya usaba lógica correcta
+- [x] Balance errors: NUNCA notificar por Telegram (solo console.log)
