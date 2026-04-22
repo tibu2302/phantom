@@ -342,3 +342,8 @@
 - [x] Monitorear PnL diario cada 10 ciclos (~5 min)
 - [x] Si pérdida diaria supera umbral configurable (default -$50), enviar alerta Telegram
 - [x] Solo enviar 1 alerta por umbral por día (lastDrawdownAlertDate en engine state)
+
+## Fix: Balance insuficiente spam en Telegram - Abril 22
+- [x] Suprimir notificaciones repetidas de "Balance insuficiente" — solo notificar 1 vez por símbolo por sesión
+- [x] Anti-spam más agresivo para errores de balance (no cada 5 min, sino 1 vez por sesión del bot)
+- [x] Cooldown general de errores subido de 5 min a 30 min

@@ -115,9 +115,18 @@ const livePrices: Map<string, TickerData> = new Map();
 const engineCycles: Map<number, number> = new Map();
 // Anti-spam: track last error notification per symbol+side to avoid flooding Telegram
 const lastErrorNotif: Map<string, number> = new Map();
-const ERROR_NOTIF_COOLDOWN = 300_000; // 5 minutes between same error notifications
+const ERROR_NOTIF_COOLDOWN = 1_800_000; // 30 minutes between same error notifications
+// Balance errors: only notify ONCE per bot session (these are persistent, won't resolve on their own)
+const balanceErrorNotified: Set<string> = new Set();
 
-function shouldNotifyError(key: string): boolean {
+function shouldNotifyError(key: string, isBalanceError = false): boolean {
+  // Balance errors: only notify once per session (permanent suppression)
+  if (isBalanceError) {
+    if (balanceErrorNotified.has(key)) return false;
+    balanceErrorNotified.add(key);
+    return true;
+  }
+  // Other errors: 30 min cooldown
   const now = Date.now();
   const last = lastErrorNotif.get(key) ?? 0;
   if (now - last < ERROR_NOTIF_COOLDOWN) return false;
@@ -486,7 +495,10 @@ async function placeOrder(engine: EngineState, symbol: string, side: "Buy" | "Se
                 else {
                   const errDetail = JSON.stringify(res?.data ?? res);
                   console.log(`[Engine] KuCoin order no ID: ${errDetail}`);
-                  await sendTelegramNotification(engine, `⚠️ <b>Orden Rechazada</b>\nExchange: KuCoin\nPar: ${symbol}\nLado: ${side}\nFunds: $${funds}\nError: ${errDetail}`);
+                  const isBal = !errDetail.includes("orderId");
+                  if (shouldNotifyError(`kc_${symbol}_${side}_noId`, isBal)) {
+                    await sendTelegramNotification(engine, `⚠️ <b>Orden Rechazada</b>\nExchange: KuCoin\nPar: ${symbol}\nLado: ${side}\nFunds: $${funds}\nError: ${errDetail}`);
+                  }
                 }
               }
             } else {
@@ -497,7 +509,10 @@ async function placeOrder(engine: EngineState, symbol: string, side: "Buy" | "Se
               else {
                 const errDetail = JSON.stringify(res?.data ?? res);
                 console.log(`[Engine] KuCoin order no ID: ${errDetail}`);
-                await sendTelegramNotification(engine, `⚠️ <b>Orden Rechazada</b>\nExchange: KuCoin\nPar: ${symbol}\nLado: ${side}\nQty: ${qty}\nError: ${errDetail}`);
+                const isBal2 = !errDetail.includes("orderId");
+                if (shouldNotifyError(`kc_${symbol}_${side}_noId2`, isBal2)) {
+                  await sendTelegramNotification(engine, `⚠️ <b>Orden Rechazada</b>\nExchange: KuCoin\nPar: ${symbol}\nLado: ${side}\nQty: ${qty}\nError: ${errDetail}`);
+                }
               }
             }
           }
@@ -506,7 +521,7 @@ async function placeOrder(engine: EngineState, symbol: string, side: "Buy" | "Se
           console.error(`[Engine] BOTH/KuCoin order failed:`, errMsg);
           const isBalanceErr = errMsg === "OK" || errMsg.includes("Balance insufficient") || errMsg.includes("balance");
           const nKey = `kc_${symbol}_${side}`;
-          if (shouldNotifyError(nKey)) {
+          if (shouldNotifyError(nKey, isBalanceErr)) {
             const reason = isBalanceErr ? "Balance insuficiente en KuCoin" : errMsg;
             await sendTelegramNotification(engine, `❌ <b>Orden Fallida</b>\nExchange: KuCoin\nPar: ${symbol}\nLado: ${side}\nQty: ${qty}\nRazón: ${reason}`);
           }
@@ -520,8 +535,9 @@ async function placeOrder(engine: EngineState, symbol: string, side: "Buy" | "Se
       } catch (e) {
         const errMsg = (e as Error).message;
         console.error(`[Engine] BOTH/Bybit order failed:`, errMsg);
+        const isBalanceErr2 = errMsg.includes("Balance insufficient") || errMsg.includes("balance") || errMsg.includes("Insufficient");
         const nKey = `by_${symbol}_${side}`;
-        if (shouldNotifyError(nKey)) {
+        if (shouldNotifyError(nKey, isBalanceErr2)) {
           await sendTelegramNotification(engine, `❌ <b>Orden Fallida</b>\nExchange: Bybit\nPar: ${symbol}\nLado: ${side}\nQty: ${qty}\nError: ${errMsg}`);
         }
       }
@@ -569,8 +585,9 @@ async function placeOrder(engine: EngineState, symbol: string, side: "Buy" | "Se
         // KuCoin returned success HTTP but no orderId (insufficient balance, min size, etc.)
         const errMsg = res?.msg || res?.code || JSON.stringify(res?.data ?? res);
         console.log(`[Engine] KuCoin order rejected ${side} ${symbol}: ${errMsg}`);
+        const isBalRej = errMsg === "OK" || errMsg.includes("Balance") || errMsg.includes("balance") || errMsg.includes("insufficient");
         const nKey = `kc_${symbol}_${side}_rej`;
-        if (shouldNotifyError(nKey)) {
+        if (shouldNotifyError(nKey, isBalRej)) {
           const reason = errMsg === "OK" ? "Balance insuficiente o par no disponible" : errMsg;
           await sendTelegramNotification(engine, `⚠️ <b>Orden Rechazada</b>\nExchange: KuCoin\nPar: ${symbol}\nLado: ${side}\nRazón: ${reason}`);
         }
@@ -583,9 +600,9 @@ async function placeOrder(engine: EngineState, symbol: string, side: "Buy" | "Se
   } catch (e) {
     const errMsg = (e as Error).message;
     console.error(`[Engine] Order failed ${side} ${symbol} (${engine.exchange}):`, errMsg);
-    const isBalanceErr = errMsg === "OK" || errMsg.includes("Balance insufficient") || errMsg.includes("balance");
+    const isBalanceErr = errMsg === "OK" || errMsg.includes("Balance insufficient") || errMsg.includes("balance") || errMsg.includes("Insufficient");
     const nKey = `${engine.exchange}_${symbol}_${side}`;
-    if (shouldNotifyError(nKey)) {
+    if (shouldNotifyError(nKey, isBalanceErr)) {
       const reason = isBalanceErr ? `Balance insuficiente en ${engine.exchange}` : errMsg;
       await sendTelegramNotification(engine, `❌ <b>Orden Fallida</b>\nExchange: ${engine.exchange}\nPar: ${symbol}\nLado: ${side}\nQty: ${qty}\nRazón: ${reason}`);
     }
