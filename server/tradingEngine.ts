@@ -1149,6 +1149,14 @@ async function runScalpingStrategy(engine: EngineState, symbol: string, category
     const tradeAmount = balance * allocation / 100 * 0.5; // 50% of allocation per scalp (was 10%, too small to cover fees)
     const qty = (tradeAmount / price).toFixed(6);
 
+    // In LIVE mode for spot (KuCoin), scalping is buy-only because we don't track positions.
+    // Selling requires having the asset, and scalping is stateless (no open position tracking).
+    // Only allow sells in simulation mode or for linear (futures) category.
+    if (signal === "Sell" && !engine.simulationMode && category === "spot") {
+      console.log(`[Scalp] SKIP ${symbol} Sell — live spot scalping is buy-only (no position tracking)`);
+      return;
+    }
+
     // Pre-check: estimate PnL before placing order
     // Use BB spread as a realistic profit target (price tends to revert to mean)
     let estGrossPnl: number;

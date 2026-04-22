@@ -322,3 +322,6 @@
 - [x] Limpiar posiciones fantasma de la DB — en LIVE mode se limpian todas al arrancar (exchange es source of truth)
 - [x] Al eliminar posición fantasma de memoria, también se elimina de la DB (deleteOpenPosition)
 - [x] En LIVE mode no se restauran posiciones de DB; en SIMULATION sí se restauran
+
+## Bug Fix: Scalping sell path también tiene posiciones fantasma - Abril 22
+- [x] Scalping sell de DOGEUSDT en KuCoin falla con "OK" — fix: live spot scalping es buy-only (no hay tracking de posiciones)
