@@ -746,10 +746,10 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
 
   // ─── Protection System: Stop-Loss + Trailing Stop + Time Stop ───
   const stratConfig = config ?? {};
-  const stopLossPct = (stratConfig.stopLossPct ?? 3) / 100; // Default 3% stop-loss (crypto is volatile)
+  const stopLossPct = (stratConfig.stopLossPct ?? 0) / 100; // Default 0% = DISABLED (never sell at loss) (crypto is volatile)
   const trailingPct = (stratConfig.trailingStopPct ?? 0.5) / 100; // 0.5% trailing distance
   const trailingActivation = (stratConfig.trailingActivationPct ?? 0.5) / 100; // Activate trailing after 0.5% profit (optimized for more cycles)
-  const maxHoldTimeMs = (stratConfig.maxHoldHours ?? 4) * 60 * 60 * 1000; // Default 48 hours max hold
+  const maxHoldTimeMs = (stratConfig.maxHoldHours ?? 12) * 60 * 60 * 1000; // Default 48 hours max hold
   const maxOpenPositions = stratConfig.maxOpenPositions ?? 3; // Max open positions per symbol
   // Dynamic minProfitUsd: proportional to trade amount (0.3% of tradeAmount, min $0.30, max $2)
   const tradeAmountForMin = strat?.allocationPct ? (parseFloat((await db.getOrCreateBotState(engine.userId))?.currentBalance ?? "5000") * strat.allocationPct / 100) : 100;
@@ -783,9 +783,9 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
       // Only time-stop if the loss is small enough (< stop-loss threshold) — otherwise let stop-loss handle it
       const estGrossPnl = (price - pos.buyPrice) * parseFloat(pos.qty);
       const estNetPnl = calcNetPnl(estGrossPnl, pos.tradeAmount, category, true, engine.exchange);
-      if (Math.abs(estNetPnl) < pos.tradeAmount * 0.01) { // Accept up to 1% loss to free capital
+      if (estNetPnl > 0) { // ONLY close if in profit — NEVER sell at a loss
         // Loss is tiny, close to free up capital
-        positionsToSell.push({ pos, reason: `TIME-STOP (held ${(holdTimeMs / 3600000).toFixed(1)}h, loss $${estNetPnl.toFixed(2)})` });
+        positionsToSell.push({ pos, reason: `TIME-PROFIT (held ${(holdTimeMs / 3600000).toFixed(1)}h, profit $${estNetPnl.toFixed(2)})` });
         openPositions.splice(i, 1);
         continue;
       } else {
@@ -1207,8 +1207,14 @@ async function runScalpingStrategy(engine: EngineState, symbol: string, category
         return;
       }
 
-      // Close the oldest position
+      // Close the oldest position — ONLY if in profit
       const pos = myPositions[0];
+      const estGross = (price - pos.buyPrice) * parseFloat(pos.qty);
+      const estNet = calcNetPnl(estGross, pos.buyPrice * parseFloat(pos.qty), category, true, engine.exchange);
+      if (estNet <= 0) {
+        console.log(`[Scalp] HOLD ${symbol} — sell signal but PnL $${estNet.toFixed(2)} is negative, waiting for profit`);
+        return;
+      }
       const sellQty = pos.qty;
       const orderId = await placeOrder(engine, symbol, "Sell", sellQty, category);
       if (orderId) {
@@ -1365,8 +1371,8 @@ async function runFuturesStrategy(engine: EngineState, symbol: string) {
     }
 
     // 2. TIME STOP: Only if explicitly enabled and NOT BTC/ETH
-    if (!closeReason && futuresMaxHoldHours > 0 && holdTimeMs > futuresMaxHoldHours * 3600000 && profitPct < 0.003 && !futuresNoSL.includes(symbol)) {
-      closeReason = `TIME-STOP (held ${(holdTimeMs / 3600000).toFixed(1)}h ${isLong ? "LONG" : "SHORT"})`;
+    if (!closeReason && futuresMaxHoldHours > 0 && holdTimeMs > futuresMaxHoldHours * 3600000 && profitPct > 0.003 && !futuresNoSL.includes(symbol)) {
+      closeReason = `TIME-PROFIT (held ${(holdTimeMs / 3600000).toFixed(1)}h, profit ${(profitPct * 100).toFixed(2)}% ${isLong ? "LONG" : "SHORT"})`;
     }
 
     // 3. TRAILING STOP: Lock in profits
@@ -1524,7 +1530,7 @@ async function runFuturesStrategy(engine: EngineState, symbol: string) {
   const futStrats2 = await db.getUserStrategies(engine.userId);
   const strat = futStrats2.find(s => s.symbol === symbol && s.strategyType === "futures");
   const config = strat?.config as any;
-  const leverage = config?.leverage ?? 10;
+  const leverage = config?.leverage ?? 5;
   const allocation = strat?.allocationPct ?? 25;
   const state = await db.getOrCreateBotState(engine.userId);
   const balance = parseFloat(state?.currentBalance ?? "5000");

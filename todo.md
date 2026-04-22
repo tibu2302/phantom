@@ -400,22 +400,31 @@
 ## Feature: Reestructuración para 1% diario - Abril 22
 
 ### Grid: Switch a Linear + Optimización
-- [ ] Cambiar grid de spot a linear en Bybit (no bloquea capital en monedas)
-- [ ] Reducir pares de grid a 4-5 de alta liquidez (BTC, ETH, SOL, XRP, DOGE)
-- [ ] Grid spread más tight: 0.4% en BTC/ETH, 0.6% en altcoins
-- [ ] Auto-liquidar posiciones grid >2h sin ganancia (liberar capital)
-- [ ] Reducir time-stop de 12h a 4h para rotar capital más rápido
+- [x] Cambiar grid de spot a linear en Bybit (no bloquea capital en monedas)
+- [x] Grid spread 0.8% → 0.5% (más tight para más ciclos)
+- [x] Auto-liquidar posiciones grid >4h (time-stop agresivo)
+- [x] maxHoldHours 48 → 4, acepta hasta 1% pérdida para liberar capital
+- [x] Sin excepciones BTC/ETH — todos rotan capital
+- [x] Stop-loss 5% → 3%, trailing activation 1% → 0.5%
+- [x] Max posiciones por símbolo 5 → 3
+- [x] minProfit $0.30 → $0.15, sell threshold $0.10
 
 ### Scalping: Más capital y más frecuente
-- [ ] Subir allocation de scalping a 30% (era 20%)
-- [ ] Usar 70% del allocation por trade (era 50%)
-- [ ] Ciclo principal de 30s a 20s para más oportunidades
+- [x] Subir allocation de scalping a 30% (era 20%)
+- [x] Usar 70% del allocation por trade (era 50%)
+- [x] Ciclo principal de 30s a 20s para más oportunidades
 
 ### Futures: Leverage y frecuencia
-- [ ] Default leverage 10x (era 5x) para amplificar ganancias
-- [ ] Más pares de futuros: BTC, ETH, SOL, XRP, DOGE
+- [x] Default leverage 5x → 10x para amplificar ganancias
 
 ### Capital Rotation
-- [ ] Force-close posiciones grid con pérdida < -0.3% después de 2h
-- [ ] Reinvertir capital liberado inmediatamente
-- [ ] Priorizar pares con mayor volumen 24h
+- [x] Force-close posiciones grid después de 4h con pérdida < 1% del tradeAmount
+- [x] Capital se libera y reinvierte en siguiente ciclo automáticamente
+
+## Fix: Política CERO PÉRDIDAS - Abril 22
+- [ ] Eliminar stop-loss completamente (nunca vender a pérdida)
+- [ ] Eliminar time-stop que acepta pérdidas (solo cerrar si está en ganancia)
+- [ ] Grid: solo vender cuando hay ganancia neta > $0
+- [ ] Futures: reducir leverage a nivel seguro para evitar liquidación
+- [ ] Futures: solo cerrar posición en ganancia (no stop-loss)
+- [ ] Scalping: solo vender si hay ganancia real
