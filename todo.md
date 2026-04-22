@@ -289,10 +289,10 @@
 - [x] Ahora suma main + trade + trade_hf y convierte crypto a USD con precios en vivo
 
 ## Fix: Capital inicial y cálculos de ganancia - Abril 21
-- [ ] Capital inicial correcto: Bybit $1,500 + KuCoin $1,000 = $2,500 total
-- [ ] Ganancia real = (balance Bybit + KuCoin) - $2,500
-- [ ] % rendimiento = ganancia / $2,500
-- [ ] Mostrar ganancia por exchange (Bybit profit + KuCoin profit separados)
+- [x] Capital inicial correcto: Bybit $1,500 + KuCoin $1,000 = $2,500 total — guardado en DB, editable desde UI
+- [x] Ganancia real = (balance Bybit + KuCoin) - $2,500 — implementado en exchangeBalances endpoint
+- [x] % rendimiento = ganancia / $2,500 — realProfitPct calculado y mostrado en dashboard
+- [x] Mostrar ganancia por exchange (Bybit profit + KuCoin profit separados) — cards individuales Bybit/KuCoin en dashboard
 
 ## Feature: Capital invertido editable - Abril 21
 - [x] Guardar capital invertido en DB (botState.initialBalance)
