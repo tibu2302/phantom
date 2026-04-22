@@ -306,5 +306,5 @@
 - [x] KuCoin: min order size validation + market buys usan 'funds' en vez de 'size' (fix ARB)
 
 ## Bugs: Scalping PnL + KuCoin orders v2 - Abril 22
-- [ ] Scalping PnL estimation demasiado conservadora (emaDiff * 0.5 siempre da negativo)
-- [ ] KuCoin ADA order failed — funds fix no cubre path de scalping/kucoin-only
+- [x] Scalping PnL estimation demasiado conservadora (emaDiff * 0.5 siempre da negativo) — reemplazado con BB width * 0.25
+- [x] KuCoin ADA order failed — funds fix no cubre path de scalping/kucoin-only — aplicado funds fix al path kucoin-only
