@@ -198,7 +198,7 @@ export const appRouter = router({
           ]);
           let totalBal = 0;
           let totalAvail = 0;
-          const livePrices = (globalThis as any).__livePrices ?? {};
+          const allPrices = getLivePrices();
           const processAccounts = (res: any) => {
             if (res.status !== "fulfilled" || res.value?.code !== "200000") return;
             const accounts = res.value.data as any[];
@@ -211,8 +211,8 @@ export const appRouter = router({
                 totalBal += bal;
                 totalAvail += avail;
               } else {
-                // Convert to USD using live prices
-                const price = livePrices[`${cur}USDT`] ?? livePrices[`${cur}-USDT`] ?? 0;
+                // Convert to USD using live prices (keys are like BTCUSDT, ETHUSDT)
+                const price = allPrices[`${cur}USDT`]?.lastPrice ?? allPrices[`${cur}-USDT`]?.lastPrice ?? 0;
                 if (price > 0) {
                   totalBal += bal * price;
                   totalAvail += avail * price;

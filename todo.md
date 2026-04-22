@@ -284,5 +284,6 @@
 - [x] Futuros PnL no realizado de Bybit
 
 ## Bug: KuCoin balance $0 - Abril 21
-- [ ] KuCoin muestra $0 en dashboard — fondos están en cuenta Trading, no Spot
-- [ ] Consultar cuenta Trading de KuCoin en vez de (o además de) Spot
+- [x] KuCoin muestra $0 en dashboard — fondos están en cuenta Trading, no Spot
+- [x] Consultar cuenta Trading de KuCoin en vez de (o además de) Spot
+- [x] Ahora suma main + trade + trade_hf y convierte crypto a USD con precios en vivo
