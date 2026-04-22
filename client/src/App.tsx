@@ -21,7 +21,7 @@ const LocalLogin = lazy(() => import("./pages/LocalLogin"));
 function PageLoader() {
   return (
     <div className="flex items-center justify-center h-64">
-      <img src="/manus-storage/phantom-logo_69adf5bb.png" alt="Loading" className="h-8 w-8 animate-pulse rounded-md" />
+      <img src="/phantom-logo.png" alt="Loading" className="h-8 w-8 animate-pulse rounded-md" />
     </div>
   );
 }
