@@ -139,8 +139,27 @@ export const appRouter = router({
       return getLivePrices();
     }),
     exchangeBalances: protectedProcedure.query(async ({ ctx }) => {
-      const results: { bybit?: { balance: string; error?: string }; kucoin?: { balance: string; error?: string } } = {};
-      // Bybit balance
+      const results: {
+        bybit?: { balance: string; available?: string; unrealizedPnl?: string; error?: string };
+        kucoin?: { balance: string; available?: string; error?: string };
+        totalBalance: string;
+        initialDeposit: string;
+        realProfit: string;
+        realProfitPct: string;
+        todayPnl: string;
+        todayTrades: number;
+        totalTrades: number;
+        winRate: string;
+        openPositions: { count: number; unrealizedPnl: string };
+      } = {
+        totalBalance: "0", initialDeposit: "0", realProfit: "0", realProfitPct: "0",
+        todayPnl: "0", todayTrades: 0, totalTrades: 0, winRate: "0",
+        openPositions: { count: 0, unrealizedPnl: "0" },
+      };
+
+      let bybitBal = 0, kucoinBal = 0;
+
+      // Bybit balance (REAL from API)
       try {
         const bybitKeys = await db.getApiKey(ctx.user.id, "bybit");
         if (bybitKeys) {
@@ -148,8 +167,15 @@ export const appRouter = router({
           const client = new RestClientV5({ key: bybitKeys.apiKey, secret: bybitKeys.apiSecret });
           const res = await client.getWalletBalance({ accountType: "UNIFIED" });
           if (res.retCode === 0) {
-            const totalUsd = (res.result as any)?.list?.[0]?.totalEquity ?? "0";
-            results.bybit = { balance: parseFloat(totalUsd).toFixed(2) };
+            const account = (res.result as any)?.list?.[0];
+            bybitBal = parseFloat(account?.totalEquity ?? "0");
+            const available = parseFloat(account?.totalAvailableBalance ?? "0");
+            const unrealizedPnl = parseFloat(account?.totalPerpUPL ?? "0");
+            results.bybit = {
+              balance: bybitBal.toFixed(2),
+              available: available.toFixed(2),
+              unrealizedPnl: unrealizedPnl.toFixed(2),
+            };
           } else {
             results.bybit = { balance: "0", error: res.retMsg };
           }
@@ -157,7 +183,8 @@ export const appRouter = router({
       } catch (e: any) {
         results.bybit = { balance: "0", error: e.message };
       }
-      // KuCoin balance
+
+      // KuCoin balance (REAL from API)
       try {
         const kucoinKeys = await db.getApiKey(ctx.user.id, "kucoin");
         if (kucoinKeys) {
@@ -166,8 +193,12 @@ export const appRouter = router({
           const res = await client.getAccountSummary();
           if (res.code === "200000") {
             const summary = res.data as any;
-            const totalUsd = parseFloat(summary?.totalBalance ?? summary?.availableBalance ?? "0");
-            results.kucoin = { balance: totalUsd.toFixed(2) };
+            kucoinBal = parseFloat(summary?.totalBalance ?? summary?.availableBalance ?? "0");
+            const available = parseFloat(summary?.availableBalance ?? "0");
+            results.kucoin = {
+              balance: kucoinBal.toFixed(2),
+              available: available.toFixed(2),
+            };
           } else {
             results.kucoin = { balance: "0", error: (res as any).msg };
           }
@@ -175,6 +206,51 @@ export const appRouter = router({
       } catch (e: any) {
         results.kucoin = { balance: "0", error: e.message };
       }
+
+      // Total balance from exchanges
+      const totalBal = bybitBal + kucoinBal;
+      results.totalBalance = totalBal.toFixed(2);
+
+      // Initial deposit from bot state
+      const state = await db.getOrCreateBotState(ctx.user.id);
+      const initialDeposit = parseFloat(state?.initialBalance ?? "5000");
+      results.initialDeposit = initialDeposit.toFixed(2);
+
+      // Real profit = current exchange balance - initial deposit
+      const realProfit = totalBal - initialDeposit;
+      results.realProfit = realProfit.toFixed(2);
+      results.realProfitPct = initialDeposit > 0 ? ((realProfit / initialDeposit) * 100).toFixed(2) : "0";
+
+      // Today's PnL from trades table
+      try {
+        const allTrades = await db.getUserTrades(ctx.user.id, 5000);
+        const now = new Date();
+        const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+        const todayTrades = allTrades.filter(t => new Date(t.createdAt) >= todayStart);
+        const todayPnl = todayTrades.reduce((sum, t) => sum + parseFloat(t.pnl ?? "0"), 0);
+        results.todayPnl = todayPnl.toFixed(2);
+        results.todayTrades = todayTrades.length;
+        results.totalTrades = allTrades.length;
+
+        // Win rate (trades with pnl > 0)
+        const sellTrades = allTrades.filter(t => t.side === "sell");
+        const winTrades = sellTrades.filter(t => parseFloat(t.pnl ?? "0") > 0);
+        results.winRate = sellTrades.length > 0 ? ((winTrades.length / sellTrades.length) * 100).toFixed(1) : "0";
+      } catch { /* trades query failed */ }
+
+      // Open positions from engine
+      try {
+        const positions = getOpenPositions(ctx.user.id);
+        const gridCount = positions.grid.length;
+        const futCount = positions.futures.length;
+        const gridPnl = positions.grid.reduce((s, p) => s + p.unrealizedPnl, 0);
+        const futPnl = positions.futures.reduce((s, p) => s + p.unrealizedPnl, 0);
+        results.openPositions = {
+          count: gridCount + futCount,
+          unrealizedPnl: (gridPnl + futPnl).toFixed(2),
+        };
+      } catch { /* engine not running */ }
+
       return results;
     }),
   }),

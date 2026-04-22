@@ -3,7 +3,7 @@ import {
   Bell, Play, Square, AlertTriangle, TrendingUp, TrendingDown,
   Wallet, Target, Trophy, Activity, BarChart3, Shield, Wifi, WifiOff,
   Clock, Zap, ArrowUpRight, ArrowDownRight, RefreshCw, Eye, EyeOff,
-  ChevronRight, Flame, DollarSign
+  ChevronRight, Flame
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -74,23 +74,32 @@ export default function Home() {
   }, [utils]);
 
   const state = data?.state;
-  const totalPnl = parseFloat(String(state?.totalPnl ?? "0"));
-  const todayPnl = parseFloat(String(state?.todayPnl ?? "0"));
-  const balance = parseFloat(String(state?.currentBalance ?? "5000"));
-  const initial = parseFloat(String(state?.initialBalance ?? "5000"));
-  const totalTrades = state?.totalTrades ?? 0;
-  const winningTrades = state?.winningTrades ?? 0;
-  const winRate = totalTrades > 0 ? (winningTrades / totalTrades) * 100 : 0;
-  const pnlPct = initial > 0 ? (totalPnl / initial) * 100 : 0;
   const isRunning = data?.engineRunning ?? false;
   const maxDrawdown = parseFloat(String(state?.maxDrawdown ?? "0"));
   const dailyLoss = parseFloat(String(state?.dailyLoss ?? "0"));
   const unread = data?.unreadNotifications ?? 0;
   const notifications = data?.recentOpportunities ?? [];
   const selectedExchange = (state as any)?.selectedExchange ?? "bybit";
-  const unrealizedPnl = (data as any)?.totalUnrealizedPnl ?? 0;
   const openPositions = (data as any)?.openPositions ?? { grid: [], futures: [] };
   const totalOpenPositions = (openPositions.grid?.length ?? 0) + (openPositions.futures?.length ?? 0);
+
+  // ── REAL exchange data from API ──
+  const eb = exchangeBalances.data;
+  const bybitBal = parseFloat(eb?.bybit?.balance ?? "0");
+  const bybitAvail = parseFloat(eb?.bybit?.available ?? "0");
+  const bybitUnrealized = parseFloat(eb?.bybit?.unrealizedPnl ?? "0");
+  const kucoinBal = parseFloat(eb?.kucoin?.balance ?? "0");
+  const kucoinAvail = parseFloat(eb?.kucoin?.available ?? "0");
+  const totalBalance = parseFloat(eb?.totalBalance ?? "0");
+  const initialDeposit = parseFloat(eb?.initialDeposit ?? "5000");
+  const realProfit = parseFloat(eb?.realProfit ?? "0");
+  const realProfitPct = parseFloat(eb?.realProfitPct ?? "0");
+  const todayPnl = parseFloat(eb?.todayPnl ?? "0");
+  const todayTrades = eb?.todayTrades ?? 0;
+  const totalTrades = eb?.totalTrades ?? 0;
+  const winRate = parseFloat(eb?.winRate ?? "0");
+  const unrealizedPnl = parseFloat(eb?.openPositions?.unrealizedPnl ?? "0");
+  const openPosCount = eb?.openPositions?.count ?? totalOpenPositions;
 
   const updateSettings = trpc.bot.updateSettings.useMutation({
     onSuccess: () => { utils.bot.status.invalidate(); },
@@ -118,7 +127,7 @@ export default function Home() {
     return `${m}m`;
   }, [state?.startedAt, isRunning, currentTime]);
 
-  const pnlColor = totalPnl >= 0 ? "text-[oklch(0.72_0.19_160)]" : "text-[oklch(0.63_0.24_25)]";
+  const pnlColor = realProfit >= 0 ? "text-[oklch(0.72_0.19_160)]" : "text-[oklch(0.63_0.24_25)]";
   const todayColor = todayPnl >= 0 ? "text-[oklch(0.72_0.19_160)]" : "text-[oklch(0.63_0.24_25)]";
 
   const strategies = strategiesQuery.data ?? [];
@@ -278,59 +287,93 @@ export default function Home() {
           </div>
         </div>
 
-        {/* ── Main PnL Hero Card ── */}
+        {/* ── Balance Total Hero Card ── */}
         <div className="relative overflow-hidden rounded-2xl shimmer-bg" style={{ background: 'linear-gradient(145deg, oklch(0.17 0.025 160) 0%, oklch(0.14 0.012 180) 40%, oklch(0.13 0.006 240) 100%)', border: '1px solid oklch(0.72 0.19 160 / 12%)' }}>
           <div className="absolute top-0 right-0 w-48 h-48 bg-primary/6 rounded-full blur-[80px] -translate-y-12 translate-x-12" />
           <div className="absolute bottom-0 left-0 w-32 h-32 bg-[oklch(0.75_0.14_200)]/4 rounded-full blur-[50px] translate-y-8 -translate-x-8" />
-          <div className="absolute top-1/2 left-1/2 w-20 h-20 bg-primary/3 rounded-full blur-[40px] -translate-x-1/2 -translate-y-1/2" />
           <div className="relative p-5">
-            <div className="flex items-center justify-between mb-3">
-              <span className="text-[10px] font-bold tracking-[0.2em] text-muted-foreground/70 uppercase">Resultado Total</span>
-              <span className={`text-[11px] font-bold px-2.5 py-1 rounded-lg backdrop-blur-sm ${pnlPct >= 0 ? 'bg-primary/15 text-primary border border-primary/20' : 'bg-destructive/15 text-destructive border border-destructive/20'}`}>
-                {fmtPct(pnlPct)}
+            <div className="flex items-center justify-between mb-1">
+              <span className="text-[10px] font-bold tracking-[0.2em] text-muted-foreground/70 uppercase">Balance Total</span>
+              <span className={`text-[11px] font-bold px-2.5 py-1 rounded-lg backdrop-blur-sm ${realProfitPct >= 0 ? 'bg-primary/15 text-primary border border-primary/20' : 'bg-destructive/15 text-destructive border border-destructive/20'}`}>
+                {fmtPct(realProfitPct)}
               </span>
             </div>
-            <p className={`text-[44px] font-black tracking-tight tabular-nums leading-none ${pnlColor}`}>
-              {hideBalances ? "••••••" : fmt(totalPnl)}
+            <p className="text-[42px] font-black tracking-tight tabular-nums leading-none text-foreground">
+              {hideBalances ? "••••••" : fmtUsd(totalBalance)}
             </p>
-            <div className="flex items-center gap-5 mt-5 pt-3.5 border-t border-white/[0.06]">
-              <div className="flex items-center gap-2.5">
-                <div className={`w-2 h-2 rounded-full ${todayPnl >= 0 ? 'bg-[oklch(0.72_0.19_160)]' : 'bg-[oklch(0.63_0.24_25)]'} pulse-live`} />
+            <p className="text-[10px] text-muted-foreground/50 mt-1 tabular-nums">Invertido: {hideBalances ? "•••" : fmtUsd(initialDeposit)}</p>
+
+            {/* Ganancia Real */}
+            <div className="mt-4 pt-3 border-t border-white/[0.06]">
+              <div className="flex items-center justify-between mb-3">
+                <span className="text-[9px] font-bold tracking-[0.15em] text-muted-foreground/60 uppercase">Ganancia Real</span>
+                <span className={`text-lg font-black tabular-nums ${pnlColor}`}>
+                  {hideBalances ? "••••" : fmt(realProfit)}
+                </span>
+              </div>
+              <div className="grid grid-cols-3 gap-3">
                 <div>
-                  <span className="text-[9px] text-muted-foreground/60 font-medium block mb-0.5">Hoy</span>
-                  <span className={`text-sm font-bold tabular-nums ${todayColor}`}>{hideBalances ? "••••" : fmt(todayPnl)}</span>
+                  <div className={`w-1.5 h-1.5 rounded-full mb-1 ${todayPnl >= 0 ? 'bg-[oklch(0.72_0.19_160)]' : 'bg-[oklch(0.63_0.24_25)]'} pulse-live`} />
+                  <span className="text-[9px] text-muted-foreground/50 font-medium block">Hoy ({todayTrades})</span>
+                  <span className={`text-[13px] font-bold tabular-nums ${todayColor}`}>{hideBalances ? "••" : fmt(todayPnl)}</span>
+                </div>
+                <div>
+                  <div className={`w-1.5 h-1.5 rounded-full mb-1 ${unrealizedPnl >= 0 ? 'bg-[oklch(0.75_0.14_200)]' : 'bg-[oklch(0.8_0.15_85)]'}`} />
+                  <span className="text-[9px] text-muted-foreground/50 font-medium block">Abierto ({openPosCount})</span>
+                  <span className={`text-[13px] font-bold tabular-nums ${unrealizedPnl >= 0 ? 'text-[oklch(0.75_0.14_200)]' : 'text-[oklch(0.8_0.15_85)]'}`}>
+                    {hideBalances ? "••" : fmt(unrealizedPnl)}
+                  </span>
+                </div>
+                <div>
+                  <div className="w-1.5 h-1.5 rounded-full mb-1 bg-[oklch(0.65_0.2_300)]" />
+                  <span className="text-[9px] text-muted-foreground/50 font-medium block">Futuros</span>
+                  <span className={`text-[13px] font-bold tabular-nums ${bybitUnrealized >= 0 ? 'text-[oklch(0.72_0.19_160)]' : 'text-[oklch(0.63_0.24_25)]'}`}>
+                    {hideBalances ? "••" : fmt(bybitUnrealized)}
+                  </span>
                 </div>
               </div>
-              {totalOpenPositions > 0 && (
-                <div className="flex items-center gap-2.5">
-                  <div className={`w-2 h-2 rounded-full ${unrealizedPnl >= 0 ? 'bg-[oklch(0.75_0.14_200)]' : 'bg-[oklch(0.8_0.15_85)]'}`} />
-                  <div>
-                    <span className="text-[9px] text-muted-foreground/60 font-medium block mb-0.5">Abierto ({totalOpenPositions})</span>
-                    <span className={`text-sm font-bold tabular-nums ${unrealizedPnl >= 0 ? 'text-[oklch(0.75_0.14_200)]' : 'text-[oklch(0.8_0.15_85)]'}`}>
-                      {hideBalances ? "••••" : fmt(unrealizedPnl)}
-                    </span>
-                  </div>
-                </div>
-              )}
             </div>
           </div>
         </div>
 
-        {/* ── Stats Grid: 2x2 ── */}
+        {/* ── Exchange Balances ── */}
+        <div className="grid grid-cols-2 gap-2.5">
+          <div className="glass-card p-4 interactive-card">
+            <div className="flex items-center gap-2 mb-2">
+              <div className="w-8 h-8 rounded-lg flex items-center justify-center" style={{ background: 'color-mix(in oklch, oklch(0.8 0.18 80) 10%, transparent)' }}>
+                <Wallet className="h-4 w-4" style={{ color: 'oklch(0.8 0.18 80)' }} />
+              </div>
+              <span className="text-[10px] font-bold tracking-wider text-muted-foreground/60 uppercase">Bybit</span>
+            </div>
+            <p className="text-[17px] font-black tabular-nums">{hideBalances ? "••••" : fmtUsd(bybitBal)}</p>
+            <p className="text-[9px] text-muted-foreground/40 tabular-nums mt-0.5">Disponible: {hideBalances ? "••" : fmtUsd(bybitAvail)}</p>
+          </div>
+          <div className="glass-card p-4 interactive-card">
+            <div className="flex items-center gap-2 mb-2">
+              <div className="w-8 h-8 rounded-lg flex items-center justify-center" style={{ background: 'color-mix(in oklch, oklch(0.75 0.14 170) 10%, transparent)' }}>
+                <Wallet className="h-4 w-4" style={{ color: 'oklch(0.75 0.14 170)' }} />
+              </div>
+              <span className="text-[10px] font-bold tracking-wider text-muted-foreground/60 uppercase">KuCoin</span>
+            </div>
+            <p className="text-[17px] font-black tabular-nums">{hideBalances ? "••••" : fmtUsd(kucoinBal)}</p>
+            <p className="text-[9px] text-muted-foreground/40 tabular-nums mt-0.5">Disponible: {hideBalances ? "••" : fmtUsd(kucoinAvail)}</p>
+          </div>
+        </div>
+
+        {/* ── Stats Grid: Win Rate + Trades ── */}
         <div className="grid grid-cols-2 gap-2.5">
           {[
-            { icon: DollarSign, label: "Bybit", value: hideBalances ? "••••••" : exchangeBalances.data?.bybit ? fmtUsd(parseFloat(exchangeBalances.data.bybit.balance)) : "—", color: "oklch(0.8 0.18 80)", bg: "oklch(0.8 0.18 80)" },
-            { icon: DollarSign, label: "KuCoin", value: hideBalances ? "••••••" : exchangeBalances.data?.kucoin ? fmtUsd(parseFloat(exchangeBalances.data.kucoin.balance)) : "—", color: "oklch(0.75 0.14 170)", bg: "oklch(0.75 0.14 170)" },
-            { icon: Trophy, label: "Win Rate", value: winRate.toFixed(1) + "%", color: "oklch(0.8 0.15 85)", bg: "oklch(0.8 0.15 85)" },
-            { icon: Activity, label: "Trades", value: String(totalTrades), color: "oklch(0.65 0.2 300)", bg: "oklch(0.65 0.2 300)" },
+            { icon: Trophy, label: "Win Rate", value: winRate.toFixed(1) + "%", sub: `${totalTrades} trades`, color: "oklch(0.8 0.15 85)", bg: "oklch(0.8 0.15 85)" },
+            { icon: Activity, label: "Total Trades", value: String(totalTrades), sub: `${todayTrades} hoy`, color: "oklch(0.65 0.2 300)", bg: "oklch(0.65 0.2 300)" },
           ].map((s) => (
             <div key={s.label} className="glass-card p-4 flex items-center gap-3 interactive-card">
-              <div className="w-11 h-11 rounded-xl flex items-center justify-center shrink-0" style={{ background: `color-mix(in oklch, ${s.bg} 10%, transparent)`, boxShadow: `0 0 12px color-mix(in oklch, ${s.bg} 8%, transparent)` }}>
-                <s.icon className="h-5 w-5" style={{ color: s.color }} />
+              <div className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0" style={{ background: `color-mix(in oklch, ${s.bg} 10%, transparent)` }}>
+                <s.icon className="h-4.5 w-4.5" style={{ color: s.color }} />
               </div>
               <div>
                 <p className="text-[9px] font-semibold tracking-wider text-muted-foreground/60 uppercase">{s.label}</p>
                 <p className="text-[15px] font-bold tabular-nums mt-0.5">{s.value}</p>
+                <p className="text-[9px] text-muted-foreground/40">{s.sub}</p>
               </div>
             </div>
           ))}
@@ -379,7 +422,7 @@ export default function Home() {
                 </div>
                 <h3 className="font-bold text-xs">Rendimiento 14d</h3>
               </div>
-              <span className={`text-[11px] font-bold tabular-nums px-2 py-0.5 rounded-md ${pnlPct >= 0 ? 'text-primary bg-primary/8' : 'text-destructive bg-destructive/8'}`}>{fmtPct(pnlPct)}</span>
+              <span className={`text-[11px] font-bold tabular-nums px-2 py-0.5 rounded-md ${realProfitPct >= 0 ? 'text-primary bg-primary/8' : 'text-destructive bg-destructive/8'}`}>{fmtPct(realProfitPct)}</span>
             </div>
             <ResponsiveContainer width="100%" height={110}>
               <AreaChart data={[...pnlHistory.data].reverse()} margin={{ top: 4, right: 4, left: -24, bottom: 0 }}>
@@ -624,49 +667,107 @@ export default function Home() {
 
       {/* Desktop Main Content */}
       <div className="grid grid-cols-3 gap-4">
-        {/* PnL Card */}
+        {/* Balance Card */}
         <div className="col-span-2 relative overflow-hidden rounded-2xl shimmer-bg" style={{ background: 'linear-gradient(145deg, oklch(0.17 0.025 160) 0%, oklch(0.14 0.012 180) 40%, oklch(0.13 0.006 240) 100%)', border: '1px solid oklch(0.72 0.19 160 / 12%)' }}>
           <div className="absolute top-0 right-0 w-56 h-56 bg-primary/6 rounded-full blur-[80px] -translate-y-16 translate-x-16" />
           <div className="absolute bottom-0 left-0 w-32 h-32 bg-[oklch(0.75_0.14_200)]/5 rounded-full blur-[50px] translate-y-8 -translate-x-8" />
           <div className="relative p-7">
-            <p className="text-[10px] font-bold tracking-[0.2em] text-muted-foreground/70 uppercase mb-3">Resultado Unificado</p>
-            <p className={`text-5xl font-black tracking-tight tabular-nums leading-none ${pnlColor}`}>{hideBalances ? "••••••••" : fmt(totalPnl)}</p>
-            <p className={`text-xl mt-2 font-bold tabular-nums ${pnlColor}`}>{fmtPct(pnlPct)}</p>
-            <div className="flex items-center gap-8 mt-6 pt-4 border-t border-white/[0.06]">
-              <div>
-                <span className="text-[10px] text-muted-foreground/60 block font-medium">Hoy</span>
-                <span className={`text-base font-bold tabular-nums ${todayColor}`}>{hideBalances ? "••••" : fmt(todayPnl)}</span>
+            <div className="flex items-center justify-between mb-2">
+              <p className="text-[10px] font-bold tracking-[0.2em] text-muted-foreground/70 uppercase">Balance Total</p>
+              <span className={`text-[11px] font-bold px-2.5 py-1 rounded-lg ${realProfitPct >= 0 ? 'bg-primary/15 text-primary border border-primary/20' : 'bg-destructive/15 text-destructive border border-destructive/20'}`}>
+                {fmtPct(realProfitPct)}
+              </span>
+            </div>
+            <p className="text-5xl font-black tracking-tight tabular-nums leading-none text-foreground">{hideBalances ? "••••••••" : fmtUsd(totalBalance)}</p>
+            <p className="text-xs text-muted-foreground/50 mt-1.5 tabular-nums">Invertido: {hideBalances ? "•••" : fmtUsd(initialDeposit)}</p>
+            <div className="mt-5 pt-4 border-t border-white/[0.06]">
+              <div className="flex items-center justify-between mb-4">
+                <span className="text-[10px] font-bold tracking-[0.15em] text-muted-foreground/60 uppercase">Ganancia Real</span>
+                <span className={`text-xl font-black tabular-nums ${pnlColor}`}>{hideBalances ? "••••" : fmt(realProfit)}</span>
               </div>
-              {totalOpenPositions > 0 && (
+              <div className="grid grid-cols-3 gap-4">
                 <div>
-                  <span className="text-[10px] text-muted-foreground/60 block font-medium">No Realizado ({totalOpenPositions})</span>
+                  <span className="text-[10px] text-muted-foreground/60 block font-medium">Hoy ({todayTrades})</span>
+                  <span className={`text-base font-bold tabular-nums ${todayColor}`}>{hideBalances ? "••••" : fmt(todayPnl)}</span>
+                </div>
+                <div>
+                  <span className="text-[10px] text-muted-foreground/60 block font-medium">Abierto ({openPosCount})</span>
                   <span className={`text-base font-bold tabular-nums ${unrealizedPnl >= 0 ? 'text-[oklch(0.75_0.14_200)]' : 'text-[oklch(0.8_0.15_85)]'}`}>
                     {hideBalances ? "••••" : fmt(unrealizedPnl)}
                   </span>
                 </div>
-              )}
+                <div>
+                  <span className="text-[10px] text-muted-foreground/60 block font-medium">Futuros PnL</span>
+                  <span className={`text-base font-bold tabular-nums ${bybitUnrealized >= 0 ? 'text-[oklch(0.72_0.19_160)]' : 'text-[oklch(0.63_0.24_25)]'}`}>
+                    {hideBalances ? "••••" : fmt(bybitUnrealized)}
+                  </span>
+                </div>
+              </div>
             </div>
           </div>
         </div>
 
         {/* Stats Column */}
         <div className="space-y-3">
-          {[
-            { icon: DollarSign, label: "Bybit", value: hideBalances ? "••••••" : exchangeBalances.data?.bybit ? fmtUsd(parseFloat(exchangeBalances.data.bybit.balance)) : "—", color: "oklch(0.8 0.18 80)", bg: "oklch(0.8 0.18 80)" },
-            { icon: DollarSign, label: "KuCoin", value: hideBalances ? "••••••" : exchangeBalances.data?.kucoin ? fmtUsd(parseFloat(exchangeBalances.data.kucoin.balance)) : "—", color: "oklch(0.75 0.14 170)", bg: "oklch(0.75 0.14 170)" },
-            { icon: Trophy, label: "Win Rate", value: winRate.toFixed(1) + "%", color: "oklch(0.8 0.15 85)", bg: "oklch(0.8 0.15 85)" },
-            { icon: Activity, label: "Trades", value: String(totalTrades), color: "oklch(0.65 0.2 300)", bg: "oklch(0.65 0.2 300)" },
-          ].map((s) => (
-            <div key={s.label} className="glass-card p-3.5 flex items-center gap-3 hover:border-primary/15 transition-all interactive-card">
-              <div className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0" style={{ background: `color-mix(in oklch, ${s.bg} 10%, transparent)`, boxShadow: `0 0 12px color-mix(in oklch, ${s.bg} 6%, transparent)` }}>
-                <s.icon className="h-4.5 w-4.5" style={{ color: s.color }} />
+          <div className="glass-card p-3.5 hover:border-primary/15 transition-all interactive-card">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0" style={{ background: 'color-mix(in oklch, oklch(0.8 0.18 80) 10%, transparent)' }}>
+                <Wallet className="h-4.5 w-4.5" style={{ color: 'oklch(0.8 0.18 80)' }} />
               </div>
-              <div className="flex items-center justify-between flex-1">
-                <span className="text-xs text-muted-foreground/60 font-medium">{s.label}</span>
-                <span className="text-sm font-bold tabular-nums">{s.value}</span>
+              <div className="flex-1">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs text-muted-foreground/60 font-medium">Bybit</span>
+                  <span className="text-sm font-bold tabular-nums">{hideBalances ? "••••" : fmtUsd(bybitBal)}</span>
+                </div>
+                <div className="flex items-center justify-between mt-0.5">
+                  <span className="text-[9px] text-muted-foreground/40">Disponible</span>
+                  <span className="text-[10px] text-muted-foreground/50 tabular-nums">{hideBalances ? "••" : fmtUsd(bybitAvail)}</span>
+                </div>
               </div>
             </div>
-          ))}
+          </div>
+          <div className="glass-card p-3.5 hover:border-primary/15 transition-all interactive-card">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0" style={{ background: 'color-mix(in oklch, oklch(0.75 0.14 170) 10%, transparent)' }}>
+                <Wallet className="h-4.5 w-4.5" style={{ color: 'oklch(0.75 0.14 170)' }} />
+              </div>
+              <div className="flex-1">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs text-muted-foreground/60 font-medium">KuCoin</span>
+                  <span className="text-sm font-bold tabular-nums">{hideBalances ? "••••" : fmtUsd(kucoinBal)}</span>
+                </div>
+                <div className="flex items-center justify-between mt-0.5">
+                  <span className="text-[9px] text-muted-foreground/40">Disponible</span>
+                  <span className="text-[10px] text-muted-foreground/50 tabular-nums">{hideBalances ? "••" : fmtUsd(kucoinAvail)}</span>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div className="glass-card p-3.5 hover:border-primary/15 transition-all interactive-card">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0" style={{ background: 'color-mix(in oklch, oklch(0.8 0.15 85) 10%, transparent)' }}>
+                <Trophy className="h-4.5 w-4.5" style={{ color: 'oklch(0.8 0.15 85)' }} />
+              </div>
+              <div className="flex items-center justify-between flex-1">
+                <span className="text-xs text-muted-foreground/60 font-medium">Win Rate</span>
+                <span className="text-sm font-bold tabular-nums">{winRate.toFixed(1)}%</span>
+              </div>
+            </div>
+          </div>
+          <div className="glass-card p-3.5 hover:border-primary/15 transition-all interactive-card">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0" style={{ background: 'color-mix(in oklch, oklch(0.65 0.2 300) 10%, transparent)' }}>
+                <Activity className="h-4.5 w-4.5" style={{ color: 'oklch(0.65 0.2 300)' }} />
+              </div>
+              <div className="flex items-center justify-between flex-1">
+                <span className="text-xs text-muted-foreground/60 font-medium">Trades</span>
+                <div className="text-right">
+                  <span className="text-sm font-bold tabular-nums">{totalTrades}</span>
+                  <span className="text-[9px] text-muted-foreground/40 block">{todayTrades} hoy</span>
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
 

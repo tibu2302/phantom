@@ -271,3 +271,13 @@
 - [x] Scalping: agregar pares DOGE, ADA, LINK
 - [x] LINEAR_SYMBOLS: agregar BTC, ETH, SOL, XRP, AVAX al WebSocket de futuros
 - [x] Force-sync: al iniciar bot, SOBREESCRIBE todas las estrategias con valores optimizados
+
+## Dashboard Real Balances - Abril 21
+- [ ] Saldo Bybit en vivo (API real)
+- [ ] Saldo KuCoin en vivo (API real)
+- [ ] Balance Total (Bybit + KuCoin)
+- [ ] Ganancia Real (balance actual - capital inicial)
+- [ ] Ganancia del Día (PnL de trades de hoy)
+- [ ] Posiciones Abiertas con PnL no realizado
+- [ ] Win Rate y Total Trades
+- [ ] Auto-refresh cada 30s
