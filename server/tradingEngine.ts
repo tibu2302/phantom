@@ -83,6 +83,9 @@ interface FuturesPosition {
   takeProfitPct: number;
   tradeAmount: number;
   openedAt: number;
+  direction: "long" | "short";
+  highestPrice?: number;  // for long trailing stop
+  lowestPrice?: number;   // for short trailing stop
 }
 
 interface EngineState {
@@ -607,12 +610,19 @@ async function placeOrder(engine: EngineState, symbol: string, side: "Buy" | "Se
   }
 }
 
-function calcNetPnl(grossPnl: number, tradeAmount: number, category: "spot" | "linear", roundTrip = true, exchange = "bybit"): number {
+function calcNetPnl(grossPnl: number, tradeAmount: number, category: "spot" | "linear", roundTrip = true, exchange = "bybit", holdTimeMs = 0): number {
   const exchangeFees = FEES[exchange] ?? FEES.bybit;
   const feeRate = category === "linear" ? exchangeFees.linear : exchangeFees.spot;
   const feeLegs = roundTrip ? 2 : 1;
-  const totalFees = tradeAmount * feeRate * feeLegs;
-  return grossPnl - totalFees;
+  const tradingFees = tradeAmount * feeRate * feeLegs;
+  // Estimate funding rate cost for perpetual futures (charged every 8h, ~0.01% avg)
+  let fundingCost = 0;
+  if (category === "linear" && holdTimeMs > 0) {
+    const FUNDING_RATE_PER_8H = 0.0001; // 0.01% average
+    const fundingPeriods = Math.floor(holdTimeMs / (8 * 3600 * 1000));
+    fundingCost = tradeAmount * FUNDING_RATE_PER_8H * fundingPeriods;
+  }
+  return grossPnl - tradingFees - fundingCost;
 }
 
 // ─── Grid Trading Strategy (with Trailing Stop, Dynamic Spread, DCA, MTF, Volume Filter, Hours) ───
@@ -741,7 +751,10 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
   const trailingActivation = (stratConfig.trailingActivationPct ?? 1.0) / 100; // Activate trailing after 1.0% profit (optimized for more cycles)
   const maxHoldTimeMs = (stratConfig.maxHoldHours ?? 48) * 60 * 60 * 1000; // Default 48 hours max hold
   const maxOpenPositions = stratConfig.maxOpenPositions ?? 5; // Max open positions per symbol
-  const minProfitUsd = stratConfig.minProfitUsd ?? 1; // Minimum $1 USD profit to sell (always win something)
+  // Dynamic minProfitUsd: proportional to trade amount (0.3% of tradeAmount, min $0.30, max $2)
+  const tradeAmountForMin = strat?.allocationPct ? (parseFloat((await db.getOrCreateBotState(engine.userId))?.currentBalance ?? "5000") * strat.allocationPct / 100) : 100;
+  const dynamicMinProfit = Math.max(0.30, Math.min(2.0, tradeAmountForMin * 0.003));
+  const minProfitUsd = stratConfig.minProfitUsd ?? dynamicMinProfit; // Proportional to position size
   const positionsToSell: { pos: OpenBuyPosition; reason: string }[] = [];
 
   for (let i = openPositions.length - 1; i >= 0; i--) {
@@ -1138,25 +1151,29 @@ async function runScalpingStrategy(engine: EngineState, symbol: string, category
   let signal: "Buy" | "Sell" | null = null;
   const reasons: string[] = [];
 
-  // Buy signals — allow in bearish market if conditions are extreme (oversold)
+  // Buy signals — more aggressive thresholds for more opportunities
   if (mtf.direction !== "bearish") {
-    // Normal conditions: standard thresholds
-    if (rsi < 35) { reasons.push(`RSI oversold (${rsi.toFixed(1)})`); signal = "Buy"; }
-    if (price <= bb.lower * 1.01) { reasons.push("Price near lower BB"); signal = "Buy"; }
+    // Bullish/Mixed: relaxed thresholds for more entries
+    if (rsi < 40) { reasons.push(`RSI oversold (${rsi.toFixed(1)})`); signal = "Buy"; }
+    if (price <= bb.lower * 1.015) { reasons.push("Price near lower BB"); signal = "Buy"; }
     if (ema9Current > ema21Current && ema9[ema9.length - 2] <= ema21[ema21.length - 2]) {
       reasons.push("EMA 9/21 bullish crossover"); signal = "Buy";
     }
     if (macd.histogram > 0 && macd.macd > macd.signal) { reasons.push("MACD bullish"); if (!signal) signal = "Buy"; }
+    // New: momentum buy on strong MACD + rising EMA
+    if (rsi < 55 && macd.histogram > 0 && ema9Current > ema21Current && price > bb.middle) {
+      reasons.push("Momentum buy (RSI+MACD+EMA)"); signal = "Buy";
+    }
   } else {
-    // Bearish market: only buy on extreme oversold conditions (counter-trend scalp)
-    if (rsi < 30) { reasons.push(`RSI extreme oversold (${rsi.toFixed(1)})`); signal = "Buy"; }
-    if (price <= bb.lower * 0.995) { reasons.push("Price below lower BB (extreme)"); signal = "Buy"; }
+    // Bearish market: counter-trend scalp on oversold
+    if (rsi < 32) { reasons.push(`RSI extreme oversold (${rsi.toFixed(1)})`); signal = "Buy"; }
+    if (price <= bb.lower * 0.998) { reasons.push("Price below lower BB (extreme)"); signal = "Buy"; }
     if (macd.histogram > 0 && macd.macd > macd.signal) { reasons.push("MACD reversal in bearish"); signal = "Buy"; }
   }
 
-  // Sell signals
-  if (rsi > 70) { reasons.push(`RSI overbought (${rsi.toFixed(1)})`); signal = "Sell"; }
-  if (price >= bb.upper * 0.99) { reasons.push("Price near upper BB"); signal = "Sell"; }
+  // Sell signals — more aggressive for faster exits
+  if (rsi > 65) { reasons.push(`RSI overbought (${rsi.toFixed(1)})`); signal = "Sell"; }
+  if (price >= bb.upper * 0.985) { reasons.push("Price near upper BB"); signal = "Sell"; }
   if (ema9Current < ema21Current && ema9[ema9.length - 2] >= ema21[ema21.length - 2]) {
     reasons.push("EMA 9/21 bearish crossover"); signal = "Sell";
   }
@@ -1237,20 +1254,22 @@ async function runScalpingStrategy(engine: EngineState, symbol: string, category
         console.log(`[Scalp] Removed phantom scalp position ${symbol} buyPrice=${pos.buyPrice} — sell failed`);
       }
     } else if (signal === "Buy") {
-      // Don't buy if we already have a position for this symbol on this exchange
-      if (myPositions.length > 0) {
-        console.log(`[Scalp] SKIP ${symbol} Buy — already have ${myPositions.length} open scalp position(s) on ${exchangeKey}`);
+      // Allow up to 2 scalp positions per symbol per exchange
+      const maxScalpPositions = 2;
+      if (myPositions.length >= maxScalpPositions) {
+        console.log(`[Scalp] SKIP ${symbol} Buy — already have ${myPositions.length}/${maxScalpPositions} scalp position(s) on ${exchangeKey}`);
         return;
       }
 
-      // Pre-check: estimate PnL before placing order
+      // Pre-check: estimate PnL before placing order (relaxed for more entries)
       const bbWidth = (bb.upper - bb.lower) / bb.middle;
       const estGrossPnl = engine.simulationMode
         ? tradeAmount * (Math.random() * 0.008 - 0.002)
-        : tradeAmount * bbWidth * 0.25;
+        : tradeAmount * bbWidth * 0.30; // Increased from 0.25 to 0.30 (capture more of the band)
       const estNetPnl = calcNetPnl(estGrossPnl, tradeAmount, category, true, engine.exchange);
 
-      if (estNetPnl <= 0) {
+      // Only skip if clearly unprofitable (reduced threshold)
+      if (estNetPnl <= -0.5) {
         console.log(`[Scalp] SKIP ${symbol} Buy — BB too tight, estimated net PnL $${estNetPnl.toFixed(2)}`);
         return;
       }
@@ -1284,8 +1303,9 @@ async function runScalpingStrategy(engine: EngineState, symbol: string, category
   }
 }
 
-// ─── Futures Long-Only Strategy ───
-async function runFuturesLongOnly(engine: EngineState, symbol: string) {
+// ─── Futures Long + Short Strategy ───
+// Supports both LONG and SHORT positions with dynamic take-profit and trailing stops
+async function runFuturesStrategy(engine: EngineState, symbol: string) {
   const ticker = await fetchTicker(engine.client, symbol, "linear");
   if (!ticker) return;
 
@@ -1293,78 +1313,122 @@ async function runFuturesLongOnly(engine: EngineState, symbol: string) {
   engine.lastPrices[symbol] = price;
   livePrices.set(symbol, ticker);
 
-  // Crypto futures trade 24/7 — no hours restriction
-  // Note: volume is naturally lower outside NY hours but we still trade
-
   // Volume filter
   if (!hasAdequateVolume(symbol)) return;
 
-  // Multi-timeframe check — only enter if bullish
+  // Multi-timeframe check
   const mtf = await multiTimeframeCheck(engine.client, symbol, "linear");
 
   // Check existing positions
   if (!engine.futuresPositions[symbol]) engine.futuresPositions[symbol] = [];
   const positions = engine.futuresPositions[symbol];
 
-  // ─── Manage existing positions: Stop-Loss + Take Profit + Trailing ───
+  // ─── Read strategy config ───
   const futStrats = await db.getUserStrategies(engine.userId);
   const futStrat = futStrats.find(s => s.symbol === symbol && s.strategyType === "futures");
   const futConfig = futStrat?.config as any ?? {};
-  const futuresStopLossPct = (futConfig.stopLossPct ?? 0) / 100; // Default 0 = disabled for futures
-  const futuresMaxHoldHours = futConfig.maxHoldHours ?? 0; // Default 0 = disabled for futures
+  const futuresStopLossPct = (futConfig.stopLossPct ?? 0) / 100;
+  const futuresMaxHoldHours = futConfig.maxHoldHours ?? 0;
+  const futuresNoSL = ["BTCUSDT", "ETHUSDT"];
 
+  // ─── Dynamic Take-Profit based on volatility ───
+  const klines = await fetchKlines(engine.client, symbol, "15", 50, "linear");
+  if (klines.closes.length < 26) return;
+  const volatility = calculateVolatility(klines.closes);
+  // Scale TP: low vol (0.2%) → 0.8% TP, high vol (1.5%) → 3% TP
+  const baseTpPct = futConfig.takeProfitPct ?? 1.5;
+  const dynamicTpPct = Math.max(0.8, Math.min(3.0, baseTpPct * Math.max(1, volatility / 0.005)));
+
+  // ─── Trailing stop config for futures ───
+  const trailingActivationPct = 0.005; // Activate trailing after 0.5% profit
+  const trailingDistancePct = 0.003;   // 0.3% trailing distance
+
+  // ─── Manage existing positions ───
   for (let i = positions.length - 1; i >= 0; i--) {
     const pos = positions[i];
-    const profitPct = (price - pos.entryPrice) / pos.entryPrice;
-    const lossPct = (pos.entryPrice - price) / pos.entryPrice;
+    const isLong = (pos.direction ?? "long") === "long";
     const holdTimeMs = Date.now() - pos.openedAt;
+
+    // Calculate profit/loss based on direction
+    const profitPct = isLong
+      ? (price - pos.entryPrice) / pos.entryPrice
+      : (pos.entryPrice - price) / pos.entryPrice;
+    const lossPct = -profitPct; // positive when losing
+
     let closeReason = "";
 
-    // ALL futures: NEVER close at a loss. Only close when profitable.
-    // stopLossPct === 0 means stop-loss is DISABLED
-    // maxHoldHours === 0 means time-stop is DISABLED
-    
-    // 1. STOP-LOSS: Only if explicitly enabled (stopLossPct > 0) and NOT BTC/ETH
-    const futuresNoSL = ["BTCUSDT", "ETHUSDT"];
+    // 1. STOP-LOSS: Only if explicitly enabled and NOT BTC/ETH
     if (futuresStopLossPct > 0 && lossPct >= futuresStopLossPct && !futuresNoSL.includes(symbol)) {
-      closeReason = `STOP-LOSS (${(lossPct * 100).toFixed(2)}% loss, ${pos.leverage}x)`;
+      closeReason = `STOP-LOSS (${(lossPct * 100).toFixed(2)}% loss, ${pos.leverage}x ${isLong ? "LONG" : "SHORT"})`;
     } else if (lossPct > 0.01) {
-      console.log(`[Futures] ${symbol} HOLD — ${(lossPct * 100).toFixed(2)}% loss, waiting for recovery`);
+      console.log(`[Futures] ${symbol} ${isLong ? "LONG" : "SHORT"} HOLD — ${(lossPct * 100).toFixed(2)}% loss, waiting`);
     }
-    // 2. TIME STOP: Only if explicitly enabled (maxHoldHours > 0) and NOT BTC/ETH
+
+    // 2. TIME STOP: Only if explicitly enabled and NOT BTC/ETH
     if (!closeReason && futuresMaxHoldHours > 0 && holdTimeMs > futuresMaxHoldHours * 3600000 && profitPct < 0.003 && !futuresNoSL.includes(symbol)) {
-      closeReason = `TIME-STOP (held ${(holdTimeMs / 3600000).toFixed(1)}h)`;
+      closeReason = `TIME-STOP (held ${(holdTimeMs / 3600000).toFixed(1)}h ${isLong ? "LONG" : "SHORT"})`;
     }
-    // 3. TAKE PROFIT: Only close when there's actual profit after fees
-    if (!closeReason && profitPct >= pos.takeProfitPct / 100) {
-      // Verify net profit after fees before closing
-      const estGrossPnl = (price - pos.entryPrice) * parseFloat(pos.qty) * pos.leverage;
-      const estNetPnl = calcNetPnl(estGrossPnl, pos.tradeAmount * pos.leverage, "linear", true, "bybit");
-      if (estNetPnl > 0) {
-        closeReason = `TAKE-PROFIT (${(profitPct * 100).toFixed(2)}%, net=$${estNetPnl.toFixed(2)})`;
+
+    // 3. TRAILING STOP: Lock in profits
+    if (!closeReason && profitPct > 0) {
+      if (isLong) {
+        if (!pos.highestPrice || price > pos.highestPrice) pos.highestPrice = price;
+        if (pos.highestPrice && profitPct >= trailingActivationPct) {
+          const dropFromHigh = (pos.highestPrice - price) / pos.highestPrice;
+          if (dropFromHigh >= trailingDistancePct) {
+            const estGross = (price - pos.entryPrice) * parseFloat(pos.qty) * pos.leverage;
+            const estNet = calcNetPnl(estGross, pos.tradeAmount * pos.leverage, "linear", true, "bybit", holdTimeMs);
+            if (estNet > 0) closeReason = `TRAILING-STOP (high=${pos.highestPrice.toFixed(2)}, net=$${estNet.toFixed(2)} LONG)`;
+          }
+        }
       } else {
-        console.log(`[Futures] ${symbol} HOLD — take-profit triggered but net PnL $${estNetPnl.toFixed(2)} after fees, waiting`);
+        if (!pos.lowestPrice || price < pos.lowestPrice) pos.lowestPrice = price;
+        if (pos.lowestPrice && profitPct >= trailingActivationPct) {
+          const riseFromLow = (price - pos.lowestPrice) / pos.lowestPrice;
+          if (riseFromLow >= trailingDistancePct) {
+            const estGross = (pos.entryPrice - price) * parseFloat(pos.qty) * pos.leverage;
+            const estNet = calcNetPnl(estGross, pos.tradeAmount * pos.leverage, "linear", true, "bybit", holdTimeMs);
+            if (estNet > 0) closeReason = `TRAILING-STOP (low=${pos.lowestPrice.toFixed(2)}, net=$${estNet.toFixed(2)} SHORT)`;
+          }
+        }
+      }
+    }
+
+    // 4. TAKE PROFIT: Dynamic TP based on volatility
+    const effectiveTp = pos.takeProfitPct / 100; // Use the TP set at entry time
+    if (!closeReason && profitPct >= effectiveTp) {
+      const estGrossPnl = isLong
+        ? (price - pos.entryPrice) * parseFloat(pos.qty) * pos.leverage
+        : (pos.entryPrice - price) * parseFloat(pos.qty) * pos.leverage;
+      const estNetPnl = calcNetPnl(estGrossPnl, pos.tradeAmount * pos.leverage, "linear", true, "bybit", holdTimeMs);
+      if (estNetPnl > 0) {
+        closeReason = `TAKE-PROFIT (${(profitPct * 100).toFixed(2)}%, net=$${estNetPnl.toFixed(2)} ${isLong ? "LONG" : "SHORT"})`;
+      } else {
+        console.log(`[Futures] ${symbol} ${isLong ? "LONG" : "SHORT"} HOLD — TP triggered but net $${estNetPnl.toFixed(2)} after fees+funding`);
       }
     }
 
     if (closeReason) {
-      const orderId = await placeOrder(engine, symbol, "Sell", pos.qty, "linear");
+      // Close: LONG → Sell, SHORT → Buy
+      const closeSide = isLong ? "Sell" : "Buy";
+      const orderId = await placeOrder(engine, symbol, closeSide, pos.qty, "linear");
       if (!orderId && !engine.simulationMode) {
-        // Sell failed — remove phantom futures position from memory AND DB
         const idx = engine.futuresPositions[symbol]?.findIndex(p => p.entryPrice === pos.entryPrice && p.qty === pos.qty);
         if (idx !== undefined && idx >= 0) {
           engine.futuresPositions[symbol]!.splice(idx, 1);
-          console.log(`[Futures] Removed phantom position ${symbol} entry=${pos.entryPrice} qty=${pos.qty} — sell failed`);
+          console.log(`[Futures] Removed phantom ${isLong ? "LONG" : "SHORT"} ${symbol} entry=${pos.entryPrice} — close failed`);
         }
         await db.deleteOpenPosition(engine.userId, symbol, pos.entryPrice, pos.qty, "bybit");
         continue;
       }
       if (orderId) {
-        const grossPnl = (price - pos.entryPrice) * parseFloat(pos.qty) * pos.leverage;
-        const pnl = calcNetPnl(grossPnl, pos.tradeAmount * pos.leverage, "linear", true, "bybit");
+        const grossPnl = isLong
+          ? (price - pos.entryPrice) * parseFloat(pos.qty) * pos.leverage
+          : (pos.entryPrice - price) * parseFloat(pos.qty) * pos.leverage;
+        const pnl = calcNetPnl(grossPnl, pos.tradeAmount * pos.leverage, "linear", true, "bybit", holdTimeMs);
 
         await db.insertTrade({
-          userId: engine.userId, symbol, side: "sell", price: price.toString(),
+          userId: engine.userId, symbol, side: closeSide.toLowerCase() as "buy" | "sell", price: price.toString(),
           qty: pos.qty, pnl: pnl.toFixed(2), strategy: "futures", orderId, simulated: engine.simulationMode,
         });
 
@@ -1379,7 +1443,6 @@ async function runFuturesLongOnly(engine: EngineState, symbol: string) {
           });
         }
 
-        // Track max drawdown
         if (pnl < 0) {
           const state = await db.getOrCreateBotState(engine.userId);
           const currentDrawdown = Math.abs(pnl);
@@ -1390,10 +1453,11 @@ async function runFuturesLongOnly(engine: EngineState, symbol: string) {
         }
 
         const emoji = pnl > 0 ? "🎯" : "🛑";
-        console.log(`[Futures] ${closeReason} ${symbol} @ ${price.toFixed(2)} entry=${pos.entryPrice.toFixed(2)} pnl=$${pnl.toFixed(2)} (${pos.leverage}x)`);
+        const dirLabel = isLong ? "LONG" : "SHORT";
+        console.log(`[Futures] ${closeReason} ${symbol} @ ${price.toFixed(2)} entry=${pos.entryPrice.toFixed(2)} pnl=$${pnl.toFixed(2)} (${pos.leverage}x ${dirLabel})`);
 
         await sendTelegramNotification(engine,
-          `${emoji} <b>PHANTOM Futures ${closeReason.split(" ")[0]}</b>\nPar: ${symbol}\nEntrada: $${pos.entryPrice.toFixed(2)}\nSalida: $${price.toFixed(2)}\nApalancamiento: ${pos.leverage}x\nResultado: <b>$${pnl.toFixed(2)}</b>`
+          `${emoji} <b>PHANTOM Futures ${closeReason.split(" ")[0]}</b>\nDirección: ${dirLabel}\nPar: ${symbol}\nEntrada: $${pos.entryPrice.toFixed(2)}\nSalida: $${price.toFixed(2)}\nApalancamiento: ${pos.leverage}x\nResultado: <b>$${pnl.toFixed(2)}</b>`
         );
 
         positions.splice(i, 1);
@@ -1401,31 +1465,59 @@ async function runFuturesLongOnly(engine: EngineState, symbol: string) {
     }
   }
 
-  // ─── Open new Long position if conditions are right ───
-  const maxPositions = 2;
-  if (positions.length >= maxPositions) return;
+  // ─── Open new position (LONG or SHORT) if conditions are right ───
+  const maxPositions = 3; // Allow more positions (was 2)
+  const longPositions = positions.filter(p => (p.direction ?? "long") === "long");
+  const shortPositions = positions.filter(p => p.direction === "short");
 
-  const klines = await fetchKlines(engine.client, symbol, "15", 50, "linear");
-  if (klines.closes.length < 26) return;
   const rsi = calculateRSI(klines.closes);
   const macd = calculateMACD(klines.closes);
+  const bb = calculateBollingerBands(klines.closes);
 
-  // Entry conditions based on market direction:
-  // Bullish: standard entry (RSI < 70, MACD > 0)
-  // Mixed: moderate entry (RSI < 55, MACD > 0)
-  // Bearish: counter-trend on oversold (RSI < 35)
-  let canEnter = false;
-  if (mtf.direction === "bullish") {
-    canEnter = rsi < 70 && macd.histogram > 0;
-  } else if (mtf.direction === "mixed") {
-    // Mixed market: enter if RSI not overbought and MACD shows momentum
-    canEnter = rsi < 55 && macd.histogram > 0;
-  } else {
-    // Bearish: counter-trend entry on oversold
-    canEnter = rsi < 35;
+  // ─── LONG entry conditions ───
+  let canLong = false;
+  if (longPositions.length < 2) { // Max 2 longs per symbol
+    if (mtf.direction === "bullish") {
+      canLong = rsi < 65 && macd.histogram > 0;
+    } else if (mtf.direction === "mixed") {
+      canLong = rsi < 45 && macd.histogram > 0 && price <= bb.lower * 1.02;
+    } else {
+      // Bearish: aggressive counter-trend long on extreme oversold
+      canLong = rsi < 30 && price <= bb.lower * 0.995;
+    }
   }
-  if (!canEnter) {
-    console.log(`[Futures] ${symbol} SKIP entry — mtf=${mtf.direction} rsi=${rsi.toFixed(1)} macd=${macd.histogram.toFixed(4)} canEnter=false`);
+
+  // ─── SHORT entry conditions ───
+  let canShort = false;
+  if (shortPositions.length < 2) { // Max 2 shorts per symbol
+    if (mtf.direction === "bearish") {
+      canShort = rsi > 35 && macd.histogram < 0;
+    } else if (mtf.direction === "mixed") {
+      canShort = rsi > 55 && macd.histogram < 0 && price >= bb.upper * 0.98;
+    } else {
+      // Bullish: aggressive counter-trend short on extreme overbought
+      canShort = rsi > 75 && price >= bb.upper * 1.005;
+    }
+  }
+
+  if (positions.length >= maxPositions) {
+    console.log(`[Futures] ${symbol} SKIP — max ${maxPositions} positions reached`);
+    return;
+  }
+
+  // Decide direction: prefer trend-following
+  let entryDirection: "long" | "short" | null = null;
+  if (canLong && canShort) {
+    // Both signals — pick the stronger one
+    entryDirection = mtf.direction === "bearish" ? "short" : "long";
+  } else if (canLong) {
+    entryDirection = "long";
+  } else if (canShort) {
+    entryDirection = "short";
+  }
+
+  if (!entryDirection) {
+    console.log(`[Futures] ${symbol} SKIP entry — mtf=${mtf.direction} rsi=${rsi.toFixed(1)} macd=${macd.histogram.toFixed(4)} canLong=${canLong} canShort=${canShort}`);
     return;
   }
 
@@ -1433,30 +1525,34 @@ async function runFuturesLongOnly(engine: EngineState, symbol: string) {
   const strat = futStrats2.find(s => s.symbol === symbol && s.strategyType === "futures");
   const config = strat?.config as any;
   const leverage = config?.leverage ?? 5;
-  const takeProfitPct = config?.takeProfitPct ?? 1.5;
   const allocation = strat?.allocationPct ?? 25;
   const state = await db.getOrCreateBotState(engine.userId);
   const balance = parseFloat(state?.currentBalance ?? "5000");
   const tradeAmount = (balance * allocation / 100) / maxPositions;
   const qty = ((tradeAmount * leverage) / price).toFixed(6);
 
-  const orderId = await placeOrder(engine, symbol, "Buy", qty, "linear");
+  // LONG → Buy to open, SHORT → Sell to open
+  const entrySide = entryDirection === "long" ? "Buy" : "Sell";
+  const orderId = await placeOrder(engine, symbol, entrySide, qty, "linear");
   if (orderId) {
     positions.push({
-      symbol, entryPrice: price, qty, leverage, takeProfitPct,
+      symbol, entryPrice: price, qty, leverage,
+      takeProfitPct: dynamicTpPct,
       tradeAmount, openedAt: Date.now(),
+      direction: entryDirection,
     });
 
     await db.insertTrade({
-      userId: engine.userId, symbol, side: "buy", price: price.toString(),
+      userId: engine.userId, symbol, side: entrySide.toLowerCase() as "buy" | "sell", price: price.toString(),
       qty, pnl: "0.00", strategy: "futures", orderId, simulated: engine.simulationMode,
     });
 
-    console.log(`[Futures] LONG ${symbol} @ ${price.toFixed(2)} qty=${qty} leverage=${leverage}x TP=${takeProfitPct}% order=${orderId}`);
-
-    // Futures BUY notification removed — only send on close (profit/stop-loss)
+    console.log(`[Futures] ${entryDirection.toUpperCase()} ${symbol} @ ${price.toFixed(2)} qty=${qty} leverage=${leverage}x TP=${dynamicTpPct.toFixed(1)}% vol=${(volatility * 100).toFixed(2)}% order=${orderId}`);
   }
 }
+
+// Backward compatibility alias
+const runFuturesLongOnly = runFuturesStrategy;
 
 // ─── Opportunity Scanner ───
 async function runOpportunityScanner(engine: EngineState) {

@@ -354,3 +354,37 @@
 - [x] Aplicar misma lógica al resumen diario de las 23:00
 - [x] Dashboard (exchangeBalances endpoint) ya usaba lógica correcta
 - [x] Balance errors: NUNCA notificar por Telegram (solo console.log)
+
+## Feature: Maximizar ganancias - Abril 22
+
+### 1. Futures Long + Short (alto impacto)
+- [x] Agregar campo `direction` a FuturesPosition (long | short)
+- [x] Bearish + RSI > 35 + MACD negativo → abrir SHORT
+- [x] Bullish + RSI < 65 + MACD positivo → abrir LONG (mejorado)
+- [x] Gestión de posiciones short: TP, SL, trailing invertidos
+- [x] PnL de short: (entryPrice - exitPrice) * qty * leverage
+- [x] Notificaciones Telegram para shorts con dirección
+- [x] Max 3 posiciones por símbolo (2 long + 2 short)
+
+### 2. Take-profit dinámico en futuros (impacto medio)
+- [x] Calcular volatilidad del par en las últimas 50 velas
+- [x] Alta volatilidad → TP hasta 3%
+- [x] Baja volatilidad → TP mínimo 0.8%
+- [x] Trailing stop en futuros (0.5% activación, 0.3% distancia)
+- [x] Funding rate estimado incluido en cálculo de PnL (0.01% cada 8h)
+
+### 3. Grid: minProfitUsd proporcional (impacto medio)
+- [x] Cambiar minProfitUsd a proporcional (0.3% del tradeAmount)
+- [x] Mínimo $0.30, máximo $2.00
+- [x] Permite más ciclos de grid en monedas baratas
+
+### 4. Scalping más agresivo (impacto medio)
+- [x] RSI buy threshold: 35 → 40 (bullish), sell: 70 → 65
+- [x] Permitir 2 posiciones simultáneas por par en scalping
+- [x] BB width mínimo reducido (skip solo si estNetPnl < -$0.50)
+- [x] Nuevo: momentum buy signal (RSI+MACD+EMA combinados)
+- [x] BB capture rate: 25% → 30%
+
+### 5. Fees corregidos
+- [x] Fees de trading verificados: Bybit 0.1%/0.055%, KuCoin 0.1%/0.06% (correctos)
+- [x] Funding rate estimado agregado a calcNetPnl para futuros
