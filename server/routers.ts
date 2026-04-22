@@ -184,24 +184,50 @@ export const appRouter = router({
         results.bybit = { balance: "0", error: e.message };
       }
 
-      // KuCoin balance (REAL from API)
+      // KuCoin balance (REAL from API — sum all account types)
       try {
         const kucoinKeys = await db.getApiKey(ctx.user.id, "kucoin");
         if (kucoinKeys) {
           const { SpotClient } = await import("kucoin-api");
           const client = new SpotClient({ apiKey: kucoinKeys.apiKey, apiSecret: kucoinKeys.apiSecret, apiPassphrase: kucoinKeys.passphrase ?? "" });
-          const res = await client.getAccountSummary();
-          if (res.code === "200000") {
-            const summary = res.data as any;
-            kucoinBal = parseFloat(summary?.totalBalance ?? summary?.availableBalance ?? "0");
-            const available = parseFloat(summary?.availableBalance ?? "0");
-            results.kucoin = {
-              balance: kucoinBal.toFixed(2),
-              available: available.toFixed(2),
-            };
-          } else {
-            results.kucoin = { balance: "0", error: (res as any).msg };
-          }
+          // Query all account types: main, trade, trade_hf
+          const [mainRes, tradeRes, hfRes] = await Promise.allSettled([
+            client.getBalances({ type: "main" }),
+            client.getBalances({ type: "trade" }),
+            client.getBalances({ type: "trade_hf" }),
+          ]);
+          let totalBal = 0;
+          let totalAvail = 0;
+          const livePrices = (globalThis as any).__livePrices ?? {};
+          const processAccounts = (res: any) => {
+            if (res.status !== "fulfilled" || res.value?.code !== "200000") return;
+            const accounts = res.value.data as any[];
+            if (!Array.isArray(accounts)) return;
+            for (const acc of accounts) {
+              const cur = acc.currency;
+              const bal = parseFloat(acc.balance ?? "0");
+              const avail = parseFloat(acc.available ?? "0");
+              if (cur === "USDT" || cur === "USDC" || cur === "USD") {
+                totalBal += bal;
+                totalAvail += avail;
+              } else {
+                // Convert to USD using live prices
+                const price = livePrices[`${cur}USDT`] ?? livePrices[`${cur}-USDT`] ?? 0;
+                if (price > 0) {
+                  totalBal += bal * price;
+                  totalAvail += avail * price;
+                }
+              }
+            }
+          };
+          processAccounts(mainRes);
+          processAccounts(tradeRes);
+          processAccounts(hfRes);
+          kucoinBal = totalBal;
+          results.kucoin = {
+            balance: kucoinBal.toFixed(2),
+            available: totalAvail.toFixed(2),
+          };
         }
       } catch (e: any) {
         results.kucoin = { balance: "0", error: e.message };

@@ -273,11 +273,16 @@
 - [x] Force-sync: al iniciar bot, SOBREESCRIBE todas las estrategias con valores optimizados
 
 ## Dashboard Real Balances - Abril 21
-- [ ] Saldo Bybit en vivo (API real)
-- [ ] Saldo KuCoin en vivo (API real)
-- [ ] Balance Total (Bybit + KuCoin)
-- [ ] Ganancia Real (balance actual - capital inicial)
-- [ ] Ganancia del Día (PnL de trades de hoy)
-- [ ] Posiciones Abiertas con PnL no realizado
-- [ ] Win Rate y Total Trades
-- [ ] Auto-refresh cada 30s
+- [x] Saldo Bybit en vivo (API real) + disponible
+- [x] Saldo KuCoin en vivo (API real) + disponible
+- [x] Balance Total (Bybit + KuCoin)
+- [x] Ganancia Real (balance actual - capital inicial)
+- [x] Ganancia del Día (PnL de trades de hoy)
+- [x] Posiciones Abiertas con PnL no realizado
+- [x] Win Rate y Total Trades
+- [x] Auto-refresh cada 30s
+- [x] Futuros PnL no realizado de Bybit
+
+## Bug: KuCoin balance $0 - Abril 21
+- [ ] KuCoin muestra $0 en dashboard — fondos están en cuenta Trading, no Spot
+- [ ] Consultar cuenta Trading de KuCoin en vez de (o además de) Spot
