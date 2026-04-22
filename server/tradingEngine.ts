@@ -90,6 +90,7 @@ interface EngineState {
   intervalId?: ReturnType<typeof setInterval>;
   scannerIntervalId?: ReturnType<typeof setInterval>;
   priceIntervalId?: ReturnType<typeof setInterval>;
+  dailySummaryId?: ReturnType<typeof setInterval>;
   telegramChatId?: string;
   telegramBotToken?: string;
 }
@@ -457,24 +458,40 @@ async function placeOrder(engine: EngineState, symbol: string, side: "Buy" | "Se
                 const res = await engine.kucoinClient.submitOrder(orderParams);
                 const kcId = res?.data?.orderId;
                 if (kcId) { orderIds.push(`KC:${kcId}`); console.log(`[Engine] BOTH/KuCoin order: ${side} ${symbol} funds=$${funds} id=${kcId}`); }
-                else { console.log(`[Engine] KuCoin order no ID: ${JSON.stringify(res?.data ?? res)}`); }
+                else {
+                  const errDetail = JSON.stringify(res?.data ?? res);
+                  console.log(`[Engine] KuCoin order no ID: ${errDetail}`);
+                  await sendTelegramNotification(engine, `⚠️ <b>Orden Rechazada</b>\nExchange: KuCoin\nPar: ${symbol}\nLado: ${side}\nFunds: $${funds}\nError: ${errDetail}`);
+                }
               }
             } else {
               orderParams.size = qty;
               const res = await engine.kucoinClient.submitOrder(orderParams);
               const kcId = res?.data?.orderId;
               if (kcId) { orderIds.push(`KC:${kcId}`); console.log(`[Engine] BOTH/KuCoin order: ${side} ${symbol} qty=${qty} id=${kcId}`); }
-              else { console.log(`[Engine] KuCoin order no ID: ${JSON.stringify(res?.data ?? res)}`); }
+              else {
+                const errDetail = JSON.stringify(res?.data ?? res);
+                console.log(`[Engine] KuCoin order no ID: ${errDetail}`);
+                await sendTelegramNotification(engine, `⚠️ <b>Orden Rechazada</b>\nExchange: KuCoin\nPar: ${symbol}\nLado: ${side}\nQty: ${qty}\nError: ${errDetail}`);
+              }
             }
           }
-        } catch (e) { console.error(`[Engine] BOTH/KuCoin order failed:`, (e as Error).message); }
+        } catch (e) {
+          const errMsg = (e as Error).message;
+          console.error(`[Engine] BOTH/KuCoin order failed:`, errMsg);
+          await sendTelegramNotification(engine, `❌ <b>Orden Fallida</b>\nExchange: KuCoin\nPar: ${symbol}\nLado: ${side}\nQty: ${qty}\nError: ${errMsg}`);
+        }
       }
       // Bybit
       try {
         const res = await engine.client.submitOrder({ category, symbol, side, orderType: "Market", qty });
         const bybitId = res.result?.orderId;
         if (bybitId) { orderIds.push(`BY:${bybitId}`); console.log(`[Engine] BOTH/Bybit order: ${side} ${symbol} qty=${qty} id=${bybitId}`); }
-      } catch (e) { console.error(`[Engine] BOTH/Bybit order failed:`, (e as Error).message); }
+      } catch (e) {
+        const errMsg = (e as Error).message;
+        console.error(`[Engine] BOTH/Bybit order failed:`, errMsg);
+        await sendTelegramNotification(engine, `❌ <b>Orden Fallida</b>\nExchange: Bybit\nPar: ${symbol}\nLado: ${side}\nQty: ${qty}\nError: ${errMsg}`);
+      }
       return orderIds.length > 0 ? orderIds.join(",") : null;
     } else if (engine.exchange === "kucoin" && engine.kucoinClient) {
       const kucoinSymbol = symbol.replace("USDT", "-USDT");
@@ -519,6 +536,7 @@ async function placeOrder(engine: EngineState, symbol: string, side: "Buy" | "Se
         // KuCoin returned success HTTP but no orderId (insufficient balance, min size, etc.)
         const errMsg = res?.msg || res?.code || JSON.stringify(res?.data ?? res);
         console.log(`[Engine] KuCoin order rejected ${side} ${symbol}: ${errMsg}`);
+        await sendTelegramNotification(engine, `⚠️ <b>Orden Rechazada</b>\nExchange: KuCoin\nPar: ${symbol}\nLado: ${side}\nError: ${errMsg}`);
         return null;
       }
     } else {
@@ -526,7 +544,9 @@ async function placeOrder(engine: EngineState, symbol: string, side: "Buy" | "Se
       return res.result?.orderId ?? null;
     }
   } catch (e) {
-    console.error(`[Engine] Order failed ${side} ${symbol} (${engine.exchange}):`, (e as Error).message);
+    const errMsg = (e as Error).message;
+    console.error(`[Engine] Order failed ${side} ${symbol} (${engine.exchange}):`, errMsg);
+    await sendTelegramNotification(engine, `❌ <b>Orden Fallida</b>\nExchange: ${engine.exchange}\nPar: ${symbol}\nLado: ${side}\nQty: ${qty}\nError: ${errMsg}`);
     return null;
   }
 }
@@ -1690,7 +1710,129 @@ export async function startEngine(userId: number): Promise<{ success: boolean; e
     }
   }, 2000);
 
+  // ─── Daily Summary Scheduler ───
+  // Check every minute if it's 23:00 (VPS time) to send daily summary
+  let lastSummaryDate = "";
+  engine.dailySummaryId = setInterval(async () => {
+    if (!engine.isRunning) return;
+    const now = new Date();
+    const hour = now.getHours();
+    const minute = now.getMinutes();
+    const dateStr = now.toISOString().slice(0, 10); // YYYY-MM-DD
+    // Send at 23:00 once per day
+    if (hour === 23 && minute === 0 && dateStr !== lastSummaryDate) {
+      lastSummaryDate = dateStr;
+      await sendDailySummary(engine);
+    }
+  }, 60_000); // Check every 60 seconds
+
   return { success: true };
+}
+
+// ─── Daily Summary via Telegram ───
+async function sendDailySummary(engine: EngineState) {
+  if (!engine.telegramBotToken || !engine.telegramChatId) return;
+  try {
+    // Get today's trades
+    const allTrades = await db.getUserTrades(engine.userId, 5000);
+    const now = new Date();
+    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const todayTrades = allTrades.filter(t => new Date(t.createdAt) >= todayStart);
+    const todayPnl = todayTrades.reduce((sum, t) => sum + parseFloat(t.pnl ?? "0"), 0);
+    const todaySells = todayTrades.filter(t => t.side === "sell");
+    const todayWins = todaySells.filter(t => parseFloat(t.pnl ?? "0") > 0);
+    const todayWinRate = todaySells.length > 0 ? ((todayWins.length / todaySells.length) * 100).toFixed(1) : "0";
+
+    // Get balances from DB state
+    const state = await db.getOrCreateBotState(engine.userId);
+    const totalBalance = parseFloat(state?.currentBalance ?? "0");
+    const initialDeposit = parseFloat(state?.initialBalance ?? "2500");
+    const totalPnl = parseFloat(state?.totalPnl ?? "0");
+    const totalTrades = state?.totalTrades ?? 0;
+    const winningTrades = state?.winningTrades ?? 0;
+    const overallWinRate = totalTrades > 0 ? ((winningTrades / totalTrades) * 100).toFixed(1) : "0";
+
+    // Count open positions
+    const gridCount = Object.values(engine.openBuyPositions).reduce((s, a) => s + a.length, 0);
+    const futCount = Object.values(engine.futuresPositions).reduce((s, a) => s + a.length, 0);
+
+    // Get live exchange balances if possible
+    let bybitBal = "N/A";
+    let kucoinBal = "N/A";
+    let totalExBal = "N/A";
+    try {
+      const bybitKeys = await db.getApiKey(engine.userId, "bybit");
+      if (bybitKeys && !engine.simulationMode) {
+        const { RestClientV5 } = await import("bybit-api");
+        const cl = new RestClientV5({ key: bybitKeys.apiKey, secret: bybitKeys.apiSecret });
+        const res = await cl.getWalletBalance({ accountType: "UNIFIED" });
+        if (res.retCode === 0) {
+          const eq = parseFloat((res.result as any)?.list?.[0]?.totalEquity ?? "0");
+          bybitBal = `$${eq.toFixed(2)}`;
+        }
+      }
+    } catch { /* skip */ }
+    try {
+      const kucoinKeys = await db.getApiKey(engine.userId, "kucoin");
+      if (kucoinKeys && !engine.simulationMode) {
+        const { SpotClient } = await import("kucoin-api");
+        const cl = new SpotClient({ apiKey: kucoinKeys.apiKey, apiSecret: kucoinKeys.apiSecret, apiPassphrase: kucoinKeys.passphrase ?? "" });
+        const [mainRes, tradeRes] = await Promise.allSettled([
+          cl.getBalances({ type: "main" }),
+          cl.getBalances({ type: "trade" }),
+        ]);
+        let kcTotal = 0;
+        const prices = getLivePrices();
+        const proc = (r: any) => {
+          if (r.status !== "fulfilled" || r.value?.code !== "200000") return;
+          for (const acc of (r.value.data as any[] ?? [])) {
+            const cur = acc.currency;
+            const bal = parseFloat(acc.balance ?? "0");
+            if (cur === "USDT" || cur === "USDC" || cur === "USD") kcTotal += bal;
+            else {
+              const p = prices[`${cur}USDT`]?.lastPrice ?? 0;
+              if (p > 0) kcTotal += bal * p;
+            }
+          }
+        };
+        proc(mainRes); proc(tradeRes);
+        kucoinBal = `$${kcTotal.toFixed(2)}`;
+      }
+    } catch { /* skip */ }
+
+    // Build per-strategy breakdown for today
+    const stratBreakdown: Record<string, { count: number; pnl: number }> = {};
+    for (const t of todayTrades) {
+      const key = t.strategy ?? "unknown";
+      if (!stratBreakdown[key]) stratBreakdown[key] = { count: 0, pnl: 0 };
+      stratBreakdown[key].count++;
+      stratBreakdown[key].pnl += parseFloat(t.pnl ?? "0");
+    }
+    let stratLines = "";
+    for (const [strat, data] of Object.entries(stratBreakdown)) {
+      const icon = data.pnl >= 0 ? "🟢" : "🔴";
+      stratLines += `\n  ${icon} ${strat}: ${data.count} ops, ${data.pnl >= 0 ? "+" : ""}$${data.pnl.toFixed(2)}`;
+    }
+
+    const pnlEmoji = todayPnl >= 0 ? "🟢" : "🔴";
+    const dateFormatted = now.toLocaleDateString("es-AR", { day: "2-digit", month: "2-digit", year: "numeric" });
+
+    const message = `📊 <b>PHANTOM — Resumen Diario</b>\n📅 ${dateFormatted}\n\n` +
+      `💰 <b>Balances</b>\n  Bybit: ${bybitBal}\n  KuCoin: ${kucoinBal}\n  Capital Invertido: $${initialDeposit.toFixed(2)}\n\n` +
+      `${pnlEmoji} <b>PnL del Día</b>: ${todayPnl >= 0 ? "+" : ""}$${todayPnl.toFixed(2)}\n` +
+      `📈 <b>PnL Total</b>: ${totalPnl >= 0 ? "+" : ""}$${totalPnl.toFixed(2)}\n\n` +
+      `🎯 <b>Operaciones Hoy</b>: ${todayTrades.length}\n` +
+      `🏆 <b>Win Rate Hoy</b>: ${todayWinRate}%\n` +
+      `📊 <b>Win Rate Total</b>: ${overallWinRate}% (${totalTrades} ops)\n\n` +
+      `📦 <b>Posiciones Abiertas</b>: ${gridCount} grid + ${futCount} futures\n\n` +
+      (stratLines ? `📊 <b>Desglose por Estrategia</b>:${stratLines}\n\n` : "") +
+      `—\n<i>PHANTOM Trading Bot • Resumen automático 23:00</i>`;
+
+    await sendTelegramNotification(engine, message);
+    console.log(`[Engine] Daily summary sent via Telegram for user ${engine.userId}`);
+  } catch (e) {
+    console.error(`[Engine] Failed to send daily summary:`, (e as Error).message);
+  }
 }
 
 export async function stopEngine(userId: number): Promise<{ success: boolean }> {
@@ -1701,6 +1843,7 @@ export async function stopEngine(userId: number): Promise<{ success: boolean }> 
   if (engine.intervalId) clearInterval(engine.intervalId);
   if (engine.scannerIntervalId) clearInterval(engine.scannerIntervalId);
   if (engine.priceIntervalId) clearInterval(engine.priceIntervalId);
+  if (engine.dailySummaryId) clearInterval(engine.dailySummaryId);
 
   // ─── Save open positions to DB before stopping (survive restarts) ───
   try {

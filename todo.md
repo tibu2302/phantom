@@ -308,3 +308,7 @@
 ## Bugs: Scalping PnL + KuCoin orders v2 - Abril 22
 - [x] Scalping PnL estimation demasiado conservadora (emaDiff * 0.5 siempre da negativo) — reemplazado con BB width * 0.25
 - [x] KuCoin ADA order failed — funds fix no cubre path de scalping/kucoin-only — aplicado funds fix al path kucoin-only
+
+## Feature: Telegram Notifications v2 - Abril 22
+- [x] Notificaciones Telegram para errores de órdenes (Bybit y KuCoin) con detalles del error
+- [x] Resumen diario automático por Telegram a las 23:00 (balance total, trades del día, win rate, PnL)
