@@ -295,7 +295,12 @@
 - [ ] Mostrar ganancia por exchange (Bybit profit + KuCoin profit separados)
 
 ## Feature: Capital invertido editable - Abril 21
-- [ ] Guardar capital invertido en DB (botState.initialBalance)
-- [ ] Endpoint para actualizar capital invertido
-- [ ] UI: campo editable en dashboard para poner el capital invertido manualmente
-- [ ] Ganancia = balance total - capital invertido (configurable)
+- [x] Guardar capital invertido en DB (botState.initialBalance)
+- [x] Endpoint para actualizar capital invertido (updateSettings.initialBalance)
+- [x] UI: botón lápiz en "Invertido" abre dialog para editar el monto
+- [x] Ganancia = balance total - capital invertido (configurable desde DB)
+
+## Bugs: Futures/Scalping/ARB - Abril 22
+- [ ] Futures no ejecuta trades (no aparece en logs)
+- [ ] Scalping order size muy chico — fees se comen la ganancia ($0.15-$0.19 pérdida)
+- [ ] ARB order failed Buy en KuCoin

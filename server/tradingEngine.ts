@@ -423,18 +423,50 @@ async function placeOrder(engine: EngineState, symbol: string, side: "Buy" | "Se
     if (engine.exchange === "both") {
       const orderIds: string[] = [];
       // KuCoin (skip XAUUSDT and XAGUSD — not supported)
+      // KuCoin minimum order sizes (in base currency)
+      const KC_MIN_SIZE: Record<string, number> = {
+        "BTC-USDT": 0.00001, "ETH-USDT": 0.0001, "SOL-USDT": 0.01,
+        "XRP-USDT": 0.1, "ADA-USDT": 1, "DOGE-USDT": 1,
+        "AVAX-USDT": 0.01, "LINK-USDT": 0.01, "ARB-USDT": 0.1,
+        "SUI-USDT": 0.1, "OP-USDT": 0.1, "APT-USDT": 0.01,
+        "SEI-USDT": 1, "SHIB-USDT": 1,
+      };
       if (engine.kucoinClient && symbol !== "XAUUSDT" && symbol !== "XAGUSD" && symbol !== "SPXUSDT" && category === "spot") {
         try {
           const kucoinSymbol = symbol.replace("USDT", "-USDT");
-          const res = await engine.kucoinClient.submitOrder({
-            clientOid: `phantom_kc_${Date.now()}`,
-            side: side.toLowerCase(),
-            symbol: kucoinSymbol,
-            type: "market",
-            size: qty,
-          });
-          const kcId = res?.data?.orderId;
-          if (kcId) { orderIds.push(`KC:${kcId}`); console.log(`[Engine] BOTH/KuCoin order: ${side} ${symbol} qty=${qty} id=${kcId}`); }
+          const minSize = KC_MIN_SIZE[kucoinSymbol] ?? 0.1;
+          const qtyNum = parseFloat(qty);
+          if (qtyNum < minSize) {
+            console.log(`[Engine] SKIP KuCoin ${side} ${symbol} — qty ${qty} below min ${minSize}`);
+          } else {
+            // KuCoin market orders use 'funds' (USDT amount) instead of 'size' for buys
+            const orderParams: any = {
+              clientOid: `phantom_kc_${Date.now()}`,
+              side: side.toLowerCase(),
+              symbol: kucoinSymbol,
+              type: "market",
+            };
+            if (side === "Buy") {
+              // For market buys, use 'funds' (USDT amount) — more reliable than 'size'
+              const price = engine.lastPrices[symbol] ?? 0;
+              const funds = (qtyNum * price).toFixed(2);
+              if (parseFloat(funds) < 1) {
+                console.log(`[Engine] SKIP KuCoin ${side} ${symbol} — funds $${funds} below $1 minimum`);
+              } else {
+                orderParams.funds = funds;
+                const res = await engine.kucoinClient.submitOrder(orderParams);
+                const kcId = res?.data?.orderId;
+                if (kcId) { orderIds.push(`KC:${kcId}`); console.log(`[Engine] BOTH/KuCoin order: ${side} ${symbol} funds=$${funds} id=${kcId}`); }
+                else { console.log(`[Engine] KuCoin order no ID: ${JSON.stringify(res?.data ?? res)}`); }
+              }
+            } else {
+              orderParams.size = qty;
+              const res = await engine.kucoinClient.submitOrder(orderParams);
+              const kcId = res?.data?.orderId;
+              if (kcId) { orderIds.push(`KC:${kcId}`); console.log(`[Engine] BOTH/KuCoin order: ${side} ${symbol} qty=${qty} id=${kcId}`); }
+              else { console.log(`[Engine] KuCoin order no ID: ${JSON.stringify(res?.data ?? res)}`); }
+            }
+          }
         } catch (e) { console.error(`[Engine] BOTH/KuCoin order failed:`, (e as Error).message); }
       }
       // Bybit
@@ -1028,7 +1060,7 @@ async function runScalpingStrategy(engine: EngineState, symbol: string, category
     const allocation = strat?.allocationPct ?? 20;
     const state = await db.getOrCreateBotState(engine.userId);
     const balance = parseFloat(state?.currentBalance ?? "5000");
-    const tradeAmount = balance * allocation / 100 * 0.1;
+    const tradeAmount = balance * allocation / 100 * 0.5; // 50% of allocation per scalp (was 10%, too small to cover fees)
     const qty = (tradeAmount / price).toFixed(6);
 
     // Pre-check: estimate PnL before placing order — NEVER scalp at a loss
@@ -1202,19 +1234,23 @@ async function runFuturesLongOnly(engine: EngineState, symbol: string) {
   const macd = calculateMACD(klines.closes);
 
   // Entry conditions based on market direction:
-  // Bullish: standard entry (RSI < 65, MACD > 0)
-  // Neutral: cautious entry (RSI < 45, MACD > 0)
-  // Bearish: only extreme oversold counter-trend (RSI < 30)
+  // Bullish: standard entry (RSI < 70, MACD > 0)
+  // Mixed: moderate entry (RSI < 55, MACD > 0)
+  // Bearish: counter-trend on oversold (RSI < 35)
   let canEnter = false;
   if (mtf.direction === "bullish") {
-    canEnter = rsi < 65 && macd.histogram > 0;
+    canEnter = rsi < 70 && macd.histogram > 0;
   } else if (mtf.direction === "mixed") {
-    canEnter = rsi < 45 && macd.histogram > 0;
+    // Mixed market: enter if RSI not overbought and MACD shows momentum
+    canEnter = rsi < 55 && macd.histogram > 0;
   } else {
-    // Bearish: only enter on extreme oversold for a quick bounce trade
-    canEnter = rsi < 30;
+    // Bearish: counter-trend entry on oversold
+    canEnter = rsi < 35;
   }
-  if (!canEnter) return;
+  if (!canEnter) {
+    console.log(`[Futures] ${symbol} SKIP entry — mtf=${mtf.direction} rsi=${rsi.toFixed(1)} macd=${macd.histogram.toFixed(4)} canEnter=false`);
+    return;
+  }
 
   const futStrats2 = await db.getUserStrategies(engine.userId);
   const strat = futStrats2.find(s => s.symbol === symbol && s.strategyType === "futures");
