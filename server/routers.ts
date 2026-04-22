@@ -194,7 +194,7 @@ export const appRouter = router({
           const [mainRes, tradeRes, hfRes] = await Promise.allSettled([
             client.getBalances({ type: "main" }),
             client.getBalances({ type: "trade" }),
-            client.getBalances({ type: "trade_hf" }),
+            client.getBalances({ type: "trade_hf" as any }),
           ]);
           let totalBal = 0;
           let totalAvail = 0;

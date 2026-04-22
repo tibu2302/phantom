@@ -42,6 +42,16 @@ interface TickerData {
   turnover24h: number;
 }
 
+interface ScalpPosition {
+  symbol: string;
+  buyPrice: number;
+  qty: string;
+  orderId: string;
+  exchange: string; // "bybit" | "kucoin"
+  category: "spot" | "linear";
+  openedAt: number;
+}
+
 interface GridLevel {
   price: number;
   side: "Buy" | "Sell";
@@ -87,10 +97,14 @@ interface EngineState {
   openBuyPositions: Record<string, OpenBuyPosition[]>;
   futuresPositions: Record<string, FuturesPosition[]>;
   dcaPositions: Record<string, { avgPrice: number; totalQty: number; totalCost: number; entries: number }>;
+  scalpPositions: Record<string, ScalpPosition[]>;
   intervalId?: ReturnType<typeof setInterval>;
   scannerIntervalId?: ReturnType<typeof setInterval>;
   priceIntervalId?: ReturnType<typeof setInterval>;
   dailySummaryId?: ReturnType<typeof setInterval>;
+  telegramPollingId?: ReturnType<typeof setInterval>;
+  telegramPollingOffset?: number;
+  lastDrawdownAlertDate?: string; // YYYY-MM-DD to avoid spam
   telegramChatId?: string;
   telegramBotToken?: string;
 }
@@ -1149,68 +1163,108 @@ async function runScalpingStrategy(engine: EngineState, symbol: string, category
     const tradeAmount = balance * allocation / 100 * 0.5; // 50% of allocation per scalp (was 10%, too small to cover fees)
     const qty = (tradeAmount / price).toFixed(6);
 
-    // In LIVE mode for spot (KuCoin), scalping is buy-only because we don't track positions.
-    // Selling requires having the asset, and scalping is stateless (no open position tracking).
-    // Only allow sells in simulation mode or for linear (futures) category.
-    if (signal === "Sell" && !engine.simulationMode && category === "spot") {
-      console.log(`[Scalp] SKIP ${symbol} Sell — live spot scalping is buy-only (no position tracking)`);
-      return;
-    }
+    // ─── Position-Tracked Scalping ───
+    // Check existing scalp positions for this symbol
+    const existingPositions = engine.scalpPositions[symbol] ?? [];
+    const exchangeKey = engine.exchange === "both" ? (category === "spot" ? "kucoin" : "bybit") : engine.exchange;
+    const myPositions = existingPositions.filter(p => p.exchange === exchangeKey && p.category === category);
 
-    // Pre-check: estimate PnL before placing order
-    // Use BB spread as a realistic profit target (price tends to revert to mean)
-    let estGrossPnl: number;
-    if (engine.simulationMode) {
-      estGrossPnl = tradeAmount * (Math.random() * 0.008 - 0.002);
-    } else {
-      // Realistic estimate: use half the BB bandwidth as expected move
-      // BB bandwidth = (upper - lower) / middle, typically 2-6% for volatile coins
-      const bbWidth = (bb.upper - bb.lower) / bb.middle;
-      // Expected profit = 25% of BB width (conservative but realistic)
-      estGrossPnl = tradeAmount * bbWidth * 0.25;
-    }
-    const estNetPnl = calcNetPnl(estGrossPnl, tradeAmount, category, true, engine.exchange);
-    
-    // Only skip if the BB spread is so tight that even 25% of it won't cover fees
-    if (estNetPnl <= 0) {
-      console.log(`[Scalp] SKIP ${symbol} ${signal} — BB too tight, estimated net PnL $${estNetPnl.toFixed(2)}`);
-      return;
-    }
-    console.log(`[Scalp] ${symbol} ${signal} — BB width=${((bb.upper - bb.lower) / bb.middle * 100).toFixed(2)}% estNet=$${estNetPnl.toFixed(2)}`);
+    if (signal === "Sell") {
+      // Only sell if we have a scalp position to close
+      if (myPositions.length === 0) {
+        console.log(`[Scalp] SKIP ${symbol} Sell — no open scalp position to close (${exchangeKey}/${category})`);
+        return;
+      }
 
+      // Close the oldest position
+      const pos = myPositions[0];
+      const sellQty = pos.qty;
+      const orderId = await placeOrder(engine, symbol, "Sell", sellQty, category);
+      if (orderId) {
+        // Calculate real PnL: (sellPrice - buyPrice) * qty - fees
+        const grossPnl = (price - pos.buyPrice) * parseFloat(sellQty);
+        const pnl = calcNetPnl(grossPnl, pos.buyPrice * parseFloat(sellQty), category, true, engine.exchange);
 
-    const orderId = await placeOrder(engine, symbol, signal, qty, category);
-    if (orderId) {
-      const pnl = estNetPnl; // Use pre-calculated PnL (already includes fees)
-
-      await db.insertTrade({
-        userId: engine.userId, symbol, side: signal.toLowerCase(),
-        price: price.toString(), qty, pnl: pnl.toFixed(2),
-        strategy: "scalping", orderId, simulated: engine.simulationMode,
-      });
-
-      const currentState = await db.getOrCreateBotState(engine.userId);
-      if (currentState) {
-        await db.updateBotState(engine.userId, {
-          totalPnl: (parseFloat(currentState.totalPnl ?? "0") + pnl).toFixed(2),
-          todayPnl: (parseFloat(currentState.todayPnl ?? "0") + pnl).toFixed(2),
-          currentBalance: (parseFloat(currentState.currentBalance ?? "5000") + pnl).toFixed(2),
-          totalTrades: (currentState.totalTrades ?? 0) + 1,
-          winningTrades: (currentState.winningTrades ?? 0) + (pnl > 0 ? 1 : 0),
+        await db.insertTrade({
+          userId: engine.userId, symbol, side: "sell",
+          price: price.toString(), qty: sellQty, pnl: pnl.toFixed(2),
+          strategy: "scalping", orderId, simulated: engine.simulationMode,
         });
-      }
-      if (strat) await db.updateStrategyStats(strat.id, pnl, pnl > 0);
-      const scalpState = await db.getOrCreateBotState(engine.userId);
-      if (scalpState) {
-        await db.upsertDailyPnl(engine.userId, parseFloat(scalpState.totalPnl ?? "0"), parseFloat(scalpState.currentBalance ?? "5000"), scalpState.totalTrades ?? 0);
-      }
-      console.log(`[Scalp] ${signal} ${symbol} @ ${price.toFixed(2)} qty=${qty} net=${pnl.toFixed(2)} reasons=${reasons.join(", ")}`);
 
-      // Telegram notification for scalp trades — only profitable SELLS (not buys)
-      if (signal === "Sell" && pnl > 1) {
-        await sendTelegramNotification(engine,
-          `⚡ <b>PHANTOM Scalp Profit</b>\nPar: ${symbol}\nPrecio: $${price.toFixed(2)}\nGanancia: <b>$${pnl.toFixed(2)}</b>`
-        );
+        const currentState = await db.getOrCreateBotState(engine.userId);
+        if (currentState) {
+          await db.updateBotState(engine.userId, {
+            totalPnl: (parseFloat(currentState.totalPnl ?? "0") + pnl).toFixed(2),
+            todayPnl: (parseFloat(currentState.todayPnl ?? "0") + pnl).toFixed(2),
+            currentBalance: (parseFloat(currentState.currentBalance ?? "5000") + pnl).toFixed(2),
+            totalTrades: (currentState.totalTrades ?? 0) + 1,
+            winningTrades: (currentState.winningTrades ?? 0) + (pnl > 0 ? 1 : 0),
+          });
+        }
+        if (strat) await db.updateStrategyStats(strat.id, pnl, pnl > 0);
+        const scalpState = await db.getOrCreateBotState(engine.userId);
+        if (scalpState) {
+          await db.upsertDailyPnl(engine.userId, parseFloat(scalpState.totalPnl ?? "0"), parseFloat(scalpState.currentBalance ?? "5000"), scalpState.totalTrades ?? 0);
+        }
+
+        // Remove the closed position
+        engine.scalpPositions[symbol] = existingPositions.filter(p => p !== pos);
+        const holdTime = ((Date.now() - pos.openedAt) / 60000).toFixed(1);
+        console.log(`[Scalp] SELL ${symbol} @ ${price.toFixed(4)} qty=${sellQty} buyPrice=${pos.buyPrice.toFixed(4)} pnl=$${pnl.toFixed(2)} hold=${holdTime}min`);
+
+        if (pnl > 0.5) {
+          await sendTelegramNotification(engine,
+            `⚡ <b>PHANTOM Scalp Profit</b>\nPar: ${symbol}\nCompra: $${pos.buyPrice.toFixed(4)}\nVenta: $${price.toFixed(4)}\nGanancia: <b>$${pnl.toFixed(2)}</b>\nTiempo: ${holdTime}min`
+          );
+        }
+      } else if (!engine.simulationMode) {
+        // Sell failed in live mode — remove phantom position
+        engine.scalpPositions[symbol] = existingPositions.filter(p => p !== pos);
+        console.log(`[Scalp] Removed phantom scalp position ${symbol} buyPrice=${pos.buyPrice} — sell failed`);
+      }
+    } else if (signal === "Buy") {
+      // Don't buy if we already have a position for this symbol on this exchange
+      if (myPositions.length > 0) {
+        console.log(`[Scalp] SKIP ${symbol} Buy — already have ${myPositions.length} open scalp position(s) on ${exchangeKey}`);
+        return;
+      }
+
+      // Pre-check: estimate PnL before placing order
+      const bbWidth = (bb.upper - bb.lower) / bb.middle;
+      const estGrossPnl = engine.simulationMode
+        ? tradeAmount * (Math.random() * 0.008 - 0.002)
+        : tradeAmount * bbWidth * 0.25;
+      const estNetPnl = calcNetPnl(estGrossPnl, tradeAmount, category, true, engine.exchange);
+
+      if (estNetPnl <= 0) {
+        console.log(`[Scalp] SKIP ${symbol} Buy — BB too tight, estimated net PnL $${estNetPnl.toFixed(2)}`);
+        return;
+      }
+      console.log(`[Scalp] ${symbol} Buy — BB width=${(bbWidth * 100).toFixed(2)}% estNet=$${estNetPnl.toFixed(2)}`);
+
+      const orderId = await placeOrder(engine, symbol, "Buy", qty, category);
+      if (orderId) {
+        // Save the scalp position
+        if (!engine.scalpPositions[symbol]) engine.scalpPositions[symbol] = [];
+        engine.scalpPositions[symbol].push({
+          symbol, buyPrice: price, qty, orderId,
+          exchange: exchangeKey, category, openedAt: Date.now(),
+        });
+
+        await db.insertTrade({
+          userId: engine.userId, symbol, side: "buy",
+          price: price.toString(), qty, pnl: "0",
+          strategy: "scalping", orderId, simulated: engine.simulationMode,
+        });
+
+        const currentState = await db.getOrCreateBotState(engine.userId);
+        if (currentState) {
+          await db.updateBotState(engine.userId, {
+            totalTrades: (currentState.totalTrades ?? 0) + 1,
+          });
+        }
+
+        console.log(`[Scalp] BUY ${symbol} @ ${price.toFixed(4)} qty=${qty} on ${exchangeKey}/${category} — position saved`);
       }
     }
   }
@@ -1579,7 +1633,7 @@ export async function startEngine(userId: number): Promise<{ success: boolean; e
     userId, exchange: selectedExchange, client, kucoinClient,
     isRunning: true, simulationMode,
     gridLevels: {}, lastPrices: {}, openBuyPositions: {},
-    futuresPositions: {}, dcaPositions: {},
+    futuresPositions: {}, dcaPositions: {}, scalpPositions: {},
     telegramBotToken, telegramChatId,
   };
 
@@ -1635,6 +1689,27 @@ export async function startEngine(userId: number): Promise<{ success: boolean; e
           if (posCount > 0) {
             await db.saveOpenPositions(userId, engine.openBuyPositions, engine.exchange === "both" ? "bybit" : engine.exchange);
             console.log(`[Engine] Periodic save: ${posCount} positions saved to DB`);
+          }
+        } catch (e) { /* silent */ }
+      }
+
+      // ─── Drawdown Alert (check every 10 cycles) ───
+      if (cycleNum % 10 === 0) {
+        try {
+          const ddState = await db.getOrCreateBotState(userId);
+          const ddTodayPnl = parseFloat(ddState?.todayPnl ?? "0");
+          const DRAWDOWN_THRESHOLD = -50; // Configurable: alert if daily loss exceeds $50
+          const todayStr = new Date().toISOString().slice(0, 10);
+          if (ddTodayPnl <= DRAWDOWN_THRESHOLD && engine.lastDrawdownAlertDate !== todayStr) {
+            engine.lastDrawdownAlertDate = todayStr;
+            await sendTelegramNotification(engine,
+              `\u{1F6A8} <b>PHANTOM — Alerta de Drawdown</b>\n\n` +
+              `P\u00E9rdida del d\u00EDa: <b>$${ddTodayPnl.toFixed(2)}</b>\n` +
+              `Umbral configurado: $${DRAWDOWN_THRESHOLD}\n\n` +
+              `\u26A0\uFE0F Considera revisar las estrategias activas o detener el bot.\n` +
+              `Usa /status para ver el estado actual.`
+            );
+            console.log(`[Engine] Drawdown alert sent: todayPnl=$${ddTodayPnl.toFixed(2)} threshold=$${DRAWDOWN_THRESHOLD}`);
           }
         } catch (e) { /* silent */ }
       }
@@ -1796,7 +1871,133 @@ export async function startEngine(userId: number): Promise<{ success: boolean; e
     }
   }, 60_000); // Check every 60 seconds
 
+  // ─── Telegram Polling for /status command ───
+  if (engine.telegramBotToken && engine.telegramChatId) {
+    engine.telegramPollingOffset = 0;
+    engine.telegramPollingId = setInterval(async () => {
+      if (!engine.isRunning || !engine.telegramBotToken) return;
+      try {
+        const url = `https://api.telegram.org/bot${engine.telegramBotToken}/getUpdates?offset=${engine.telegramPollingOffset ?? 0}&timeout=0&allowed_updates=["message"]`;
+        const res = await fetch(url);
+        const data = await res.json() as any;
+        if (!data.ok || !data.result?.length) return;
+        for (const update of data.result) {
+          engine.telegramPollingOffset = update.update_id + 1;
+          const text = update.message?.text?.trim();
+          const chatId = String(update.message?.chat?.id);
+          // Only respond to messages from our configured chat
+          if (chatId !== engine.telegramChatId) continue;
+          if (text === "/status" || text === "/estado") {
+            await sendStatusReport(engine);
+          }
+        }
+      } catch (e) {
+        console.error("[Telegram] Polling error:", (e as Error).message);
+      }
+    }, 10_000); // Poll every 10 seconds
+    console.log(`[Engine] Telegram polling started for /status command`);
+  }
+
   return { success: true };
+}
+
+// ─── /status Telegram Command Response ───
+async function sendStatusReport(engine: EngineState) {
+  try {
+    const state = await db.getOrCreateBotState(engine.userId);
+    const totalPnl = parseFloat(state?.totalPnl ?? "0");
+    const todayPnl = parseFloat(state?.todayPnl ?? "0");
+    const totalTrades = state?.totalTrades ?? 0;
+    const winningTrades = state?.winningTrades ?? 0;
+    const winRate = totalTrades > 0 ? ((winningTrades / totalTrades) * 100).toFixed(1) : "0";
+
+    // Count open positions
+    const gridCount = Object.values(engine.openBuyPositions).reduce((s, a) => s + a.length, 0);
+    const futCount = Object.values(engine.futuresPositions).reduce((s, a) => s + a.length, 0);
+    const scalpCount = Object.values(engine.scalpPositions).reduce((s, a) => s + a.length, 0);
+
+    // Get live exchange balances
+    let bybitBal = "N/A";
+    let kucoinBal = "N/A";
+    try {
+      const bybitKeys = await db.getApiKey(engine.userId, "bybit");
+      if (bybitKeys && !engine.simulationMode) {
+        const { RestClientV5 } = await import("bybit-api");
+        const cl = new RestClientV5({ key: bybitKeys.apiKey, secret: bybitKeys.apiSecret });
+        const res = await cl.getWalletBalance({ accountType: "UNIFIED" });
+        if (res.retCode === 0) {
+          const eq = parseFloat((res.result as any)?.list?.[0]?.totalEquity ?? "0");
+          bybitBal = `$${eq.toFixed(2)}`;
+        }
+      }
+    } catch { /* skip */ }
+    try {
+      const kucoinKeys = await db.getApiKey(engine.userId, "kucoin");
+      if (kucoinKeys && !engine.simulationMode) {
+        const { SpotClient } = await import("kucoin-api");
+        const cl = new SpotClient({ apiKey: kucoinKeys.apiKey, apiSecret: kucoinKeys.apiSecret, apiPassphrase: kucoinKeys.passphrase ?? "" });
+        const [mainRes, tradeRes] = await Promise.allSettled([
+          cl.getBalances({ type: "main" }),
+          cl.getBalances({ type: "trade" }),
+        ]);
+        let kcTotal = 0;
+        const prices = getLivePrices();
+        const proc = (r: any) => {
+          if (r.status !== "fulfilled" || r.value?.code !== "200000") return;
+          for (const acc of (r.value.data as any[] ?? [])) {
+            const cur = acc.currency;
+            const bal = parseFloat(acc.balance ?? "0");
+            if (cur === "USDT" || cur === "USDC" || cur === "USD") kcTotal += bal;
+            else {
+              const p = prices[`${cur}USDT`]?.lastPrice ?? 0;
+              if (p > 0) kcTotal += bal * p;
+            }
+          }
+        };
+        proc(mainRes); proc(tradeRes);
+        kucoinBal = `$${kcTotal.toFixed(2)}`;
+      }
+    } catch { /* skip */ }
+
+    // Get today's trades for breakdown
+    const allTrades = await db.getUserTrades(engine.userId, 5000);
+    const now = new Date();
+    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const todayTrades = allTrades.filter(t => new Date(t.createdAt) >= todayStart);
+
+    // Per-strategy breakdown
+    const stratBreakdown: Record<string, { count: number; pnl: number }> = {};
+    for (const t of todayTrades) {
+      const key = t.strategy ?? "unknown";
+      if (!stratBreakdown[key]) stratBreakdown[key] = { count: 0, pnl: 0 };
+      stratBreakdown[key].count++;
+      stratBreakdown[key].pnl += parseFloat(t.pnl ?? "0");
+    }
+    let stratLines = "";
+    for (const [strat, data] of Object.entries(stratBreakdown)) {
+      const icon = data.pnl >= 0 ? "\u{1F7E2}" : "\u{1F534}";
+      stratLines += `\n  ${icon} ${strat}: ${data.count} ops, ${data.pnl >= 0 ? "+" : ""}$${data.pnl.toFixed(2)}`;
+    }
+
+    const pnlEmoji = todayPnl >= 0 ? "\u{1F7E2}" : "\u{1F534}";
+    const mode = engine.simulationMode ? "\u{1F9EA} SIMULACI\u00D3N" : "\u{1F534} LIVE";
+    const uptime = engine.intervalId ? "\u2705 Activo" : "\u26A0\uFE0F Detenido";
+
+    const message = `\u{1F47B} <b>PHANTOM — Estado Actual</b>\n${mode} | ${uptime}\n\n` +
+      `\u{1F4B0} <b>Balances</b>\n  Bybit: ${bybitBal}\n  KuCoin: ${kucoinBal}\n\n` +
+      `${pnlEmoji} <b>PnL Hoy</b>: ${todayPnl >= 0 ? "+" : ""}$${todayPnl.toFixed(2)}\n` +
+      `\u{1F4C8} <b>PnL Total</b>: ${totalPnl >= 0 ? "+" : ""}$${totalPnl.toFixed(2)}\n\n` +
+      `\u{1F4E6} <b>Posiciones Abiertas</b>\n  Grid: ${gridCount}\n  Scalping: ${scalpCount}\n  Futures: ${futCount}\n\n` +
+      `\u{1F3AF} <b>Operaciones Hoy</b>: ${todayTrades.length}\n` +
+      `\u{1F3C6} <b>Win Rate</b>: ${winRate}% (${totalTrades} total)\n` +
+      (stratLines ? `\n\u{1F4CA} <b>Desglose Hoy</b>:${stratLines}\n` : "") +
+      `\n—\n<i>PHANTOM Trading Bot</i>`;
+
+    await sendTelegramNotification(engine, message);
+    console.log(`[Engine] /status report sent via Telegram for user ${engine.userId}`);
+  } catch (e) {
+    console.error(`[Engine] Failed to send status report:`, (e as Error).message);
+  }
 }
 
 // ─── Daily Summary via Telegram ───
@@ -1914,6 +2115,7 @@ export async function stopEngine(userId: number): Promise<{ success: boolean }> 
   if (engine.scannerIntervalId) clearInterval(engine.scannerIntervalId);
   if (engine.priceIntervalId) clearInterval(engine.priceIntervalId);
   if (engine.dailySummaryId) clearInterval(engine.dailySummaryId);
+  if (engine.telegramPollingId) clearInterval(engine.telegramPollingId);
 
   // ─── Save open positions to DB before stopping (survive restarts) ───
   try {

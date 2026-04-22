@@ -325,3 +325,20 @@
 
 ## Bug Fix: Scalping sell path también tiene posiciones fantasma - Abril 22
 - [x] Scalping sell de DOGEUSDT en KuCoin falla con "OK" — fix: live spot scalping es buy-only (no hay tracking de posiciones)
+
+## Feature: Scalping con tracking de posiciones - Abril 22
+- [x] Scalp buy guarda posición en memoria (symbol, qty, buyPrice, timestamp)
+- [x] Scalp sell solo se ejecuta si hay una compra previa del mismo symbol
+- [x] Al vender, calcular PnL real (sellPrice - buyPrice) * qty - fees
+- [x] Limpiar posición después de sell exitoso
+- [x] Funciona en spot (KuCoin) y linear (Bybit)
+
+## Feature: Comando /status en Telegram - Abril 22
+- [x] Bot escucha comandos de Telegram (polling getUpdates cada 10s)
+- [x] /status y /estado responden con balance total (Bybit + KuCoin), PnL del día, posiciones abiertas
+- [x] Formato legible con emojis y montos, desglose por estrategia
+
+## Feature: Alertas de drawdown - Abril 22
+- [x] Monitorear PnL diario cada 10 ciclos (~5 min)
+- [x] Si pérdida diaria supera umbral configurable (default -$50), enviar alerta Telegram
+- [x] Solo enviar 1 alerta por umbral por día (lastDrawdownAlertDate en engine state)
