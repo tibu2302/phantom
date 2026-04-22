@@ -478,16 +478,42 @@ async function placeOrder(engine: EngineState, symbol: string, side: "Buy" | "Se
       return orderIds.length > 0 ? orderIds.join(",") : null;
     } else if (engine.exchange === "kucoin" && engine.kucoinClient) {
       const kucoinSymbol = symbol.replace("USDT", "-USDT");
-      const res = await engine.kucoinClient.submitOrder({
+      // KuCoin minimum order sizes (in base currency)
+      const KC_MIN_SIZE_KC: Record<string, number> = {
+        "BTC-USDT": 0.00001, "ETH-USDT": 0.0001, "SOL-USDT": 0.01,
+        "XRP-USDT": 0.1, "ADA-USDT": 1, "DOGE-USDT": 1,
+        "AVAX-USDT": 0.01, "LINK-USDT": 0.01, "ARB-USDT": 0.1,
+        "SUI-USDT": 0.1, "OP-USDT": 0.1, "APT-USDT": 0.01,
+        "SEI-USDT": 1, "SHIB-USDT": 1,
+      };
+      const minSize = KC_MIN_SIZE_KC[kucoinSymbol] ?? 0.1;
+      const qtyNum = parseFloat(qty);
+      if (qtyNum < minSize) {
+        console.log(`[Engine] SKIP KuCoin-only ${side} ${symbol} — qty ${qty} below min ${minSize}`);
+        return null;
+      }
+      const orderParams: any = {
         clientOid: `phantom_${Date.now()}`,
         side: side.toLowerCase(),
         symbol: kucoinSymbol,
         type: "market",
-        size: qty,
-      });
+      };
+      // KuCoin market buys MUST use 'funds' (USDT amount), sells use 'size' (crypto qty)
+      if (side === "Buy") {
+        const price = engine.lastPrices[symbol] ?? 0;
+        const funds = (qtyNum * price).toFixed(2);
+        if (parseFloat(funds) < 1) {
+          console.log(`[Engine] SKIP KuCoin-only ${side} ${symbol} — funds $${funds} below $1 minimum`);
+          return null;
+        }
+        orderParams.funds = funds;
+      } else {
+        orderParams.size = qty;
+      }
+      const res = await engine.kucoinClient.submitOrder(orderParams);
       const kcOrderId = res?.data?.orderId;
       if (kcOrderId) {
-        console.log(`[Engine] KuCoin order OK: ${side} ${symbol} qty=${qty} id=${kcOrderId}`);
+        console.log(`[Engine] KuCoin order OK: ${side} ${symbol} ${side === "Buy" ? `funds=$${orderParams.funds}` : `qty=${qty}`} id=${kcOrderId}`);
         return kcOrderId;
       } else {
         // KuCoin returned success HTTP but no orderId (insufficient balance, min size, etc.)
@@ -1063,22 +1089,27 @@ async function runScalpingStrategy(engine: EngineState, symbol: string, category
     const tradeAmount = balance * allocation / 100 * 0.5; // 50% of allocation per scalp (was 10%, too small to cover fees)
     const qty = (tradeAmount / price).toFixed(6);
 
-    // Pre-check: estimate PnL before placing order — NEVER scalp at a loss
+    // Pre-check: estimate PnL before placing order
+    // Use BB spread as a realistic profit target (price tends to revert to mean)
     let estGrossPnl: number;
     if (engine.simulationMode) {
       estGrossPnl = tradeAmount * (Math.random() * 0.008 - 0.002);
     } else {
-      const emaDiff = Math.abs(ema9Current - ema21Current) / price;
-      const direction = signal === "Buy" ? 1 : -1;
-      estGrossPnl = tradeAmount * emaDiff * direction * 0.5;
+      // Realistic estimate: use half the BB bandwidth as expected move
+      // BB bandwidth = (upper - lower) / middle, typically 2-6% for volatile coins
+      const bbWidth = (bb.upper - bb.lower) / bb.middle;
+      // Expected profit = 25% of BB width (conservative but realistic)
+      estGrossPnl = tradeAmount * bbWidth * 0.25;
     }
     const estNetPnl = calcNetPnl(estGrossPnl, tradeAmount, category, true, engine.exchange);
     
-    // SKIP if estimated net PnL is negative — scalping must ALWAYS win
+    // Only skip if the BB spread is so tight that even 25% of it won't cover fees
     if (estNetPnl <= 0) {
-      console.log(`[Scalp] SKIP ${symbol} ${signal} — estimated net PnL $${estNetPnl.toFixed(2)} (would lose money after fees)`);
+      console.log(`[Scalp] SKIP ${symbol} ${signal} — BB too tight, estimated net PnL $${estNetPnl.toFixed(2)}`);
       return;
     }
+    console.log(`[Scalp] ${symbol} ${signal} — BB width=${((bb.upper - bb.lower) / bb.middle * 100).toFixed(2)}% estNet=$${estNetPnl.toFixed(2)}`);
+
 
     const orderId = await placeOrder(engine, symbol, signal, qty, category);
     if (orderId) {

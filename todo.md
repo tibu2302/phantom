@@ -301,6 +301,10 @@
 - [x] Ganancia = balance total - capital invertido (configurable desde DB)
 
 ## Bugs: Futures/Scalping/ARB - Abril 22
-- [ ] Futures no ejecuta trades (no aparece en logs)
-- [ ] Scalping order size muy chico — fees se comen la ganancia ($0.15-$0.19 pérdida)
-- [ ] ARB order failed Buy en KuCoin
+- [x] Futures: entry conditions relajadas (bullish RSI<70, mixed RSI<55, bearish RSI<35) + log de SKIP
+- [x] Scalping: order size 10% → 50% de allocation (de ~$100 a ~$500 por trade)
+- [x] KuCoin: min order size validation + market buys usan 'funds' en vez de 'size' (fix ARB)
+
+## Bugs: Scalping PnL + KuCoin orders v2 - Abril 22
+- [ ] Scalping PnL estimation demasiado conservadora (emaDiff * 0.5 siempre da negativo)
+- [ ] KuCoin ADA order failed — funds fix no cubre path de scalping/kucoin-only
