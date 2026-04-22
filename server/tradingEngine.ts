@@ -1,3 +1,4 @@
+import { autoConvertCoinsToUSDT } from "./autoConvert";
 /**
  * PHANTOM Trading Engine — Multi-Exchange (Bybit + KuCoin)
  * Grid Trading, Scalping, Futures Long-Only
@@ -88,7 +89,7 @@ interface FuturesPosition {
   lowestPrice?: number;   // for short trailing stop
 }
 
-interface EngineState {
+export interface EngineState {
   userId: number;
   exchange: string; // "bybit" | "kucoin" | "both"
   client: RestClientV5;
@@ -1801,6 +1802,20 @@ export async function startEngine(userId: number): Promise<{ success: boolean; e
         } catch (e) { /* silent */ }
       }
 
+      // ─── Periodic 4h Report via Telegram ───
+      if (cycleNum % 720 === 0) {
+        try {
+          await sendStatusReport(engine);
+          console.log(`[Engine] Periodic 4h report sent via Telegram`);
+        } catch (e) { /* silent */ }
+      }
+      // ─── Auto-Convert accumulated coins to USDT (every 15 cycles ~5 min) ───
+      if (cycleNum % 15 === 0) {
+        try {
+          await autoConvertCoinsToUSDT(engine);
+          console.log(`[Engine] Auto-convert check completed`);
+        } catch (e) { /* silent */ }
+      }
       // ─── Drawdown Alert (check every 10 cycles) ───
       if (cycleNum % 10 === 0) {
         try {

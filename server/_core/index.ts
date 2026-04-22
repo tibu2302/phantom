@@ -76,3 +76,29 @@ async function startServer() {
 }
 
 startServer().catch(console.error);
+
+
+// ─── Auto-Start Engine on Server Boot ───
+setTimeout(async () => {
+  try {
+    const { startEngine } = await import("../tradingEngine");
+    const { getUserByOpenId, getOrCreateBotState } = await import("../db");
+    const { ENV } = await import("./env");
+    
+    if (ENV.ownerOpenId) {
+      const owner = await getUserByOpenId(ENV.ownerOpenId);
+      if (owner) {
+        const state = await getOrCreateBotState(owner.id);
+        if (state && !state.simulationMode) {
+          console.log(`[AutoStart] Owner (id=${owner.id}) was in LIVE mode, auto-starting engine...`);
+          const result = await startEngine(owner.id);
+          console.log(`[AutoStart] ${result.success ? 'Engine started successfully' : 'Failed: ' + result.error}`);
+        } else {
+          console.log(`[AutoStart] Owner in simulation mode, skipping auto-start`);
+        }
+      }
+    }
+  } catch (e) {
+    console.error("[AutoStart] Failed:", (e as Error).message);
+  }
+}, 15_000);

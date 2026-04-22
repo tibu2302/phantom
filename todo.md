@@ -422,9 +422,28 @@
 - [x] Capital se libera y reinvierte en siguiente ciclo automáticamente
 
 ## Fix: Política CERO PÉRDIDAS - Abril 22
-- [ ] Eliminar stop-loss completamente (nunca vender a pérdida)
-- [ ] Eliminar time-stop que acepta pérdidas (solo cerrar si está en ganancia)
-- [ ] Grid: solo vender cuando hay ganancia neta > $0
-- [ ] Futures: reducir leverage a nivel seguro para evitar liquidación
-- [ ] Futures: solo cerrar posición en ganancia (no stop-loss)
-- [ ] Scalping: solo vender si hay ganancia real
+- [x] Eliminar stop-loss completamente (default 0% = DISABLED)
+- [x] Eliminar time-stop que acepta pérdidas (solo cierra si estNetPnl > 0)
+- [x] Grid: solo vende cuando hay ganancia neta > $0
+- [x] Futures: leverage 10x → 5x (más seguro)
+- [x] Futures: time-stop solo cierra en ganancia (profitPct > 0.3%)
+- [x] Scalping: profit check antes de vender (HOLD si PnL negativo)
+- [x] maxHoldHours 4 → 12 (paciencia hasta que haya ganancia)
+
+## Feature: Bot 100% Autónomo - Abril 22
+
+### Auto-conversión de monedas a USDT
+- [ ] Detectar monedas acumuladas (no-USDT) en Bybit y KuCoin
+- [ ] Vender automáticamente monedas sueltas a USDT cuando no hay posición abierta para ese par
+- [ ] Ejecutar auto-conversión cada 10 ciclos (~3 min)
+- [ ] Solo convertir si el valor es > $1 (evitar dust)
+
+### Auto-start y salud
+- [ ] Auto-iniciar el engine cuando el servidor arranca (no esperar click en dashboard)
+- [ ] Reporte automático cada 4h por Telegram con PnL, posiciones, balance
+- [ ] Auto-reiniciar engine si se detecta que dejó de operar (watchdog)
+
+### Protección de ganancias
+- [ ] Nunca vender a pérdida (ya implementado)
+- [ ] Grid en linear (ya implementado — no bloquea capital en monedas)
+- [ ] Trailing stop solo vende en ganancia (ya implementado)
