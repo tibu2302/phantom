@@ -460,3 +460,15 @@
 - [x] Reintentar automáticamente en errores de red: EAI_AGAIN, ECONNRESET, ETIMEDOUT, ENOTFOUND
 - [x] Suprimir errores de red transitorios de notificaciones Telegram (no alertar por DNS temporal)
 - [x] Máximo 3 reintentos con delay 1s, 2s, 4s antes de reportar error real
+
+## Motor de Trading Inteligente v6.0 — Abril 23
+- [ ] Indicadores avanzados: ATR, VWAP, OBV, Stochastic RSI, ADX
+- [ ] Detección de divergencias RSI y MACD (señales de reversión potentes)
+- [ ] Sistema de scoring multi-indicador (0-100) para filtrar señales débiles
+- [ ] Detección de régimen de mercado (trending, ranging, volatile) con adaptación automática
+- [ ] Grid inteligente: sizing dinámico basado en confianza del score
+- [ ] Trailing stop dinámico basado en ATR (no porcentaje fijo)
+- [ ] Filtro de momentum (ADX) para evitar entradas en mercado plano
+- [ ] Volume Profile: detectar zonas de soporte/resistencia por volumen
+- [ ] Cooldown inteligente post-pérdida (reducir tamaño después de pérdidas consecutivas)
+- [ ] Optimización de umbrales por condición de mercado

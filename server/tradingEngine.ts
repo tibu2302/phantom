@@ -21,6 +21,11 @@ import { autoConvertCoinsToUSDT } from "./autoConvert";
 import { RestClientV5 } from "bybit-api";
 import * as db from "./db";
 import { WebSocket } from "ws";
+import {
+  calculateSignalScore, calculateATR, calculateATRPercent, calculateADX,
+  detectMarketRegime, findSupportResistance, recordTradeResult, getLossCooldownMultiplier,
+  type MarketRegime, type SignalScore
+} from "./smartAnalysis";
 
 // ─── Fee Constants (per exchange) ───
 const FEES: Record<string, { spot: number; linear: number }> = {
@@ -347,6 +352,9 @@ async function fetchTicker(_client: RestClientV5 | null, symbol: string, categor
 }
 
 interface KlineData {
+  opens: number[];
+  highs: number[];
+  lows: number[];
   closes: number[];
   volumes: number[];
 }
@@ -407,6 +415,9 @@ async function fetchKlines(_client: RestClientV5 | null, symbol: string, _interv
       if (klines && klines.length > 0) {
         const reversed = [...klines].reverse();
         const result: KlineData = {
+          opens: reversed.map((k: string[]) => parseFloat(k[1])),
+          highs: reversed.map((k: string[]) => parseFloat(k[2])),
+          lows: reversed.map((k: string[]) => parseFloat(k[3])),
           closes: reversed.map((k: string[]) => parseFloat(k[4])),
           volumes: reversed.map((k: string[]) => parseFloat(k[5])),
         };
@@ -427,10 +438,20 @@ async function fetchKlines(_client: RestClientV5 | null, symbol: string, _interv
       if (!res.ok) throw new Error(`Yahoo HTTP ${res.status}`);
       const data = await res.json() as any;
       const result = data?.chart?.result?.[0];
-      const closes = (result?.indicators?.quote?.[0]?.close ?? []).filter((c: any) => c != null);
-      const volumes = (result?.indicators?.quote?.[0]?.volume ?? []).filter((v: any) => v != null);
+      const quote = result?.indicators?.quote?.[0] ?? {};
+      const closes = (quote.close ?? []).filter((c: any) => c != null);
+      const opens = (quote.open ?? []).filter((c: any) => c != null);
+      const yahooHighs = (quote.high ?? []).filter((c: any) => c != null);
+      const yahooLows = (quote.low ?? []).filter((c: any) => c != null);
+      const volumes = (quote.volume ?? []).filter((v: any) => v != null);
       if (closes.length > 0) {
-        const klineResult = { closes: closes.slice(-limit), volumes: volumes.slice(-limit) };
+        const klineResult: KlineData = {
+          opens: opens.slice(-limit).length > 0 ? opens.slice(-limit) : closes.slice(-limit),
+          highs: yahooHighs.slice(-limit).length > 0 ? yahooHighs.slice(-limit) : closes.slice(-limit),
+          lows: yahooLows.slice(-limit).length > 0 ? yahooLows.slice(-limit) : closes.slice(-limit),
+          closes: closes.slice(-limit),
+          volumes: volumes.slice(-limit),
+        };
         klineCache.set(cacheKey, { data: klineResult, expiresAt: Date.now() + CACHE_TTL_MS });
         return klineResult;
       }
@@ -450,6 +471,9 @@ async function fetchKlines(_client: RestClientV5 | null, symbol: string, _interv
         const data = await res.json() as number[][];
         const sliced = data.slice(-limit);
         const result: KlineData = {
+          opens: sliced.map(k => k[1]),
+          highs: sliced.map(k => k[2]),
+          lows: sliced.map(k => k[3]),
           closes: sliced.map(k => k[4]),
           volumes: sliced.map(() => 1000),
         };
@@ -468,12 +492,16 @@ async function fetchKlines(_client: RestClientV5 | null, symbol: string, _interv
   const cachedPrice = livePrices.get(symbol);
   if (cachedPrice) {
     const base = cachedPrice.lastPrice;
+    const synCloses = Array.from({ length: limit }, () => base * (1 + (Math.random() - 0.5) * 0.002));
     return {
-      closes: Array.from({ length: limit }, () => base * (1 + (Math.random() - 0.5) * 0.002)),
+      opens: synCloses.map(c => c * (1 + (Math.random() - 0.5) * 0.001)),
+      highs: synCloses.map(c => c * (1 + Math.random() * 0.002)),
+      lows: synCloses.map(c => c * (1 - Math.random() * 0.002)),
+      closes: synCloses,
       volumes: Array(limit).fill(1000),
     };
   }
-  return { closes: [], volumes: [] };
+  return { opens: [], highs: [], lows: [], closes: [], volumes: [] };
 }
 
 async function placeOrder(engine: EngineState, symbol: string, side: "Buy" | "Sell", qty: string, category: "spot" | "linear" = "spot"): Promise<string | null> {
@@ -690,27 +718,80 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
     return;
   }
 
-  // ─── Trend Detection (EMA 20/50) ───
+  // ─── SMART ANALYSIS v6.0: Multi-indicator scoring + Market Regime ───
   let trendAllowsBuy = true;
   let trendLabel = "neutral";
+  let smartScore: SignalScore | null = null;
+  let marketRegime: MarketRegime = "ranging";
+  let dynamicTrailingPct = 0.005; // default 0.5%
+  let positionSizeMultiplier = 1.0;
   try {
     const klines = await fetchKlines(engine.client, symbol, "15", 60, category);
-    if (klines.closes.length >= 50) {
-      const ema20 = calculateEMA(klines.closes, 20);
-      const ema50 = calculateEMA(klines.closes, 50);
-      const ema20Now = ema20[ema20.length - 1];
-      const ema50Now = ema50[ema50.length - 1];
-      const ema20Prev = ema20[ema20.length - 4];
-      if (ema20Now < ema50Now && ema20Now < ema20Prev) {
+    if (klines.closes.length >= 30) {
+      // Full smart analysis
+      smartScore = calculateSignalScore(klines, price);
+      marketRegime = smartScore.regime;
+      dynamicTrailingPct = smartScore.suggestedTrailingPct / 100;
+      positionSizeMultiplier = smartScore.suggestedSizePct;
+
+      // Loss cooldown: reduce size after consecutive losses
+      const cooldownMult = getLossCooldownMultiplier(symbol, "grid");
+      positionSizeMultiplier *= cooldownMult;
+
+      // Market regime determines buy permission
+      if (smartScore.regime === "strong_trend_down") {
+        trendAllowsBuy = false;
+        trendLabel = "bearish-strong";
+      } else if (smartScore.regime === "trend_down" && smartScore.confidence > 50) {
         trendAllowsBuy = false;
         trendLabel = "bearish";
-      } else if (ema20Now > ema50Now) {
+      } else if (smartScore.regime === "strong_trend_up") {
+        trendLabel = "bullish-strong";
+      } else if (smartScore.regime === "trend_up") {
         trendLabel = "bullish";
+      } else if (smartScore.regime === "volatile") {
+        trendLabel = "volatile";
+        // In volatile market, only buy if score says buy with high confidence
+        if (smartScore.direction !== "buy" || smartScore.confidence < 50) {
+          trendAllowsBuy = false;
+        }
+      } else {
+        trendLabel = "ranging";
+      }
+
+      // Regime-based spread adjustment
+      if (marketRegime === "volatile") {
+        // Wider spread in volatile markets
+        positionSizeMultiplier *= 0.7; // smaller positions
+      } else if (marketRegime === "ranging") {
+        // Tighter spread in ranging — more cycles
+        positionSizeMultiplier *= 1.1;
+      }
+
+      // Support/Resistance awareness
+      const sr = findSupportResistance(klines.highs, klines.lows, klines.closes, klines.volumes, price);
+      // If price is near strong resistance, reduce buy confidence
+      if (sr.nearestResistance && (sr.nearestResistance - price) / price < 0.003) {
+        if (smartScore.direction === "buy") positionSizeMultiplier *= 0.7;
+      }
+      // If price is near strong support, boost buy confidence
+      if (sr.nearestSupport && (price - sr.nearestSupport) / price < 0.003) {
+        if (smartScore.direction === "buy") positionSizeMultiplier *= 1.2;
+      }
+
+      console.log(`[Grid] ${symbol} SMART: score=${smartScore.confidence} dir=${smartScore.direction} regime=${marketRegime} size=${positionSizeMultiplier.toFixed(2)}x trailing=${(dynamicTrailingPct * 100).toFixed(2)}% reasons=${smartScore.reasons.length}`);
+    } else {
+      // Fallback to simple EMA
+      const ema20 = calculateEMA(klines.closes, 20);
+      const ema50 = calculateEMA(klines.closes, Math.min(50, klines.closes.length));
+      if (ema20.length > 0 && ema50.length > 0) {
+        if (ema20[ema20.length - 1] < ema50[ema50.length - 1]) { trendAllowsBuy = false; trendLabel = "bearish"; }
+        else trendLabel = "bullish";
       }
     }
   } catch { /* keep trendAllowsBuy = true on error */ }
 
-  // ─── Multi-Timeframe Analysis ───
+  // ─── Multi-Timeframe Analysis (additional confirmation) ───
   const mtf = await multiTimeframeCheck(engine.client, symbol, category);
   if (mtf.direction === "bearish" && mtf.aligned) {
     trendAllowsBuy = false;
@@ -724,15 +805,20 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
   const gridLevels = config?.gridLevels ?? 10;
   const baseGridSpread = config?.gridSpreadPct ? config.gridSpreadPct / 100 : 0.005;
 
-  // ─── Dynamic Grid: adjust spread based on volatility ───
+  // ─── Dynamic Grid: ATR-based spread + regime adjustment ───
   let effectiveSpread = baseGridSpread;
   try {
     const klines = await fetchKlines(engine.client, symbol, "15", 30, category);
-    if (klines.closes.length >= 10) {
-      const volatility = calculateVolatility(klines.closes);
-      // Scale spread: low vol (0.2%) → use base, high vol (2%) → use 2x base
-      const volMultiplier = Math.max(1, Math.min(2.5, volatility / 0.005));
+    if (klines.closes.length >= 10 && klines.highs.length >= 10) {
+      // Use ATR for more accurate volatility measurement
+      const atrPct = calculateATRPercent(klines.highs, klines.lows, klines.closes);
+      // Scale spread: ATR 0.5% → base, ATR 2% → 2x base
+      const volMultiplier = Math.max(1, Math.min(2.5, atrPct / 0.5));
       effectiveSpread = baseGridSpread * volMultiplier;
+      // Regime adjustment: tighter in ranging (more cycles), wider in trending
+      if (marketRegime === "ranging") effectiveSpread *= 0.8;
+      else if (marketRegime === "volatile") effectiveSpread *= 1.5;
+      else if (marketRegime === "strong_trend_up" || marketRegime === "strong_trend_down") effectiveSpread *= 1.3;
     }
   } catch { /* use base spread */ }
 
@@ -777,8 +863,10 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
   // ─── Protection System: Stop-Loss + Trailing Stop + Time Stop ───
   const stratConfig = config ?? {};
   const stopLossPct = (stratConfig.stopLossPct ?? 0) / 100; // Default 0% = DISABLED (never sell at loss) (crypto is volatile)
-  const trailingPct = (stratConfig.trailingStopPct ?? 0.5) / 100; // 0.5% trailing distance
-  const trailingActivation = (stratConfig.trailingActivationPct ?? 0.5) / 100; // Activate trailing after 0.5% profit (optimized for more cycles)
+  // Dynamic trailing: use ATR-based trailing from smart analysis, fallback to config
+  const configTrailingPct = (stratConfig.trailingStopPct ?? 0.5) / 100;
+  const trailingPct = dynamicTrailingPct > 0 ? dynamicTrailingPct : configTrailingPct; // ATR-based trailing
+  const trailingActivation = (stratConfig.trailingActivationPct ?? 0.5) / 100;
   const maxHoldTimeMs = (stratConfig.maxHoldHours ?? 12) * 60 * 60 * 1000; // Default 48 hours max hold
   const maxOpenPositions = stratConfig.maxOpenPositions ?? 3; // Max open positions per symbol
   // Dynamic minProfitUsd: proportional to trade amount (0.3% of tradeAmount, min $0.30, max $2)
@@ -870,6 +958,8 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
     if (orderId) {
       const grossPnl = (price - pos.buyPrice) * parseFloat(pos.qty);
       const pnl = calcNetPnl(grossPnl, pos.tradeAmount, category, true, engine.exchange);
+      // Track win/loss for cooldown system
+      recordTradeResult(symbol, "grid", pnl > 0);
 
       await db.insertTrade({
         userId: engine.userId, symbol, side: "sell", price: price.toString(),
@@ -961,9 +1051,14 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
       : price >= level.price * (1 - tolerance);
 
     if (shouldFill) {
-      // ─── Trend guard: skip BUY if bearish ───
+      // ─── Smart Score guard: skip BUY if analysis says sell or low confidence ───
       if (level.side === "Buy" && !trendAllowsBuy) {
-        console.log(`[Grid] SKIP BUY ${symbol} @ ${level.price.toFixed(2)} — ${trendLabel} trend`);
+        console.log(`[Grid] SKIP BUY ${symbol} @ ${level.price.toFixed(2)} — ${trendLabel} trend (regime=${marketRegime})`);
+        continue;
+      }
+      // Additional: skip buy if smart score explicitly says sell with high confidence
+      if (level.side === "Buy" && smartScore && smartScore.direction === "sell" && smartScore.confidence >= 60) {
+        console.log(`[Grid] SKIP BUY ${symbol} @ ${level.price.toFixed(2)} — smart score SELL conf=${smartScore.confidence}`);
         continue;
       }
 
@@ -984,11 +1079,13 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
         }
       }
 
-      // ─── Reinvestment: use current balance (includes profits) for order sizing ───
+      // ─── Smart Sizing: confidence-weighted position sizing ───
       const allocation = strat?.allocationPct ?? 50;
       const state = await db.getOrCreateBotState(engine.userId);
       const balance = parseFloat(state?.currentBalance ?? "5000");
-      const tradeAmount = (balance * allocation / 100) / (levels.length / 2);
+      const baseTradeAmount = (balance * allocation / 100) / (levels.length / 2);
+      // Apply smart multiplier: higher confidence = larger position, loss streak = smaller
+      const tradeAmount = baseTradeAmount * positionSizeMultiplier;
       const qty = (tradeAmount / price).toFixed(6);
 
       const orderId = await placeOrder(engine, symbol, level.side, qty, category);
@@ -1163,65 +1260,40 @@ async function runScalpingStrategy(engine: EngineState, symbol: string, category
     return;
   }
 
-  // Multi-timeframe check for scalping
-  const mtf = await multiTimeframeCheck(engine.client, symbol, category);
-
+  // ─── SMART ANALYSIS v6.0 for Scalping ───
   const klines = await fetchKlines(engine.client, symbol, "15", 50, category);
   if (klines.closes.length < 26) return;
-  const closes = klines.closes;
 
-  const rsi = calculateRSI(closes);
-  const macd = calculateMACD(closes);
-  const bb = calculateBollingerBands(closes);
-  const ema9 = calculateEMA(closes, 9);
-  const ema21 = calculateEMA(closes, 21);
-  const ema9Current = ema9[ema9.length - 1];
-  const ema21Current = ema21[ema21.length - 1];
+  // Run full smart analysis
+  const smartScore = calculateSignalScore(klines, price);
+  const scalpCooldown = getLossCooldownMultiplier(symbol, "scalping");
 
   let signal: "Buy" | "Sell" | null = null;
-  const reasons: string[] = [];
+  const reasons = smartScore.reasons;
 
-  // Buy signals — more aggressive thresholds for more opportunities
-  if (mtf.direction !== "bearish") {
-    // Bullish/Mixed: relaxed thresholds for more entries
-    if (rsi < 40) { reasons.push(`RSI oversold (${rsi.toFixed(1)})`); signal = "Buy"; }
-    if (price <= bb.lower * 1.015) { reasons.push("Price near lower BB"); signal = "Buy"; }
-    if (ema9Current > ema21Current && ema9[ema9.length - 2] <= ema21[ema21.length - 2]) {
-      reasons.push("EMA 9/21 bullish crossover"); signal = "Buy";
-    }
-    if (macd.histogram > 0 && macd.macd > macd.signal) { reasons.push("MACD bullish"); if (!signal) signal = "Buy"; }
-    // New: momentum buy on strong MACD + rising EMA
-    if (rsi < 55 && macd.histogram > 0 && ema9Current > ema21Current && price > bb.middle) {
-      reasons.push("Momentum buy (RSI+MACD+EMA)"); signal = "Buy";
-    }
-  } else {
-    // Bearish market: counter-trend scalp on oversold
-    if (rsi < 32) { reasons.push(`RSI extreme oversold (${rsi.toFixed(1)})`); signal = "Buy"; }
-    if (price <= bb.lower * 0.998) { reasons.push("Price below lower BB (extreme)"); signal = "Buy"; }
-    if (macd.histogram > 0 && macd.macd > macd.signal) { reasons.push("MACD reversal in bearish"); signal = "Buy"; }
+  // Smart scoring determines signal — minimum confidence threshold
+  const minConfidence = 35; // Scalping needs at least 35% confidence
+  if (smartScore.direction === "buy" && smartScore.confidence >= minConfidence) {
+    signal = "Buy";
+  } else if (smartScore.direction === "sell" && smartScore.confidence >= minConfidence) {
+    signal = "Sell";
   }
 
-  // Sell signals — more aggressive for faster exits
-  if (rsi > 65) { reasons.push(`RSI overbought (${rsi.toFixed(1)})`); signal = "Sell"; }
-  if (price >= bb.upper * 0.985) { reasons.push("Price near upper BB"); signal = "Sell"; }
-  if (ema9Current < ema21Current && ema9[ema9.length - 2] >= ema21[ema21.length - 2]) {
-    reasons.push("EMA 9/21 bearish crossover"); signal = "Sell";
+  // In simulation, be more lenient
+  if (engine.simulationMode && !signal && smartScore.confidence >= 20) {
+    signal = smartScore.direction === "buy" ? "Buy" : smartScore.direction === "sell" ? "Sell" : null;
   }
 
-  if (engine.simulationMode && !signal) {
-    if (macd.histogram > 0) { signal = "Buy"; reasons.push("MACD bullish (sim)"); }
-    else if (macd.histogram < 0) { signal = "Sell"; reasons.push("MACD bearish (sim)"); }
-  }
-
-  const minSignals = 1; // Only need 1 strong signal to scalp
-  console.log(`[Scalp] ${symbol} analysis: price=${price.toFixed(2)} rsi=${rsi.toFixed(1)} macd=${macd.histogram.toFixed(4)} signal=${signal ?? 'none'} reasons=${reasons.length} minReq=${minSignals} mtf=${mtf.direction}`);
-  if (signal && reasons.length >= minSignals) {
+  console.log(`[Scalp] ${symbol} SMART: price=${price.toFixed(2)} score=${smartScore.confidence} dir=${smartScore.direction} regime=${smartScore.regime} signal=${signal ?? 'none'} reasons=${reasons.length} cooldown=${scalpCooldown.toFixed(1)}x`);
+  if (signal) {
     const strats = await db.getUserStrategies(engine.userId);
     const strat = strats.find(s => s.symbol === symbol && s.strategyType === "scalping") ?? strats.find(s => s.symbol === symbol);
     const allocation = strat?.allocationPct ?? 30;
     const state = await db.getOrCreateBotState(engine.userId);
     const balance = parseFloat(state?.currentBalance ?? "5000");
-    const tradeAmount = balance * allocation / 100 * 0.7; // 70% of allocation per scalp (was 10%, too small to cover fees)
+    // Smart sizing: confidence-weighted + cooldown multiplier
+    const baseAmount = balance * allocation / 100 * 0.7;
+    const tradeAmount = baseAmount * smartScore.suggestedSizePct * scalpCooldown;
     const qty = (tradeAmount / price).toFixed(6);
 
     // ─── Position-Tracked Scalping ───
@@ -1251,6 +1323,8 @@ async function runScalpingStrategy(engine: EngineState, symbol: string, category
         // Calculate real PnL: (sellPrice - buyPrice) * qty - fees
         const grossPnl = (price - pos.buyPrice) * parseFloat(sellQty);
         const pnl = calcNetPnl(grossPnl, pos.buyPrice * parseFloat(sellQty), category, true, engine.exchange);
+        // Track win/loss for cooldown system
+        recordTradeResult(symbol, "scalping", pnl > 0);
 
         await db.insertTrade({
           userId: engine.userId, symbol, side: "sell",
@@ -1297,19 +1371,12 @@ async function runScalpingStrategy(engine: EngineState, symbol: string, category
         return;
       }
 
-      // Pre-check: estimate PnL before placing order (relaxed for more entries)
-      const bbWidth = (bb.upper - bb.lower) / bb.middle;
-      const estGrossPnl = engine.simulationMode
-        ? tradeAmount * (Math.random() * 0.008 - 0.002)
-        : tradeAmount * bbWidth * 0.30; // Increased from 0.25 to 0.30 (capture more of the band)
-      const estNetPnl = calcNetPnl(estGrossPnl, tradeAmount, category, true, engine.exchange);
-
-      // Only skip if clearly unprofitable (reduced threshold)
-      if (estNetPnl <= -0.5) {
-        console.log(`[Scalp] SKIP ${symbol} Buy — BB too tight, estimated net PnL $${estNetPnl.toFixed(2)}`);
+      // Smart pre-check: only enter if confidence is adequate
+      if (smartScore.confidence < 30) {
+        console.log(`[Scalp] SKIP ${symbol} Buy — confidence too low (${smartScore.confidence}%)`);
         return;
       }
-      console.log(`[Scalp] ${symbol} Buy — BB width=${(bbWidth * 100).toFixed(2)}% estNet=$${estNetPnl.toFixed(2)}`);
+      console.log(`[Scalp] ${symbol} Buy — confidence=${smartScore.confidence}% regime=${smartScore.regime} size=${(smartScore.suggestedSizePct * scalpCooldown).toFixed(2)}x`);
 
       const orderId = await placeOrder(engine, symbol, "Buy", qty, category);
       if (orderId) {
@@ -1352,9 +1419,6 @@ async function runFuturesStrategy(engine: EngineState, symbol: string) {
   // Volume filter
   if (!hasAdequateVolume(symbol)) return;
 
-  // Multi-timeframe check
-  const mtf = await multiTimeframeCheck(engine.client, symbol, "linear");
-
   // Check existing positions
   if (!engine.futuresPositions[symbol]) engine.futuresPositions[symbol] = [];
   const positions = engine.futuresPositions[symbol];
@@ -1367,17 +1431,23 @@ async function runFuturesStrategy(engine: EngineState, symbol: string) {
   const futuresMaxHoldHours = futConfig.maxHoldHours ?? 0;
   const futuresNoSL = ["BTCUSDT", "ETHUSDT"];
 
-  // ─── Dynamic Take-Profit based on volatility ───
+  // ─── SMART ANALYSIS v6.0 for Futures ───
   const klines = await fetchKlines(engine.client, symbol, "15", 50, "linear");
   if (klines.closes.length < 26) return;
-  const volatility = calculateVolatility(klines.closes);
-  // Scale TP: low vol (0.2%) → 0.8% TP, high vol (1.5%) → 3% TP
-  const baseTpPct = futConfig.takeProfitPct ?? 1.5;
-  const dynamicTpPct = Math.max(0.8, Math.min(3.0, baseTpPct * Math.max(1, volatility / 0.005)));
+  const futSmartScore = calculateSignalScore(klines, price);
+  const futCooldown = getLossCooldownMultiplier(symbol, "futures");
 
-  // ─── Trailing stop config for futures ───
-  const trailingActivationPct = 0.005; // Activate trailing after 0.5% profit
-  const trailingDistancePct = 0.003;   // 0.3% trailing distance
+  // ATR-based dynamic TP and trailing
+  const atrPct = calculateATRPercent(klines.highs, klines.lows, klines.closes);
+  const baseTpPct = futConfig.takeProfitPct ?? 1.5;
+  // Scale TP: use ATR for more accurate volatility-based TP
+  const dynamicTpPct = Math.max(0.8, Math.min(3.0, baseTpPct * Math.max(1, atrPct / 0.5)));
+
+  // ─── ATR-based trailing stop for futures ───
+  const trailingActivationPct = Math.max(0.003, atrPct / 100 * 1.0); // 1x ATR activation
+  const trailingDistancePct = Math.max(0.002, atrPct / 100 * 0.7);   // 0.7x ATR distance
+
+  console.log(`[Futures] ${symbol} SMART: score=${futSmartScore.confidence} dir=${futSmartScore.direction} regime=${futSmartScore.regime} atrPct=${atrPct.toFixed(2)}% TP=${dynamicTpPct.toFixed(1)}% trail=${(trailingDistancePct * 100).toFixed(2)}%`);
 
   // ─── Manage existing positions ───
   for (let i = positions.length - 1; i >= 0; i--) {
@@ -1462,6 +1532,8 @@ async function runFuturesStrategy(engine: EngineState, symbol: string) {
           ? (price - pos.entryPrice) * parseFloat(pos.qty) * pos.leverage
           : (pos.entryPrice - price) * parseFloat(pos.qty) * pos.leverage;
         const pnl = calcNetPnl(grossPnl, pos.tradeAmount * pos.leverage, "linear", true, "bybit", holdTimeMs);
+        // Track win/loss for cooldown system
+        recordTradeResult(symbol, "futures", pnl > 0);
 
         await db.insertTrade({
           userId: engine.userId, symbol, side: closeSide.toLowerCase() as "buy" | "sell", price: price.toString(),
@@ -1501,70 +1573,46 @@ async function runFuturesStrategy(engine: EngineState, symbol: string) {
     }
   }
 
-  // ─── Open new position (LONG or SHORT) if conditions are right ───
-  const maxPositions = 3; // Allow more positions (was 2)
+  // ─── Smart Entry: LONG or SHORT based on scoring ───
+  const maxPositions = 3;
   const longPositions = positions.filter(p => (p.direction ?? "long") === "long");
   const shortPositions = positions.filter(p => p.direction === "short");
-
-  const rsi = calculateRSI(klines.closes);
-  const macd = calculateMACD(klines.closes);
-  const bb = calculateBollingerBands(klines.closes);
-
-  // ─── LONG entry conditions ───
-  let canLong = false;
-  if (longPositions.length < 2) { // Max 2 longs per symbol
-    if (mtf.direction === "bullish") {
-      canLong = rsi < 65 && macd.histogram > 0;
-    } else if (mtf.direction === "mixed") {
-      canLong = rsi < 45 && macd.histogram > 0 && price <= bb.lower * 1.02;
-    } else {
-      // Bearish: aggressive counter-trend long on extreme oversold
-      canLong = rsi < 30 && price <= bb.lower * 0.995;
-    }
-  }
-
-  // ─── SHORT entry conditions ───
-  let canShort = false;
-  if (shortPositions.length < 2) { // Max 2 shorts per symbol
-    if (mtf.direction === "bearish") {
-      canShort = rsi > 35 && macd.histogram < 0;
-    } else if (mtf.direction === "mixed") {
-      canShort = rsi > 55 && macd.histogram < 0 && price >= bb.upper * 0.98;
-    } else {
-      // Bullish: aggressive counter-trend short on extreme overbought
-      canShort = rsi > 75 && price >= bb.upper * 1.005;
-    }
-  }
 
   if (positions.length >= maxPositions) {
     console.log(`[Futures] ${symbol} SKIP — max ${maxPositions} positions reached`);
     return;
   }
 
-  // Decide direction: prefer trend-following
+  // Smart scoring determines entry direction
+  const minFuturesConfidence = 40; // Futures needs higher confidence (leveraged)
   let entryDirection: "long" | "short" | null = null;
-  if (canLong && canShort) {
-    // Both signals — pick the stronger one
-    entryDirection = mtf.direction === "bearish" ? "short" : "long";
-  } else if (canLong) {
-    entryDirection = "long";
-  } else if (canShort) {
-    entryDirection = "short";
+
+  if (futSmartScore.direction === "buy" && futSmartScore.confidence >= minFuturesConfidence && longPositions.length < 2) {
+    // Regime filter: don't go long in strong downtrend
+    if (futSmartScore.regime !== "strong_trend_down" && futSmartScore.regime !== "trend_down") {
+      entryDirection = "long";
+    }
+  } else if (futSmartScore.direction === "sell" && futSmartScore.confidence >= minFuturesConfidence && shortPositions.length < 2) {
+    // Regime filter: don't go short in strong uptrend
+    if (futSmartScore.regime !== "strong_trend_up" && futSmartScore.regime !== "trend_up") {
+      entryDirection = "short";
+    }
   }
 
   if (!entryDirection) {
-    console.log(`[Futures] ${symbol} SKIP entry — mtf=${mtf.direction} rsi=${rsi.toFixed(1)} macd=${macd.histogram.toFixed(4)} canLong=${canLong} canShort=${canShort}`);
+    console.log(`[Futures] ${symbol} SKIP entry — score=${futSmartScore.confidence} dir=${futSmartScore.direction} regime=${futSmartScore.regime}`);
     return;
   }
 
-  const futStrats2 = await db.getUserStrategies(engine.userId);
-  const strat = futStrats2.find(s => s.symbol === symbol && s.strategyType === "futures");
-  const config = strat?.config as any;
+  const strat = futStrat;
+  const config = futConfig;
   const leverage = config?.leverage ?? 5;
   const allocation = strat?.allocationPct ?? 25;
   const state = await db.getOrCreateBotState(engine.userId);
   const balance = parseFloat(state?.currentBalance ?? "5000");
-  const tradeAmount = (balance * allocation / 100) / maxPositions;
+  // Smart sizing: confidence-weighted + cooldown
+  const baseTradeAmount = (balance * allocation / 100) / maxPositions;
+  const tradeAmount = baseTradeAmount * futSmartScore.suggestedSizePct * futCooldown;
   const qty = ((tradeAmount * leverage) / price).toFixed(6);
 
   // LONG → Buy to open, SHORT → Sell to open
@@ -1583,82 +1631,52 @@ async function runFuturesStrategy(engine: EngineState, symbol: string) {
       qty, pnl: "0.00", strategy: "futures", orderId, simulated: engine.simulationMode,
     });
 
-    console.log(`[Futures] ${entryDirection.toUpperCase()} ${symbol} @ ${price.toFixed(2)} qty=${qty} leverage=${leverage}x TP=${dynamicTpPct.toFixed(1)}% vol=${(volatility * 100).toFixed(2)}% order=${orderId}`);
+    console.log(`[Futures] ${entryDirection.toUpperCase()} ${symbol} @ ${price.toFixed(2)} qty=${qty} leverage=${leverage}x TP=${dynamicTpPct.toFixed(1)}% score=${futSmartScore.confidence} regime=${futSmartScore.regime} order=${orderId}`);
   }
 }
 
 // Backward compatibility alias
 const runFuturesLongOnly = runFuturesStrategy;
 
-// ─── Opportunity Scanner ───
+// ─── Opportunity Scanner (Smart Analysis v6.0) ───
 async function runOpportunityScanner(engine: EngineState) {
-  console.log(`[Scanner] Scanning ${SCANNER_COINS.length} coins...`);
+  console.log(`[Scanner] Scanning ${SCANNER_COINS.length} coins with Smart Analysis...`);
   for (const symbol of SCANNER_COINS) {
     try {
       const klines = await fetchKlines(null, symbol, "15", 50, "spot");
       if (klines.closes.length < 26) continue;
-      const closes = klines.closes;
-      const volumes = klines.volumes;
 
-      const price = closes[closes.length - 1];
-      const rsi = calculateRSI(closes);
-      const macd = calculateMACD(closes);
-      const bb = calculateBollingerBands(closes);
-      const ema9 = calculateEMA(closes, 9);
-      const ema21 = calculateEMA(closes, 21);
+      const price = klines.closes[klines.closes.length - 1];
 
-      const recentVols = volumes.slice(-10);
-      const avgVol = recentVols.reduce((a: number, b: number) => a + b, 0) / recentVols.length;
-      const currentVol = volumes[volumes.length - 1];
-      const volSpike = currentVol > avgVol * 1.5;
+      // Full smart analysis
+      const score = calculateSignalScore(klines, price);
 
+      // Map direction to signal label
       let signal: string | null = null;
-      let confidence = 0;
-      const reasons: string[] = [];
+      if (score.direction === "buy" && score.confidence >= 70) signal = "STRONG BUY";
+      else if (score.direction === "buy" && score.confidence >= 40) signal = "BUY";
+      else if (score.direction === "sell" && score.confidence >= 70) signal = "STRONG SELL";
+      else if (score.direction === "sell" && score.confidence >= 40) signal = "SELL";
 
-      if (rsi < 30) { confidence += 25; reasons.push(`RSI very oversold (${rsi.toFixed(1)})`); signal = "STRONG BUY"; }
-      else if (rsi < 40) { confidence += 15; reasons.push(`RSI oversold (${rsi.toFixed(1)})`); signal = "BUY"; }
-
-      if (price <= bb.lower * 1.02) { confidence += 20; reasons.push("Price at lower Bollinger Band"); if (!signal) signal = "BUY"; }
-
-      const ema9Now = ema9[ema9.length - 1];
-      const ema21Now = ema21[ema21.length - 1];
-      if (ema9Now > ema21Now && ema9[ema9.length - 2] <= ema21[ema21.length - 2]) {
-        confidence += 20; reasons.push("EMA 9/21 bullish crossover"); if (!signal) signal = "BUY";
-      }
-
-      if (macd.histogram > 0 && macd.macd > 0) { confidence += 15; reasons.push("MACD bullish momentum"); }
-      if (volSpike) { confidence += 10; reasons.push("Volume spike detected"); }
-
-      if (rsi > 75) { confidence += 25; reasons.push(`RSI very overbought (${rsi.toFixed(1)})`); signal = "STRONG SELL"; }
-      else if (rsi > 65) { confidence += 15; reasons.push(`RSI overbought (${rsi.toFixed(1)})`); signal = "SELL"; }
-
-      if (price >= bb.upper * 0.98) { confidence += 20; reasons.push("Price at upper Bollinger Band"); if (!signal) signal = "SELL"; }
-
-      if (ema9Now < ema21Now && ema9[ema9.length - 2] >= ema21[ema21.length - 2]) {
-        confidence += 20; reasons.push("EMA 9/21 bearish crossover"); if (!signal) signal = "SELL";
-      }
-
-      if (signal && confidence >= 40 && reasons.length >= 2) {
-        confidence = Math.min(confidence, 95);
+      if (signal && score.confidence >= 40 && score.reasons.length >= 2) {
+        const confidence = Math.min(score.confidence, 95);
         await db.insertOpportunity({
           userId: engine.userId, symbol, signal, price: price.toString(),
-          confidence, reasons, isRead: false,
+          confidence, reasons: score.reasons, isRead: false,
         });
-        console.log(`[Scanner] ${signal} ${symbol} @ ${price} confidence=${confidence}% reasons=${reasons.join(", ")}`);
+        console.log(`[Scanner] ${signal} ${symbol} @ ${price} confidence=${confidence}% regime=${score.regime} reasons=${score.reasons.join(", ")}`);
         if (confidence >= 75) {
           try {
             const { notifyOwner } = await import("./_core/notification");
             await notifyOwner({
               title: `📊 PHANTOM: ${signal} ${symbol} (${confidence}%)`,
-              content: `Par: ${symbol}\nSeñal: ${signal}\nConfianza: ${confidence}%\nPrecio: $${price.toFixed(4)}\nRazones: ${reasons.join(", ")}`,
+              content: `Par: ${symbol}\nSeñal: ${signal}\nConfianza: ${confidence}%\nRégimen: ${score.regime}\nPrecio: $${price.toFixed(4)}\nRazones: ${score.reasons.join(", ")}`,
             });
           } catch { /* non-blocking */ }
 
-          // Only send Telegram for very high confidence scanner alerts (≥85%)
           if (confidence >= 85) {
             await sendTelegramNotification(engine,
-              `📊 <b>PHANTOM Scanner: ${signal}</b>\nPar: ${symbol}\nPrecio: $${price.toFixed(4)}\nConfianza: ${confidence}%\n${reasons.join("\n")}`
+              `📊 <b>PHANTOM Scanner: ${signal}</b>\nPar: ${symbol}\nPrecio: $${price.toFixed(4)}\nConfianza: ${confidence}%\nRégimen: ${score.regime}\n${score.reasons.join("\n")}`
             );
           }
         }
