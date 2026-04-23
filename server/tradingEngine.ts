@@ -823,15 +823,16 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
       // Scale spread: ATR 0.5% → base, ATR 2% → 2x base
       const volMultiplier = Math.max(1, Math.min(2.5, atrPct / 0.5));
       effectiveSpread = baseGridSpread * volMultiplier;
-      // Regime adjustment: tighter in ranging (more cycles), wider in trending
-      if (marketRegime === "ranging") effectiveSpread *= 0.8;
-      else if (marketRegime === "volatile") effectiveSpread *= 1.5;
-      else if (marketRegime === "strong_trend_up" || marketRegime === "strong_trend_down") effectiveSpread *= 1.3;
+      // Regime adjustment: tighter in ranging (more cycles = more USDT gains), wider in trending
+      if (marketRegime === "ranging") effectiveSpread *= 0.65; // Much tighter for rapid cycles
+      else if (marketRegime === "volatile") effectiveSpread *= 1.4;
+      else if (marketRegime === "strong_trend_up" || marketRegime === "strong_trend_down") effectiveSpread *= 1.2;
+      else if (marketRegime === "trend_up") effectiveSpread *= 0.8; // Tighter in mild uptrend
     }
   } catch { /* use base spread */ }
 
-  // Minimum profitable spread
-  const minProfitableSpread = 0.0025;
+  // Minimum profitable spread (lower = more cycles = more USDT gains)
+  const minProfitableSpread = 0.002; // 0.2% minimum — aggressive for USDT-first
   effectiveSpread = Math.max(effectiveSpread, minProfitableSpread);
 
   // Initialize grid if not exists
@@ -877,7 +878,7 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
   const configTrailingPct = (stratConfig.trailingStopPct ?? 0.5) / 100;
   const trailingPct = dynamicTrailingPct > 0 ? dynamicTrailingPct : configTrailingPct; // ATR-based trailing
   const trailingActivation = (stratConfig.trailingActivationPct ?? 0.5) / 100;
-  const maxHoldTimeMs = (stratConfig.maxHoldHours ?? 12) * 60 * 60 * 1000; // Default 48 hours max hold
+  const maxHoldTimeMs = (stratConfig.maxHoldHours ?? 4) * 60 * 60 * 1000; // Default 4 hours — fast USDT rotation
   const maxOpenPositions = stratConfig.maxOpenPositions ?? 3; // Max open positions per symbol
   // Minimum 0.5% net profit on ALL sells — NEVER sell below this threshold
   const MIN_PROFIT_PCT = 0.005; // 0.5% minimum net profit after fees
@@ -1909,8 +1910,8 @@ export async function startEngine(userId: number): Promise<{ success: boolean; e
           console.log(`[Engine] Periodic 4h report sent via Telegram`);
         } catch (e) { /* silent */ }
       }
-      // ─── Auto-Convert accumulated coins to USDT (every 15 cycles ~5 min) ───
-      if (cycleNum % 15 === 0) {
+      // ─── Auto-Convert accumulated coins to USDT (every 8 cycles ~2.5 min) — USDT-FIRST ───
+      if (cycleNum % 8 === 0) {
         try {
           await autoConvertCoinsToUSDT(engine);
           console.log(`[Engine] Auto-convert check completed`);
@@ -2047,12 +2048,13 @@ export async function startEngine(userId: number): Promise<{ success: boolean; e
           continue;
         }
 
-        // Single exchange mode
-        console.log(`[Engine] Running ${strat.strategyType} for ${strat.symbol} (${strat.category})`);
+        // Single exchange mode — USDT-FIRST: force linear on Bybit for all strategies
+        const forceLinear = engine.exchange === "bybit" || engine.exchange === "both";
+        console.log(`[Engine] Running ${strat.strategyType} for ${strat.symbol} (${forceLinear ? "linear" : strat.category})`);
         if (strat.strategyType === "grid") {
-          await runGridStrategy(engine, strat.symbol, engine.exchange === "kucoin" ? "spot" : "linear", dailyProfitMode); // Linear on Bybit, spot on KuCoin
+          await runGridStrategy(engine, strat.symbol, forceLinear ? "linear" : "spot", dailyProfitMode);
         } else if (strat.strategyType === "scalping") {
-          await runScalpingStrategy(engine, strat.symbol, cat as "spot" | "linear", dailyProfitMode);
+          await runScalpingStrategy(engine, strat.symbol, forceLinear ? "linear" : cat as "spot" | "linear", dailyProfitMode);
         }
       }
     } catch (e) {
@@ -2118,9 +2120,11 @@ export async function startEngine(userId: number): Promise<{ success: boolean; e
         if (strat.strategyType === "grid") await runGridStrategy(bybitEngine, strat.symbol, "linear"); // Force linear on Bybit to avoid locking capital in coins
         else if (strat.strategyType === "scalping") await runScalpingStrategy(bybitEngine, strat.symbol, cat as "spot" | "linear");
       } else {
-        console.log(`[Engine] First cycle: ${strat.strategyType} ${strat.symbol}`);
-        if (strat.strategyType === "grid") await runGridStrategy(engine, strat.symbol, engine.exchange === "kucoin" ? "spot" : "linear"); // Linear on Bybit, spot on KuCoin
-        else if (strat.strategyType === "scalping") await runScalpingStrategy(engine, strat.symbol, cat as "spot" | "linear");
+        // USDT-FIRST: force linear on Bybit for all strategies
+        const forceLinear = engine.exchange === "bybit" || engine.exchange === "both";
+        console.log(`[Engine] First cycle: ${strat.strategyType} ${strat.symbol} (${forceLinear ? "linear" : "spot"})`);
+        if (strat.strategyType === "grid") await runGridStrategy(engine, strat.symbol, forceLinear ? "linear" : "spot");
+        else if (strat.strategyType === "scalping") await runScalpingStrategy(engine, strat.symbol, forceLinear ? "linear" : cat as "spot" | "linear");
       }
     }
   }, 2000);

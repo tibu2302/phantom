@@ -68,6 +68,12 @@ export const appRouter = router({
           { symbol: "XRPUSDT", strategyType: "futures", market: "crypto", category: "linear", allocationPct: 15, enabled: true, config: { leverage: 3, takeProfitPct: 1.5 } },
           { symbol: "AVAXUSDT", strategyType: "futures", market: "crypto", category: "linear", allocationPct: 15, enabled: true, config: { leverage: 3, takeProfitPct: 1.5 } },
           { symbol: "XAUUSDT", strategyType: "futures", market: "tradfi", category: "linear", allocationPct: 15, enabled: true, config: { leverage: 3, takeProfitPct: 1.5 } },
+          // USDT-FIRST: More futures for multi-coin USDT gains
+          { symbol: "DOGEUSDT", strategyType: "futures", market: "crypto", category: "linear", allocationPct: 10, enabled: true, config: { leverage: 3, takeProfitPct: 1.5 } },
+          { symbol: "LINKUSDT", strategyType: "futures", market: "crypto", category: "linear", allocationPct: 10, enabled: true, config: { leverage: 3, takeProfitPct: 1.5 } },
+          { symbol: "ARBUSDT", strategyType: "futures", market: "crypto", category: "linear", allocationPct: 10, enabled: true, config: { leverage: 3, takeProfitPct: 1.5 } },
+          { symbol: "SUIUSDT", strategyType: "futures", market: "crypto", category: "linear", allocationPct: 10, enabled: true, config: { leverage: 3, takeProfitPct: 1.5 } },
+          { symbol: "ADAUSDT", strategyType: "futures", market: "crypto", category: "linear", allocationPct: 10, enabled: true, config: { leverage: 3, takeProfitPct: 1.5 } },
         ];
         let synced = 0;
         for (const strat of defaultStrats) {
@@ -100,6 +106,12 @@ export const appRouter = router({
         await db.upsertStrategy(ctx.user.id, { symbol: "XRPUSDT", strategyType: "futures", market: "crypto", category: "linear", allocationPct: 15, enabled: true, config: { leverage: 3, takeProfitPct: 1.5 } } as any);
         await db.upsertStrategy(ctx.user.id, { symbol: "AVAXUSDT", strategyType: "futures", market: "crypto", category: "linear", allocationPct: 15, enabled: true, config: { leverage: 3, takeProfitPct: 1.5 } } as any);
         await db.upsertStrategy(ctx.user.id, { symbol: "XAUUSDT", strategyType: "futures", market: "tradfi", category: "linear", allocationPct: 15, enabled: true, config: { leverage: 3, takeProfitPct: 1.5 } } as any);
+        // USDT-FIRST: More futures for multi-coin USDT gains
+        await db.upsertStrategy(ctx.user.id, { symbol: "DOGEUSDT", strategyType: "futures", market: "crypto", category: "linear", allocationPct: 10, enabled: true, config: { leverage: 3, takeProfitPct: 1.5 } } as any);
+        await db.upsertStrategy(ctx.user.id, { symbol: "LINKUSDT", strategyType: "futures", market: "crypto", category: "linear", allocationPct: 10, enabled: true, config: { leverage: 3, takeProfitPct: 1.5 } } as any);
+        await db.upsertStrategy(ctx.user.id, { symbol: "ARBUSDT", strategyType: "futures", market: "crypto", category: "linear", allocationPct: 10, enabled: true, config: { leverage: 3, takeProfitPct: 1.5 } } as any);
+        await db.upsertStrategy(ctx.user.id, { symbol: "SUIUSDT", strategyType: "futures", market: "crypto", category: "linear", allocationPct: 10, enabled: true, config: { leverage: 3, takeProfitPct: 1.5 } } as any);
+        await db.upsertStrategy(ctx.user.id, { symbol: "ADAUSDT", strategyType: "futures", market: "crypto", category: "linear", allocationPct: 10, enabled: true, config: { leverage: 3, takeProfitPct: 1.5 } } as any);
         console.log(`[Bot] Seeded default strategies for user ${ctx.user.id}`);
       }
       const result = await startEngine(ctx.user.id);
