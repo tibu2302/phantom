@@ -236,6 +236,7 @@ function DashboardLayoutContent({ children, setSidebarWidth }: DashboardLayoutCo
                     </DropdownMenuTrigger>
                     <DropdownMenuContent align="end" side="top" className="w-52 mb-2">
                       {[
+                        { icon: Activity, label: "AI Intelligence", path: "/intelligence" },
                         { icon: History, label: "Historial", path: "/trades" },
                         { icon: Key, label: "Claves API", path: "/api-keys" },
                         { icon: Settings, label: "Ajustes", path: "/settings" },
