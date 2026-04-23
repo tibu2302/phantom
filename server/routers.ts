@@ -6,6 +6,9 @@ import { z } from "zod";
 import * as db from "./db";
 import { invokeLLM } from "./_core/llm";
 import { startEngine, stopEngine, emergencyStopEngine, getLivePrices, isEngineRunning, getEngineCycles, getOpenPositions, withRetry } from "./tradingEngine";
+import { fetchFearGreedIndex, getFearGreedSignal, analyzeSentiment, detectCandlePatterns, getLearningInsights, getRLMultiplier } from "./aiEngine";
+import { getAdvancedDataSignal } from "./advancedData";
+import { autoTuneParameters, recordTradeForTuning, generatePerformanceReport } from "./autoOptimizer";
 
 export const appRouter = router({
   system: systemRouter,
@@ -557,10 +560,59 @@ export const appRouter = router({
         return { content: "AI analysis temporarily unavailable. Please try again.", sentiment: "neutral", title: titles[input.type] };
       }
     }),
-    history: protectedProcedure.query(async ({ ctx }) => {
+     history: protectedProcedure.query(async ({ ctx }) => {
       return db.getUserAnalyses(ctx.user.id);
     }),
   }),
-});
 
+  intelligence: router({
+    // Fear & Greed Index — real-time market emotion
+    fearGreed: protectedProcedure.query(async () => {
+      const fg = await fetchFearGreedIndex();
+      const signal = getFearGreedSignal(fg);
+      return { data: fg, signal };
+    }),
+
+    // Sentiment Analysis for a specific symbol
+    sentiment: protectedProcedure.input(z.object({ symbol: z.string() })).query(async ({ input }) => {
+      return analyzeSentiment(input.symbol);
+    }),
+
+    // AI Learning Insights — what the bot has learned
+    learningInsights: protectedProcedure.query(() => {
+      return getLearningInsights();
+    }),
+
+    // Auto-Optimizer current parameters
+    optimizerState: protectedProcedure.query(() => {
+      const tuning = autoTuneParameters();
+      return tuning;
+    }),
+
+    // Performance Report — comprehensive analytics
+    performanceReport: protectedProcedure.query(() => {
+      return generatePerformanceReport();
+    }),
+
+    // Full AI dashboard data — aggregated for frontend
+    dashboard: protectedProcedure.query(async () => {
+      const [fg, insights, tuning, perfReport] = await Promise.all([
+        fetchFearGreedIndex(),
+        Promise.resolve(getLearningInsights()),
+        Promise.resolve(autoTuneParameters()),
+        Promise.resolve(generatePerformanceReport()),
+      ]);
+      const fgSignal = getFearGreedSignal(fg);
+      const prices = getLivePrices();
+      return {
+        fearGreed: { data: fg, signal: fgSignal },
+        learning: insights,
+        optimizer: tuning,
+        performance: perfReport,
+        livePrices: prices,
+        timestamp: Date.now(),
+      };
+    }),
+  }),
+});
 export type AppRouter = typeof appRouter;

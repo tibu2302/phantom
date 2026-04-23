@@ -23,7 +23,7 @@ import { getLoginUrl } from "@/const";
 import { useIsMobile } from "@/hooks/useMobile";
 import {
   LayoutDashboard, LogOut, PanelLeft, Zap, Brain, Sparkles,
-  History, Key, Settings, Ghost, MoreHorizontal
+  History, Key, Settings, Ghost, MoreHorizontal, Activity
 } from "lucide-react";
 import { CSSProperties, useEffect, useRef, useState } from "react";
 import { useLocation } from "wouter";
@@ -44,6 +44,7 @@ const allMenuItems = [
   { icon: LayoutDashboard, label: "Panel", path: "/" },
   { icon: Zap, label: "Estrategias", path: "/strategies" },
   { icon: Brain, label: "Analista IA", path: "/ai-analyst" },
+  { icon: Activity, label: "AI Intelligence", path: "/intelligence" },
   { icon: Sparkles, label: "Oportunidades", path: "/opportunities" },
   { icon: History, label: "Historial", path: "/trades" },
   { icon: Key, label: "Claves API", path: "/api-keys" },

@@ -15,6 +15,7 @@ const Opportunities = lazy(() => import("./pages/Opportunities"));
 const Trades = lazy(() => import("./pages/Trades"));
 const Strategies = lazy(() => import("./pages/Strategies"));
 const Settings = lazy(() => import("./pages/Settings"));
+const Intelligence = lazy(() => import("./pages/Intelligence"));
 // Página de login local para despliegue en VPS propio (AUTH_MODE=local)
 const LocalLogin = lazy(() => import("./pages/LocalLogin"));
 
@@ -46,6 +47,7 @@ function Router() {
               <Route path="/opportunities" component={Opportunities} />
               <Route path="/trades" component={Trades} />
               <Route path="/api-keys" component={ApiKeys} />
+              <Route path="/intelligence" component={Intelligence} />
               <Route path="/settings" component={Settings} />
               <Route path="/404" component={NotFound} />
               <Route component={NotFound} />
