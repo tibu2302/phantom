@@ -37,6 +37,27 @@ import {
   scanArbitrage, updateArbPrice, aggregateMasterSignal,
   type MasterSignal, type MarketSession
 } from "./marketIntelligence";
+import {
+  analyzeSentiment, getFearGreedSignal, fetchFearGreedIndex,
+  detectCandlePatterns, detectAnomaly, recordTradeForLearning,
+  getRLMultiplier, getLearningInsights, getAISignal,
+  type AISignal, type SentimentResult, type PatternResult, type AnomalyResult
+} from "./aiEngine";
+import {
+  getAdvancedDataSignal, getOnChainSignal, getOpenInterestSignal,
+  detectWhaleActivity, getCrossExchangeSignal,
+  type AdvancedDataSignal
+} from "./advancedData";
+import {
+  getAdvancedStrategySignal, updatePairPrice, updateMomentumData,
+  calculateSmartExit, type AdvancedStrategySignal
+} from "./advancedStrategies";
+import {
+  autoTuneParameters, recordTradeForTuning, getAdaptiveState,
+  recordTradeResult as recordTradeResultOptimizer, getOptimizerSignal,
+  recordDailyReturn, generatePerformanceReport,
+  type OptimizerSignal
+} from "./autoOptimizer";
 
 // ─── Fee Constants (per exchange) ───
 const FEES: Record<string, { spot: number; linear: number }> = {
@@ -1055,6 +1076,13 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
 
       console.log(`[Grid] ${reason} ${symbol} @ ${price.toFixed(2)} buyPrice=${pos.buyPrice.toFixed(2)} high=${pos.highestPrice?.toFixed(2)} pnl=${pnl.toFixed(2)} order=${orderId}`);
 
+      // AI + Optimizer feedback: record trade for learning
+      try {
+        recordTradeForTuning("grid", pnl, (pnl / pos.tradeAmount) * 100);
+        recordTradeResultOptimizer(pnl);
+        recordTradeForLearning({ strategy: "grid", symbol, entryScore: smartScore?.confidence ?? 50, entryRegime: "unknown", entrySession: "unknown", entryFearGreed: 50, entryPatterns: [], pnlPercent: (pnl / pos.tradeAmount) * 100, holdTimeMinutes: 0, timestamp: Date.now() });
+      } catch { /* silent */ }
+
       // Telegram notification — only send for profitable exits
       if (pnl > 0) {
         await sendTelegramNotification(engine,
@@ -1253,6 +1281,16 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
         if (updatedState) {
           await db.upsertDailyPnl(engine.userId, parseFloat(updatedState.totalPnl ?? "0"), parseFloat(updatedState.currentBalance ?? "5000"), updatedState.totalTrades ?? 0);
         }
+
+        // AI + Optimizer feedback for grid level trades
+        if (level.side === "Sell" && pnl !== 0) {
+          try {
+            recordTradeForTuning("grid", pnl, (pnl / tradeAmount) * 100);
+            recordTradeResultOptimizer(pnl);
+            recordTradeForLearning({ strategy: "grid", symbol, entryScore: smartScore?.confidence ?? 50, entryRegime: "unknown", entrySession: "unknown", entryFearGreed: 50, entryPatterns: [], pnlPercent: (pnl / tradeAmount) * 100, holdTimeMinutes: 0, timestamp: Date.now() });
+          } catch { /* silent */ }
+        }
+
         traded = true;
       }
     }
@@ -1468,6 +1506,13 @@ async function runScalpingStrategy(engine: EngineState, symbol: string, category
         if (scalpState) {
           await db.upsertDailyPnl(engine.userId, parseFloat(scalpState.totalPnl ?? "0"), parseFloat(scalpState.currentBalance ?? "5000"), scalpState.totalTrades ?? 0);
         }
+
+        // AI + Optimizer feedback: record trade for learning
+        try {
+          recordTradeForTuning("scalping", pnl, (pnl / (pos.buyPrice * parseFloat(sellQty))) * 100);
+          recordTradeResultOptimizer(pnl);
+          recordTradeForLearning({ strategy: "scalping", symbol, entryScore: effectiveConfidence, entryRegime: "unknown", entrySession: "unknown", entryFearGreed: 50, entryPatterns: [], pnlPercent: (pnl / (pos.buyPrice * parseFloat(sellQty))) * 100, holdTimeMinutes: 0, timestamp: Date.now() });
+        } catch { /* silent */ }
 
         // Remove the closed position
         engine.scalpPositions[symbol] = existingPositions.filter(p => p !== pos);
@@ -1692,6 +1737,12 @@ async function runFuturesStrategy(engine: EngineState, symbol: string, dailyProf
         const pnl = calcNetPnl(grossPnl, pos.tradeAmount * pos.leverage, "linear", true, "bybit", holdTimeMs);
         // Track win/loss for cooldown system
         recordTradeResult(symbol, "futures", pnl > 0);
+        // AI + Optimizer feedback: record trade for learning
+        try {
+          recordTradeForTuning("futures", pnl, (pnl / (pos.tradeAmount * pos.leverage)) * 100);
+          recordTradeResultOptimizer(pnl);
+          recordTradeForLearning({ strategy: "futures", symbol, entryScore: 50, entryRegime: "unknown", entrySession: "unknown", entryFearGreed: 50, entryPatterns: [], pnlPercent: (pnl / (pos.tradeAmount * pos.leverage)) * 100, holdTimeMinutes: 0, timestamp: Date.now() });
+        } catch { /* silent */ }
 
         await db.insertTrade({
           userId: engine.userId, symbol, side: closeSide.toLowerCase() as "buy" | "sell", price: price.toString(),
@@ -2090,10 +2141,81 @@ export async function startEngine(userId: number): Promise<{ success: boolean; e
           const arbOpps = scanArbitrage(0.3);
           if (arbOpps.length > 0) {
             console.log(`[Intelligence] Arbitrage opportunities: ${arbOpps.map(a => `${a.symbol} ${a.spreadPct.toFixed(2)}%`).join(", ")}`);
-            // TODO: Execute arbitrage trades in future version
           }
         } catch { /* silent */ }
       }
+
+      // ─── AI ENGINE: Fear & Greed + Sentiment (every 20 cycles ~5min) ───
+      if (cycleNum % 20 === 0) {
+        try {
+          const fgData = await fetchFearGreedIndex();
+          const fgSignal = getFearGreedSignal(fgData);
+          if (fgSignal.strength > 30) {
+            console.log(`[AI] Fear&Greed: ${fgData?.score ?? '?'} (${fgData?.label ?? '?'}) → ${fgSignal.direction} (${fgSignal.strength}%)`);
+          }
+        } catch { /* silent */ }
+      }
+
+      // ─── AUTO-OPTIMIZER: Tune parameters every 120 cycles (~30min) ───
+      if (cycleNum % 120 === 0) {
+        try {
+          const tuning = autoTuneParameters();
+          const adaptive = getAdaptiveState();
+          console.log(`[Optimizer] Auto-tune: mode=${adaptive.mode} aggressiveness=${adaptive.aggressiveness.toFixed(2)} WR=${(adaptive.recentWinRate*100).toFixed(0)}%`);
+          // Generate performance report
+          const perfReport = generatePerformanceReport();
+          if (perfReport.totalTrades > 0) {
+            console.log(`[Optimizer] Performance: WR=${(perfReport.winRate*100).toFixed(0)}% PF=${perfReport.profitFactor.toFixed(2)} Sharpe=${perfReport.sharpeRatio.toFixed(2)} trades=${perfReport.totalTrades}`);
+          }
+        } catch { /* silent */ }
+      }
+
+      // ─── ADVANCED DATA: On-chain + Open Interest + Whale (every 30 cycles ~7.5min) ───
+      if (cycleNum % 30 === 0) {
+        try {
+          for (const sym of ["BTCUSDT", "ETHUSDT"]) {
+            const price = livePrices.get(sym)?.lastPrice ?? 0;
+            const advData = await getAdvancedDataSignal(sym, price, 1000000, 500000, 0, 1.5);
+            if (advData.confidence > 40) {
+              console.log(`[AdvData] ${sym}: ${advData.direction} conf=${advData.confidence}% reasons=${advData.reasons.join(", ")}`);
+            }
+          }
+        } catch { /* silent */ }
+      }
+
+      // ─── ANOMALY DETECTION: Check for unusual market behavior (every 15 cycles ~3.75min) ───
+      if (cycleNum % 15 === 0) {
+        try {
+          for (const sym of ["BTCUSDT", "ETHUSDT", "SOLUSDT"]) {
+            const klines = klineCache.get(`${sym}_15`)?.data;
+            if (klines && klines.closes.length > 20) {
+              const anomalyResult = detectAnomaly(klines, livePrices.get(sym)?.lastPrice ?? 0);
+              const anomalies = anomalyResult.detected ? [{ type: anomalyResult.type, severity: anomalyResult.severity, action: anomalyResult.action }] : [];
+              if (anomalies.length > 0) {
+                console.log(`[AI] Anomalies ${sym}: ${anomalies.map(a => `${a.type}(${a.severity})`).join(", ")}`);
+                // Alert on critical anomalies
+                const critical = anomalies.filter(a => a.severity === "critical");
+                if (critical.length > 0) {
+                  await sendTelegramNotification(engine,
+                    `⚠️ <b>PHANTOM — Anomalía Detectada</b>\n` +
+                    `Par: ${sym}\n` +
+                    `Tipo: ${critical.map(a => a.type).join(", ")}\n` +
+                    `Acción: ${critical[0].action}`
+                  );
+                }
+              }
+            }
+          }
+        } catch { /* silent */ }
+      }
+
+      // ─── PAIR PRICE TRACKING: Update every cycle for pairs trading ───
+      try {
+        for (const sym of ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "DOGEUSDT", "AVAXUSDT"]) {
+          const ticker = livePrices.get(sym);
+          if (ticker) updatePairPrice(sym, ticker.lastPrice);
+        }
+      } catch { /* silent */ }
 
       console.log(`[Engine] Cycle #${cycleNum} for user ${userId} (session=${currentSession.session}, boost=${intradayBoost})`);
 
