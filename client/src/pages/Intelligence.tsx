@@ -216,14 +216,14 @@ export default function Intelligence() {
             <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
               <StatCard icon={BarChart3} label="Grid Spread" value={`${optimizer.gridSpreadMultiplier.toFixed(2)}x`}
                 subtext={`Max ${optimizer.maxPositionsGrid} pos`} />
-              <StatCard icon={Zap} label="Scalp Confianza" value={`${optimizer.scalpConfidenceMin}%`}
-                subtext={`Max ${optimizer.maxPositionsScalp} pos`} />
+              <StatCard icon={Zap} label="Scalp Confianza" value={`${optimizer.scalpingConfidenceMin}%`}
+                subtext="Umbral mínimo" />
               <StatCard icon={TrendingUp} label="Futures Confianza" value={`${optimizer.futuresConfidenceMin}%`}
                 subtext={`Max ${optimizer.maxPositionsFutures} pos`} />
-              <StatCard icon={Shield} label="Sizing Global" value={`${optimizer.globalSizingMultiplier.toFixed(2)}x`}
-                subtext={`Ciclo: ${optimizer.cycleIntervalMs / 1000}s`} />
+              <StatCard icon={Shield} label="Position Size" value={`${optimizer.positionSizeMultiplier.toFixed(2)}x`}
+                subtext="Multiplicador" />
               <StatCard icon={Target} label="Grid Confianza" value={`${optimizer.gridConfidenceMin}%`} />
-              <StatCard icon={Gauge} label="Futures Leverage" value={`${optimizer.futuresLeverageMax}x`} />
+              <StatCard icon={Gauge} label="Trailing Stop" value={`${optimizer.trailingStopMultiplier.toFixed(2)}x`} />
             </div>
           ) : (
             <div className="text-center text-muted-foreground py-6">Cargando parámetros...</div>

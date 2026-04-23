@@ -564,40 +564,40 @@
 ## Superinteligencia v8.0 — 20 Mejoras de IA Avanzada (23 Abril 2026)
 
 ### IA Real (Machine Learning):
-- [ ] 1. Sentiment Analysis con LLM — analizar noticias crypto en tiempo real con GPT
-- [ ] 2. Fear & Greed Index — integrar índice de miedo/codicia del mercado
-- [ ] 3. Pattern Recognition — detectar patrones de velas (head & shoulders, double bottom, etc.)
-- [ ] 4. Reinforcement Learning — el bot aprende de sus propios trades
-- [ ] 5. Anomaly Detection — detectar pump & dump, manipulación, flash crashes
+- [x] 1. Sentiment Analysis con LLM — analizar noticias crypto en tiempo real con GPT
+- [x] 2. Fear & Greed Index — integrar índice de miedo/codicia del mercado
+- [x] 3. Pattern Recognition — detectar patrones de velas (head & shoulders, double bottom, etc.)
+- [x] 4. Reinforcement Learning — el bot aprende de sus propios trades
+- [x] 5. Anomaly Detection — detectar pump & dump, manipulación, flash crashes
 
 ### Datos Avanzados:
-- [ ] 6. On-Chain Analytics — movimientos de ballenas en blockchain
-- [ ] 7. Open Interest Analysis — analizar OI de futuros para predecir squeezes
-- [ ] 8. Liquidation Heatmap — mapear dónde están las liquidaciones masivas
-- [ ] 9. Whale Alert — monitorear transacciones grandes en tiempo real
-- [ ] 10. Cross-Exchange Intelligence — monitorear precios en Binance, OKX, Coinbase
+- [x] 6. On-Chain Analytics — movimientos de ballenas en blockchain
+- [x] 7. Open Interest Analysis — analizar OI de futuros para predecir squeezes
+- [x] 8. Liquidation Heatmap — mapear dónde están las liquidaciones masivas
+- [x] 9. Whale Alert — monitorear transacciones grandes en tiempo real
+- [x] 10. Cross-Exchange Intelligence — monitorear precios en Binance, OKX, Coinbase
 
 ### Estrategias Avanzadas:
-- [ ] 11. DCA Inteligente — dividir entradas en 3-5 partes con timing de IA
-- [ ] 12. Pairs Trading — apostar a correlaciones que se rompen
-- [ ] 13. Momentum Cascade — entrar en monedas que aún no subieron cuando una lidera
-- [ ] 14. Smart Exit con IA — predecir punto óptimo de salida
-- [ ] 15. News Trading Automático — procesar noticias y ejecutar antes que el mercado
+- [x] 11. DCA Inteligente — dividir entradas en 3-5 partes con timing de IA
+- [x] 12. Pairs Trading — apostar a correlaciones que se rompen
+- [x] 13. Momentum Cascade — entrar en monedas que aún no subieron cuando una lidera
+- [x] 14. Smart Exit con IA — predecir punto óptimo de salida
+- [x] 15. News Trading Automático — procesar noticias y ejecutar antes que el mercado
 
 ### Optimización:
-- [ ] 16. Auto-Tuning de Parámetros — ajustar spreads, umbrales, leverage automáticamente
-- [ ] 17. Market Microstructure — analizar order flow tick-by-tick
-- [ ] 18. Portfolio Optimization Markowitz — combinación óptima de monedas
-- [ ] 19. Adaptive Learning Rate — agresividad dinámica basada en performance
-- [ ] 20. Sync y deploy
+- [x] 16. Auto-Tuning de Parámetros — ajustar spreads, umbrales, leverage automáticamente
+- [x] 17. Market Microstructure — analizar order flow tick-by-tick
+- [x] 18. Portfolio Optimization Markowitz — combinación óptima de monedas
+- [x] 19. Adaptive Learning Rate — agresividad dinámica basada en performance
+- [x] 20. Sync y deploy
 
 ## Web App Dashboard — Mostrar toda la inteligencia
-- [ ] Endpoint tRPC: AI signals (fear&greed, sentiment, pattern recognition, anomalies)
-- [ ] Endpoint tRPC: Optimizer state (auto-tuning, adaptive learning, portfolio allocation)
-- [ ] Endpoint tRPC: Performance analytics (win rate, Sharpe, profit factor, by-strategy)
-- [ ] Endpoint tRPC: Market intelligence (BTC correlation, sessions, open interest, funding rate)
-- [ ] Dashboard: Panel de AI Intelligence con Fear & Greed Index, Sentiment, Patterns detectados
-- [ ] Dashboard: Panel de Performance Analytics con métricas avanzadas y gráficos
-- [ ] Dashboard: Panel de Market Intelligence con sesión activa, BTC trend, funding rates
-- [ ] Dashboard: Panel de Optimizer con auto-tuning params, adaptive state, portfolio allocation
-- [ ] Dashboard: Todo interconectado con el motor de trading en tiempo real
+- [x] Endpoint tRPC: AI signals (fear&greed, sentiment, pattern recognition, anomalies)
+- [x] Endpoint tRPC: Optimizer state (auto-tuning, adaptive learning, portfolio allocation)
+- [x] Endpoint tRPC: Performance analytics (win rate, Sharpe, profit factor, by-strategy)
+- [x] Endpoint tRPC: Market intelligence (BTC correlation, sessions, open interest, funding rate)
+- [x] Dashboard: Panel de AI Intelligence con Fear & Greed Index, Sentiment, Patterns detectados
+- [x] Dashboard: Panel de Performance Analytics con métricas avanzadas y gráficos
+- [x] Dashboard: Panel de Market Intelligence con sesión activa, BTC trend, funding rates
+- [x] Dashboard: Panel de Optimizer con auto-tuning params, adaptive state, portfolio allocation
+- [x] Dashboard: Todo interconectado con el motor de trading en tiempo real
