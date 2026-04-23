@@ -698,7 +698,7 @@ function generateGridLevels(currentPrice: number, gridCount: number = 10, gridSp
   return levels;
 }
 
-async function runGridStrategy(engine: EngineState, symbol: string, category: "spot" | "linear" = "spot") {
+async function runGridStrategy(engine: EngineState, symbol: string, category: "spot" | "linear" = "spot", dailyProfitMode: "normal" | "cautious" | "stopped" = "normal") {
   const ticker = await fetchTicker(engine.client, symbol, category);
   if (!ticker) return;
 
@@ -716,6 +716,14 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
   if (!hasAdequateVolume(symbol)) {
     console.log(`[Grid] ${symbol} SKIP — insufficient volume/liquidity`);
     return;
+  }
+
+  // ─── Daily Profit Target Guard ───
+  // In "stopped" mode: skip new buys entirely (existing positions still close normally)
+  // In "cautious" mode: only buy if smart score >= 75 (exceptional opportunity)
+  if (dailyProfitMode === "stopped") {
+    // Still allow sells/trailing stops to close existing positions
+    // But skip the entire buy logic below
   }
 
   // ─── SMART ANALYSIS v6.0: Multi-indicator scoring + Market Regime ───
@@ -1037,6 +1045,20 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
       : price >= level.price * (1 - tolerance);
 
     if (shouldFill) {
+      // ─── Daily Profit Target Guard for BUY ───
+      if (level.side === "Buy" && dailyProfitMode === "stopped") {
+        console.log(`[Grid] SKIP BUY ${symbol} @ ${level.price.toFixed(2)} — DAILY TARGET 5%+ HIT, no new trades`);
+        continue;
+      }
+      if (level.side === "Buy" && dailyProfitMode === "cautious") {
+        // Only allow exceptional opportunities (score >= 75)
+        if (!smartScore || smartScore.confidence < 75 || smartScore.direction !== "buy") {
+          console.log(`[Grid] SKIP BUY ${symbol} @ ${level.price.toFixed(2)} — DAILY 2%+ mode, score ${smartScore?.confidence ?? 0} < 75`);
+          continue;
+        }
+        console.log(`[Grid] 💡 EXCEPTIONAL BUY ${symbol} @ ${level.price.toFixed(2)} — score ${smartScore.confidence} >= 75 despite daily target`);
+      }
+
       // ─── Smart Score guard: skip BUY if analysis says sell or low confidence ───
       if (level.side === "Buy" && !trendAllowsBuy) {
         console.log(`[Grid] SKIP BUY ${symbol} @ ${level.price.toFixed(2)} — ${trendLabel} trend (regime=${marketRegime})`);
@@ -1236,7 +1258,7 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
 }
 
 // ─── Scalping Strategy ───
-async function runScalpingStrategy(engine: EngineState, symbol: string, category: "spot" | "linear" = "linear") {
+async function runScalpingStrategy(engine: EngineState, symbol: string, category: "spot" | "linear" = "linear", dailyProfitMode: "normal" | "cautious" | "stopped" = "normal") {
   const ticker = await fetchTicker(engine.client, symbol, category);
   if (!ticker) return;
 
@@ -1274,7 +1296,22 @@ async function runScalpingStrategy(engine: EngineState, symbol: string, category
     signal = smartScore.direction === "buy" ? "Buy" : smartScore.direction === "sell" ? "Sell" : null;
   }
 
-  console.log(`[Scalp] ${symbol} SMART: price=${price.toFixed(2)} score=${smartScore.confidence} dir=${smartScore.direction} regime=${smartScore.regime} signal=${signal ?? 'none'} reasons=${reasons.length} cooldown=${scalpCooldown.toFixed(1)}x`);
+  console.log(`[Scalp] ${symbol} SMART: price=${price.toFixed(2)} score=${smartScore.confidence} dir=${smartScore.direction} regime=${smartScore.regime} signal=${signal ?? 'none'} reasons=${reasons.length} cooldown=${scalpCooldown.toFixed(1)}x dailyMode=${dailyProfitMode}`);
+
+  // ─── Daily Profit Target Guard for Scalping ───
+  if (signal === "Buy") {
+    if (dailyProfitMode === "stopped") {
+      console.log(`[Scalp] SKIP BUY ${symbol} — DAILY TARGET 5%+ HIT, no new trades`);
+      signal = null;
+    } else if (dailyProfitMode === "cautious" && smartScore.confidence < 75) {
+      console.log(`[Scalp] SKIP BUY ${symbol} — DAILY 2%+ mode, score ${smartScore.confidence} < 75`);
+      signal = null;
+    } else if (dailyProfitMode === "cautious" && smartScore.confidence >= 75) {
+      console.log(`[Scalp] 💡 EXCEPTIONAL BUY ${symbol} — score ${smartScore.confidence} >= 75 despite daily target`);
+    }
+  }
+  // Sells always allowed (closing existing positions)
+
   if (signal) {
     const strats = await db.getUserStrategies(engine.userId);
     const strat = strats.find(s => s.symbol === symbol && s.strategyType === "scalping") ?? strats.find(s => s.symbol === symbol);
@@ -1400,7 +1437,7 @@ async function runScalpingStrategy(engine: EngineState, symbol: string, category
 
 // ─── Futures Long + Short Strategy ───
 // Supports both LONG and SHORT positions with dynamic take-profit and trailing stops
-async function runFuturesStrategy(engine: EngineState, symbol: string) {
+async function runFuturesStrategy(engine: EngineState, symbol: string, dailyProfitMode: "normal" | "cautious" | "stopped" = "normal") {
   const ticker = await fetchTicker(engine.client, symbol, "linear");
   if (!ticker) return;
 
@@ -1589,8 +1626,14 @@ async function runFuturesStrategy(engine: EngineState, symbol: string) {
     return;
   }
 
+  // ─── Daily Profit Target Guard for Futures ───
+  if (dailyProfitMode === "stopped") {
+    console.log(`[Futures] ${symbol} SKIP entry — DAILY TARGET 5%+ HIT, no new trades`);
+    return;
+  }
+
   // Smart scoring determines entry direction
-  const minFuturesConfidence = 50; // Futures needs high confidence (leveraged, no SL — enter wisely)
+  const minFuturesConfidence = dailyProfitMode === "cautious" ? 75 : 50; // Higher bar in cautious mode
   let entryDirection: "long" | "short" | null = null;
 
   if (futSmartScore.direction === "buy" && futSmartScore.confidence >= minFuturesConfidence && longPositions.length < 2) {
@@ -1603,6 +1646,10 @@ async function runFuturesStrategy(engine: EngineState, symbol: string) {
     if (futSmartScore.regime !== "strong_trend_up" && futSmartScore.regime !== "trend_up") {
       entryDirection = "short";
     }
+  }
+
+  if (dailyProfitMode === "cautious" && entryDirection) {
+    console.log(`[Futures] 💡 EXCEPTIONAL ${entryDirection.toUpperCase()} ${symbol} — score ${futSmartScore.confidence} >= 75 despite daily target`);
   }
 
   if (!entryDirection) {
@@ -1890,8 +1937,55 @@ export async function startEngine(userId: number): Promise<{ success: boolean; e
         } catch (e) { /* silent */ }
       }
 
+      // ─── DAILY PROFIT TARGET SYSTEM ───
+      // When daily profit reaches 2%+: only allow exceptional opportunities (score >= 75)
+      // When daily profit reaches 5%+: STOP all new trades completely
+      const DAILY_TARGET_CAUTIOUS = 0.02; // 2% = enter cautious mode
+      const DAILY_TARGET_STOP = 0.05;     // 5% = full stop
+      const EXCEPTIONAL_SCORE = 75;       // Only trade with score >= 75 in cautious mode
+
+      let dailyProfitMode: "normal" | "cautious" | "stopped" = "normal";
+      try {
+        const dpState = await db.getOrCreateBotState(userId);
+        const todayPnl = parseFloat(dpState?.todayPnl ?? "0");
+        const capital = parseFloat(dpState?.initialBalance ?? dpState?.currentBalance ?? "5000");
+        const dailyProfitPct = capital > 0 ? todayPnl / capital : 0;
+
+        if (dailyProfitPct >= DAILY_TARGET_STOP) {
+          dailyProfitMode = "stopped";
+          // Notify once per day
+          const todayStr = new Date().toISOString().slice(0, 10);
+          const stopKey = `daily_stop_${todayStr}`;
+          if (!lastErrorNotif.has(stopKey)) {
+            lastErrorNotif.set(stopKey, Date.now());
+            await sendTelegramNotification(engine,
+              `🏆 <b>PHANTOM — Meta Diaria Alcanzada!</b>\n\n` +
+              `Ganancia hoy: <b>+$${todayPnl.toFixed(2)} (+${(dailyProfitPct * 100).toFixed(1)}%)</b>\n` +
+              `Capital: $${capital.toFixed(2)}\n\n` +
+              `🛑 Bot en PAUSA — protegiendo ganancias del día.\n` +
+              `Las posiciones abiertas siguen cerrándose normalmente.`
+            );
+          }
+          console.log(`[Engine] 🏆 DAILY TARGET HIT: +${(dailyProfitPct * 100).toFixed(1)}% ($${todayPnl.toFixed(2)}) — STOPPED (>= 5%)`);
+        } else if (dailyProfitPct >= DAILY_TARGET_CAUTIOUS) {
+          dailyProfitMode = "cautious";
+          // Notify once per day
+          const todayStr = new Date().toISOString().slice(0, 10);
+          const cautionKey = `daily_cautious_${todayStr}`;
+          if (!lastErrorNotif.has(cautionKey)) {
+            lastErrorNotif.set(cautionKey, Date.now());
+            await sendTelegramNotification(engine,
+              `✅ <b>PHANTOM — Meta Diaria 2% Alcanzada</b>\n\n` +
+              `Ganancia hoy: <b>+$${todayPnl.toFixed(2)} (+${(dailyProfitPct * 100).toFixed(1)}%)</b>\n\n` +
+              `🧠 Modo INTELIGENTE activado — solo operaciones excepcionales (score >= ${EXCEPTIONAL_SCORE}).`
+            );
+          }
+          console.log(`[Engine] ✅ DAILY TARGET 2%: +${(dailyProfitPct * 100).toFixed(1)}% ($${todayPnl.toFixed(2)}) — CAUTIOUS MODE (only score >= ${EXCEPTIONAL_SCORE})`);
+        }
+      } catch (e) { /* keep normal mode on error */ }
+
       const strats = await db.getUserStrategies(userId);
-      console.log(`[Engine] Found ${strats.length} strategies, ${strats.filter(s => s.enabled).length} enabled`);
+      console.log(`[Engine] Found ${strats.length} strategies, ${strats.filter(s => s.enabled).length} enabled (dailyMode=${dailyProfitMode})`);
 
       for (const strat of strats) {
         if (!strat.enabled) continue;
@@ -1905,17 +1999,17 @@ export async function startEngine(userId: number): Promise<{ success: boolean; e
               const bybitClient = new RestClientV5({ key: bybitKeys.apiKey, secret: bybitKeys.apiSecret });
               const bybitEngine: EngineState = { ...engine, client: bybitClient, exchange: "bybit", kucoinClient: null };
               console.log(`[Engine] Running ${strat.strategyType} for ${strat.symbol} on Bybit (forced)`);
-              if (strat.strategyType === "scalping") await runScalpingStrategy(bybitEngine, strat.symbol, "linear");
-              else if (strat.strategyType === "futures") await runFuturesLongOnly(bybitEngine, strat.symbol);
-              else await runGridStrategy(bybitEngine, strat.symbol, "linear");
+              if (strat.strategyType === "scalping") await runScalpingStrategy(bybitEngine, strat.symbol, "linear", dailyProfitMode);
+              else if (strat.strategyType === "futures") await runFuturesLongOnly(bybitEngine, strat.symbol, dailyProfitMode);
+              else await runGridStrategy(bybitEngine, strat.symbol, "linear", dailyProfitMode);
             } else {
               console.log(`[Engine] Skipping ${strat.symbol} — no Bybit keys available`);
             }
           } else {
             console.log(`[Engine] Running ${strat.strategyType} for ${strat.symbol} on Bybit`);
-            if (strat.strategyType === "scalping") await runScalpingStrategy(engine, strat.symbol, "linear");
-            else if (strat.strategyType === "futures") await runFuturesLongOnly(engine, strat.symbol);
-            else await runGridStrategy(engine, strat.symbol, "linear");
+            if (strat.strategyType === "scalping") await runScalpingStrategy(engine, strat.symbol, "linear", dailyProfitMode);
+            else if (strat.strategyType === "futures") await runFuturesLongOnly(engine, strat.symbol, dailyProfitMode);
+            else await runGridStrategy(engine, strat.symbol, "linear", dailyProfitMode);
           }
           continue;
         }
@@ -1928,12 +2022,12 @@ export async function startEngine(userId: number): Promise<{ success: boolean; e
               const bybitClient = new RestClientV5({ key: bybitKeys.apiKey, secret: bybitKeys.apiSecret });
               const bybitEngine: EngineState = { ...engine, client: bybitClient, exchange: "bybit", kucoinClient: null };
               console.log(`[Engine] Running futures for ${strat.symbol} on Bybit (forced)`);
-              await runFuturesLongOnly(bybitEngine, strat.symbol);
+              await runFuturesLongOnly(bybitEngine, strat.symbol, dailyProfitMode);
             }
           } else {
             console.log(`[Engine] Running futures for ${strat.symbol} on Bybit`);
             const bybitEngine: EngineState = { ...engine, exchange: "bybit", kucoinClient: null };
-            await runFuturesLongOnly(bybitEngine, strat.symbol);
+            await runFuturesLongOnly(bybitEngine, strat.symbol, dailyProfitMode);
           }
           continue;
         }
@@ -1943,22 +2037,22 @@ export async function startEngine(userId: number): Promise<{ success: boolean; e
           if (engine.kucoinClient) {
             const kucoinEngine: EngineState = { ...engine, exchange: "kucoin" };
             console.log(`[Engine] Running ${strat.strategyType} for ${strat.symbol} on KuCoin`);
-            if (strat.strategyType === "grid") await runGridStrategy(kucoinEngine, strat.symbol, "spot");
-            else if (strat.strategyType === "scalping") await runScalpingStrategy(kucoinEngine, strat.symbol, "spot");
+            if (strat.strategyType === "grid") await runGridStrategy(kucoinEngine, strat.symbol, "spot", dailyProfitMode);
+            else if (strat.strategyType === "scalping") await runScalpingStrategy(kucoinEngine, strat.symbol, "spot", dailyProfitMode);
           }
           const bybitEngine: EngineState = { ...engine, exchange: "bybit", kucoinClient: null };
           console.log(`[Engine] Running ${strat.strategyType} for ${strat.symbol} on Bybit`);
-          if (strat.strategyType === "grid") await runGridStrategy(bybitEngine, strat.symbol, "linear"); // Force linear on Bybit to avoid locking capital in coins
-          else if (strat.strategyType === "scalping") await runScalpingStrategy(bybitEngine, strat.symbol, cat as "spot" | "linear");
+          if (strat.strategyType === "grid") await runGridStrategy(bybitEngine, strat.symbol, "linear", dailyProfitMode); // Force linear on Bybit to avoid locking capital in coins
+          else if (strat.strategyType === "scalping") await runScalpingStrategy(bybitEngine, strat.symbol, cat as "spot" | "linear", dailyProfitMode);
           continue;
         }
 
         // Single exchange mode
         console.log(`[Engine] Running ${strat.strategyType} for ${strat.symbol} (${strat.category})`);
         if (strat.strategyType === "grid") {
-          await runGridStrategy(engine, strat.symbol, engine.exchange === "kucoin" ? "spot" : "linear"); // Linear on Bybit, spot on KuCoin
+          await runGridStrategy(engine, strat.symbol, engine.exchange === "kucoin" ? "spot" : "linear", dailyProfitMode); // Linear on Bybit, spot on KuCoin
         } else if (strat.strategyType === "scalping") {
-          await runScalpingStrategy(engine, strat.symbol, cat as "spot" | "linear");
+          await runScalpingStrategy(engine, strat.symbol, cat as "spot" | "linear", dailyProfitMode);
         }
       }
     } catch (e) {

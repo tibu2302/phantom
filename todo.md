@@ -482,13 +482,22 @@
 - [ ] Asegurar Futures solo cierra en profit (TP o trailing en profit)
 - [ ] Verificar Scalping solo vende en profit
 - [ ] Subir confianza mínima del smart score para entrar (mejor entrada = no necesitar SL)
-- [ ] Sync y deploy
+- [x] Sync y deploy
 
 ## Ganancia mínima 0.5% neta en TODAS las ventas (23 Abril 2026)
-- [ ] Grid: trailing stop solo vende si ganancia neta >= 0.5% del tradeAmount
-- [ ] Grid: time-profit solo cierra si ganancia neta >= 0.5%
-- [ ] Grid: grid level sells solo si ganancia neta >= 0.5%
-- [ ] Scalping: solo vende si ganancia neta >= 0.5% del tradeAmount
-- [ ] Futures: TP y trailing solo cierran si ganancia neta >= 0.5% del tradeAmount
-- [ ] Auto-convert: solo vende si precio actual > avgBuyPrice + 0.5% + fees
+- [x] Grid: trailing stop solo vende si ganancia neta >= 0.5% del tradeAmount
+- [x] Grid: time-profit solo cierra si ganancia neta >= 0.5%
+- [x] Grid: grid level sells solo si ganancia neta >= 0.5%
+- [x] Scalping: solo vende si ganancia neta >= 0.5% del tradeAmount
+- [x] Futures: TP y trailing solo cierran si ganancia neta >= 0.5% del tradeAmount
+- [x] Auto-convert: solo vende si precio actual > avgBuyPrice + 0.5% + fees
+- [x] Sync y deploy
+
+## Meta Diaria Inteligente (23 Abril 2026)
+- [ ] Calcular % ganancia diaria vs capital al inicio del día
+- [ ] Al alcanzar 2%+ diario: entrar en modo "protección de ganancias" — solo operar con score >= 75
+- [ ] Al alcanzar 5%+ diario: frenar completamente — no más operaciones nuevas
+- [ ] Notificación Telegram cuando se alcanza la meta diaria
+- [ ] Permitir que posiciones abiertas sigan cerrando normalmente (solo bloquear NUEVAS compras)
+- [ ] Log claro de por qué se bloquea cada operación
 - [ ] Sync y deploy
