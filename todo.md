@@ -462,26 +462,26 @@
 - [x] Máximo 3 reintentos con delay 1s, 2s, 4s antes de reportar error real
 
 ## Motor de Trading Inteligente v6.0 — Abril 23
-- [ ] Indicadores avanzados: ATR, VWAP, OBV, Stochastic RSI, ADX
-- [ ] Detección de divergencias RSI y MACD (señales de reversión potentes)
-- [ ] Sistema de scoring multi-indicador (0-100) para filtrar señales débiles
-- [ ] Detección de régimen de mercado (trending, ranging, volatile) con adaptación automática
-- [ ] Grid inteligente: sizing dinámico basado en confianza del score
-- [ ] Trailing stop dinámico basado en ATR (no porcentaje fijo)
-- [ ] Filtro de momentum (ADX) para evitar entradas en mercado plano
-- [ ] Volume Profile: detectar zonas de soporte/resistencia por volumen
-- [ ] Cooldown inteligente post-pérdida (reducir tamaño después de pérdidas consecutivas)
-- [ ] Optimización de umbrales por condición de mercado
+- [x] Indicadores avanzados: ATR, VWAP, OBV, Stochastic RSI, ADX
+- [x] Detección de divergencias RSI y MACD (señales de reversión potentes)
+- [x] Sistema de scoring multi-indicador (0-100) para filtrar señales débiles
+- [x] Detección de régimen de mercado (trending, ranging, volatile) con adaptación automática
+- [x] Grid inteligente: sizing dinámico basado en confianza del score
+- [x] Trailing stop dinámico basado en ATR (no porcentaje fijo)
+- [x] Filtro de momentum (ADX) para evitar entradas en mercado plano
+- [x] Volume Profile: detectar zonas de soporte/resistencia por volumen
+- [x] Cooldown inteligente post-pérdida (reducir tamaño después de pérdidas consecutivas)
+- [x] Optimización de umbrales por condición de mercado
 
 ## Eliminar Stop-Loss — Solo vender en ganancia (23 Abril 2026)
-- [ ] Eliminar STOP-LOSS completamente en Grid strategy (nunca vender a pérdida, sin excepciones)
-- [ ] Eliminar TIME-STOP que vende a pérdida en Grid (solo cerrar si hay ganancia)
-- [ ] Asegurar trailing stop SOLO vende cuando hay ganancia neta positiva
-- [ ] Eliminar STOP-LOSS en Futures strategy (holdear hasta profit)
-- [ ] Eliminar TIME-STOP en Futures que cierra en pérdida
-- [ ] Asegurar Futures solo cierra en profit (TP o trailing en profit)
-- [ ] Verificar Scalping solo vende en profit
-- [ ] Subir confianza mínima del smart score para entrar (mejor entrada = no necesitar SL)
+- [x] Eliminar STOP-LOSS completamente en Grid strategy (nunca vender a pérdida, sin excepciones)
+- [x] Eliminar TIME-STOP que vende a pérdida en Grid (solo cerrar si hay ganancia)
+- [x] Asegurar trailing stop SOLO vende cuando hay ganancia neta positiva
+- [x] Eliminar STOP-LOSS en Futures strategy (holdear hasta profit)
+- [x] Eliminar TIME-STOP en Futures que cierra en pérdida
+- [x] Asegurar Futures solo cierra en profit (TP o trailing en profit)
+- [x] Verificar Scalping solo vende en profit
+- [x] Subir confianza mínima del smart score para entrar (mejor entrada = no necesitar SL)
 - [x] Sync y deploy
 
 ## Ganancia mínima 0.5% neta en TODAS las ventas (23 Abril 2026)
