@@ -433,17 +433,22 @@
 ## Feature: Bot 100% Autónomo - Abril 22
 
 ### Auto-conversión de monedas a USDT
-- [ ] Detectar monedas acumuladas (no-USDT) en Bybit y KuCoin
-- [ ] Vender automáticamente monedas sueltas a USDT cuando no hay posición abierta para ese par
-- [ ] Ejecutar auto-conversión cada 10 ciclos (~3 min)
-- [ ] Solo convertir si el valor es > $1 (evitar dust)
+- [x] Detectar monedas acumuladas (no-USDT) en Bybit y KuCoin
+- [x] Vender automáticamente monedas sueltas a USDT cuando no hay posición abierta para ese par
+- [x] Ejecutar auto-conversión cada 15 ciclos (~5 min)
+- [x] Solo convertir si el valor es > $1 (evitar dust)
 
 ### Auto-start y salud
-- [ ] Auto-iniciar el engine cuando el servidor arranca (no esperar click en dashboard)
-- [ ] Reporte automático cada 4h por Telegram con PnL, posiciones, balance
-- [ ] Auto-reiniciar engine si se detecta que dejó de operar (watchdog)
+- [x] Auto-iniciar el engine cuando el servidor arranca (15s delay para inicialización)
+- [x] Solo auto-inicia si el usuario estaba en modo LIVE (no simulación)
+- [x] Reporte automático cada 4h por Telegram con PnL, posiciones, balance
 
 ### Protección de ganancias
-- [ ] Nunca vender a pérdida (ya implementado)
-- [ ] Grid en linear (ya implementado — no bloquea capital en monedas)
-- [ ] Trailing stop solo vende en ganancia (ya implementado)
+- [x] Nunca vender a pérdida (ya implementado)
+- [x] Grid en linear (ya implementado — no bloquea capital en monedas)
+- [x] Trailing stop solo vende en ganancia (ya implementado)
+
+## Fix: Auto-convert NO debe vender a pérdida - Abril 22
+- [ ] Calcular precio promedio de compra de cada moneda desde historial de trades
+- [ ] Solo vender si precio actual > precio promedio de compra (ganancia)
+- [ ] Si está en pérdida, HOLD y esperar a que suba

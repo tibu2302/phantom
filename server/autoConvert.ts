@@ -1,15 +1,51 @@
 // ─── Auto-Convert Accumulated Coins to USDT ───
 // This runs every 15 cycles (~5 min) and sells any non-USDT coins
-// that don't have an open position, converting them back to USDT
-// to keep capital liquid and available for new trades.
+// that don't have an open position AND are in profit.
+// NEVER sells at a loss — if current price < avg buy price, it holds.
 
 import type { EngineState } from "./tradingEngine";
+import { getDb } from "./db";
+import { trades } from "../drizzle/schema";
+import { eq, and, sql } from "drizzle-orm";
 
 interface CoinBalance {
   coin: string;
   walletBalance: string;
   usdValue: string;
   availableToWithdraw: string;
+}
+
+/**
+ * Calculate the average buy price for a coin from trade history.
+ * Only considers BUY trades for the given symbol.
+ * Returns 0 if no buy history found (meaning we don't know the cost basis — don't sell).
+ */
+async function getAvgBuyPrice(userId: number, symbol: string): Promise<number> {
+  try {
+    const pair = symbol.includes("USDT") ? symbol : `${symbol}USDT`;
+    const db = await getDb();
+    if (!db) return 0;
+    const result = await db
+      .select({
+        avgPrice: sql<string>`AVG(CAST(price AS DECIMAL(18,8)))`,
+        totalQty: sql<string>`SUM(CAST(qty AS DECIMAL(18,8)))`,
+      })
+      .from(trades)
+      .where(
+        and(
+          eq(trades.userId, userId),
+          eq(trades.symbol, pair),
+          eq(trades.side, "Buy"),
+          eq(trades.simulated, false)
+        )
+      );
+
+    const avgPrice = parseFloat(result[0]?.avgPrice ?? "0");
+    return avgPrice;
+  } catch (e) {
+    console.log(`[AutoConvert] Cannot get avg buy price for ${symbol}: ${(e as Error).message}`);
+    return 0; // Unknown cost basis — don't sell
+  }
 }
 
 export async function autoConvertCoinsToUSDT(engine: EngineState): Promise<void> {
@@ -42,7 +78,27 @@ export async function autoConvertCoinsToUSDT(engine: EngineState): Promise<void>
             continue; // Has active positions, don't convert
           }
           
-          // No open positions — this is leftover capital, sell it to USDT
+          // ─── ZERO LOSS CHECK ───
+          // Get average buy price from trade history
+          const avgBuyPrice = await getAvgBuyPrice(engine.userId, pair);
+          
+          if (avgBuyPrice <= 0) {
+            console.log(`[AutoConvert] Bybit: No buy history for ${symbol}, skipping (unknown cost basis)`);
+            continue;
+          }
+          
+          // Calculate current price from usdValue / available
+          const currentPrice = usdValue / available;
+          
+          if (currentPrice < avgBuyPrice) {
+            const lossPct = ((currentPrice - avgBuyPrice) / avgBuyPrice * 100).toFixed(2);
+            console.log(`[AutoConvert] Bybit: HOLD ${symbol} — current $${currentPrice.toFixed(4)} < avg buy $${avgBuyPrice.toFixed(4)} (${lossPct}%)`);
+            continue; // Would be a loss — HOLD
+          }
+          
+          const profitPct = ((currentPrice - avgBuyPrice) / avgBuyPrice * 100).toFixed(2);
+          
+          // In profit — sell it
           try {
             const qtyStr = available.toFixed(8);
             const sellRes = await engine.client.submitOrder({
@@ -54,12 +110,11 @@ export async function autoConvertCoinsToUSDT(engine: EngineState): Promise<void>
             });
             
             if (sellRes.result?.orderId) {
-              console.log(`[AutoConvert] Bybit: Sold ${available.toFixed(4)} ${symbol} (~$${usdValue.toFixed(2)}) to USDT — orderId: ${sellRes.result.orderId}`);
+              console.log(`[AutoConvert] Bybit: Sold ${available.toFixed(4)} ${symbol} (~$${usdValue.toFixed(2)}) to USDT — profit +${profitPct}% — orderId: ${sellRes.result.orderId}`);
             } else {
               console.log(`[AutoConvert] Bybit: Failed to sell ${symbol}: ${JSON.stringify(sellRes)}`);
             }
           } catch (e) {
-            // Some coins might not have a USDT pair or qty might be below minimum
             console.log(`[AutoConvert] Bybit: Cannot sell ${symbol}: ${(e as Error).message}`);
           }
         }
@@ -75,7 +130,7 @@ export async function autoConvertCoinsToUSDT(engine: EngineState): Promise<void>
         ]);
         
         const prices = (await import("./tradingEngine")).getLivePrices();
-        const coinsToSell: { symbol: string; qty: number; usdValue: number }[] = [];
+        const coinsToSell: { symbol: string; qty: number; usdValue: number; currentPrice: number }[] = [];
         
         const processBalances = (r: any) => {
           if (r.status !== "fulfilled" || r.value?.code !== "200000") return;
@@ -94,17 +149,34 @@ export async function autoConvertCoinsToUSDT(engine: EngineState): Promise<void>
             
             if (openPositions.length > 0 || scalpPositions.length > 0) continue;
             
-            coinsToSell.push({ symbol: cur, qty: bal, usdValue: usdVal });
+            coinsToSell.push({ symbol: cur, qty: bal, usdValue: usdVal, currentPrice: price });
           }
         };
         
         processBalances(tradeRes);
         processBalances(hfRes);
         
-        for (const { symbol, qty, usdValue } of coinsToSell) {
+        for (const { symbol, qty, usdValue, currentPrice } of coinsToSell) {
+          // ─── ZERO LOSS CHECK ───
+          const pair = `${symbol}USDT`;
+          const avgBuyPrice = await getAvgBuyPrice(engine.userId, pair);
+          
+          if (avgBuyPrice <= 0) {
+            console.log(`[AutoConvert] KuCoin: No buy history for ${symbol}, skipping (unknown cost basis)`);
+            continue;
+          }
+          
+          if (currentPrice < avgBuyPrice) {
+            const lossPct = ((currentPrice - avgBuyPrice) / avgBuyPrice * 100).toFixed(2);
+            console.log(`[AutoConvert] KuCoin: HOLD ${symbol} — current $${currentPrice.toFixed(4)} < avg buy $${avgBuyPrice.toFixed(4)} (${lossPct}%)`);
+            continue; // Would be a loss — HOLD
+          }
+          
+          const profitPct = ((currentPrice - avgBuyPrice) / avgBuyPrice * 100).toFixed(2);
+          
           try {
             const kucoinPair = `${symbol}-USDT`;
-            const res = await engine.kucoinClient.submitOrder({
+            const res = await engine.kucoinClient!.submitOrder({
               clientOid: `phantom_ac_${Date.now()}`,
               side: "sell",
               symbol: kucoinPair,
@@ -113,7 +185,7 @@ export async function autoConvertCoinsToUSDT(engine: EngineState): Promise<void>
             });
             
             if (res?.data?.orderId) {
-              console.log(`[AutoConvert] KuCoin: Sold ${qty.toFixed(4)} ${symbol} (~$${usdValue.toFixed(2)}) to USDT — orderId: ${res.data.orderId}`);
+              console.log(`[AutoConvert] KuCoin: Sold ${qty.toFixed(4)} ${symbol} (~$${usdValue.toFixed(2)}) to USDT — profit +${profitPct}% — orderId: ${res.data.orderId}`);
             }
           } catch (e) {
             console.log(`[AutoConvert] KuCoin: Cannot sell ${symbol}: ${(e as Error).message}`);
