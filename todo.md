@@ -449,6 +449,7 @@
 - [x] Trailing stop solo vende en ganancia (ya implementado)
 
 ## Fix: Auto-convert NO debe vender a pérdida - Abril 22
-- [ ] Calcular precio promedio de compra de cada moneda desde historial de trades
-- [ ] Solo vender si precio actual > precio promedio de compra (ganancia)
-- [ ] Si está en pérdida, HOLD y esperar a que suba
+- [x] Calcular precio promedio de compra de cada moneda desde historial de trades (AVG de buys en DB)
+- [x] Solo vender si precio actual > precio promedio de compra (ganancia)
+- [x] Si está en pérdida, HOLD y esperar a que suba
+- [x] Sin historial de compra, HOLD (no vende sin cost basis conocido)

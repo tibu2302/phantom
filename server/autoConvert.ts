@@ -82,21 +82,23 @@ export async function autoConvertCoinsToUSDT(engine: EngineState): Promise<void>
           // Get average buy price from trade history
           const avgBuyPrice = await getAvgBuyPrice(engine.userId, pair);
           
-          if (avgBuyPrice <= 0) {
-            console.log(`[AutoConvert] Bybit: No buy history for ${symbol}, skipping (unknown cost basis)`);
-            continue;
-          }
-          
           // Calculate current price from usdValue / available
           const currentPrice = usdValue / available;
+          let profitPct = "N/A";
           
-          if (currentPrice < avgBuyPrice) {
-            const lossPct = ((currentPrice - avgBuyPrice) / avgBuyPrice * 100).toFixed(2);
-            console.log(`[AutoConvert] Bybit: HOLD ${symbol} — current $${currentPrice.toFixed(4)} < avg buy $${avgBuyPrice.toFixed(4)} (${lossPct}%)`);
-            continue; // Would be a loss — HOLD
+          if (avgBuyPrice > 0) {
+            // Has buy history — only sell if in profit
+            if (currentPrice < avgBuyPrice) {
+              const lossPct = ((currentPrice - avgBuyPrice) / avgBuyPrice * 100).toFixed(2);
+              console.log(`[AutoConvert] Bybit: HOLD ${symbol} — current $${currentPrice.toFixed(4)} < avg buy $${avgBuyPrice.toFixed(4)} (${lossPct}%)`);
+              continue; // Would be a loss — HOLD
+            }
+            profitPct = ((currentPrice - avgBuyPrice) / avgBuyPrice * 100).toFixed(2) + "%";
+          } else {
+            // No buy history — sell anyway to free capital (100% autonomous)
+            console.log(`[AutoConvert] Bybit: No buy history for ${symbol}, selling to free capital (~$${usdValue.toFixed(2)})`);
+            profitPct = "unknown";
           }
-          
-          const profitPct = ((currentPrice - avgBuyPrice) / avgBuyPrice * 100).toFixed(2);
           
           // In profit — sell it
           try {
@@ -161,18 +163,21 @@ export async function autoConvertCoinsToUSDT(engine: EngineState): Promise<void>
           const pair = `${symbol}USDT`;
           const avgBuyPrice = await getAvgBuyPrice(engine.userId, pair);
           
-          if (avgBuyPrice <= 0) {
-            console.log(`[AutoConvert] KuCoin: No buy history for ${symbol}, skipping (unknown cost basis)`);
-            continue;
-          }
+          let profitPct = "N/A";
           
-          if (currentPrice < avgBuyPrice) {
-            const lossPct = ((currentPrice - avgBuyPrice) / avgBuyPrice * 100).toFixed(2);
-            console.log(`[AutoConvert] KuCoin: HOLD ${symbol} — current $${currentPrice.toFixed(4)} < avg buy $${avgBuyPrice.toFixed(4)} (${lossPct}%)`);
-            continue; // Would be a loss — HOLD
+          if (avgBuyPrice > 0) {
+            // Has buy history — only sell if in profit
+            if (currentPrice < avgBuyPrice) {
+              const lossPct = ((currentPrice - avgBuyPrice) / avgBuyPrice * 100).toFixed(2);
+              console.log(`[AutoConvert] KuCoin: HOLD ${symbol} — current $${currentPrice.toFixed(4)} < avg buy $${avgBuyPrice.toFixed(4)} (${lossPct}%)`);
+              continue; // Would be a loss — HOLD
+            }
+            profitPct = ((currentPrice - avgBuyPrice) / avgBuyPrice * 100).toFixed(2) + "%";
+          } else {
+            // No buy history — sell anyway to free capital (100% autonomous)
+            console.log(`[AutoConvert] KuCoin: No buy history for ${symbol}, selling to free capital (~$${usdValue.toFixed(2)})`);
+            profitPct = "unknown";
           }
-          
-          const profitPct = ((currentPrice - avgBuyPrice) / avgBuyPrice * 100).toFixed(2);
           
           try {
             const kucoinPair = `${symbol}-USDT`;
