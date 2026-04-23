@@ -88,13 +88,14 @@ export async function autoConvertCoinsToUSDT(engine: EngineState): Promise<void>
           let profitPct = "N/A";
           
           if (avgBuyPrice > 0) {
-            // Has buy history — only sell if in profit
-            if (currentPrice < avgBuyPrice) {
-              const lossPct = ((currentPrice - avgBuyPrice) / avgBuyPrice * 100).toFixed(2);
-              console.log(`[AutoConvert] Bybit: HOLD ${symbol} — current $${currentPrice.toFixed(4)} < avg buy $${avgBuyPrice.toFixed(4)} (${lossPct}%)`);
-              continue; // Would be a loss — HOLD
+            // Has buy history — only sell if net profit >= 0.5% (covers fees)
+            const profitPctNum = (currentPrice - avgBuyPrice) / avgBuyPrice;
+            if (profitPctNum < 0.005) {
+              const pctStr = (profitPctNum * 100).toFixed(2);
+              console.log(`[AutoConvert] Bybit: HOLD ${symbol} — profit ${pctStr}% < min 0.5% (current $${currentPrice.toFixed(4)} vs avg $${avgBuyPrice.toFixed(4)})`);
+              continue; // Not enough profit yet — HOLD
             }
-            profitPct = ((currentPrice - avgBuyPrice) / avgBuyPrice * 100).toFixed(2) + "%";
+            profitPct = (profitPctNum * 100).toFixed(2) + "%";
           } else {
             // No buy history — sell anyway to free capital (100% autonomous)
             console.log(`[AutoConvert] Bybit: No buy history for ${symbol}, selling to free capital (~$${usdValue.toFixed(2)})`);
@@ -167,13 +168,14 @@ export async function autoConvertCoinsToUSDT(engine: EngineState): Promise<void>
           let profitPct = "N/A";
           
           if (avgBuyPrice > 0) {
-            // Has buy history — only sell if in profit
-            if (currentPrice < avgBuyPrice) {
-              const lossPct = ((currentPrice - avgBuyPrice) / avgBuyPrice * 100).toFixed(2);
-              console.log(`[AutoConvert] KuCoin: HOLD ${symbol} — current $${currentPrice.toFixed(4)} < avg buy $${avgBuyPrice.toFixed(4)} (${lossPct}%)`);
-              continue; // Would be a loss — HOLD
+            // Has buy history — only sell if net profit >= 0.5% (covers fees)
+            const profitPctNum = (currentPrice - avgBuyPrice) / avgBuyPrice;
+            if (profitPctNum < 0.005) {
+              const pctStr = (profitPctNum * 100).toFixed(2);
+              console.log(`[AutoConvert] KuCoin: HOLD ${symbol} — profit ${pctStr}% < min 0.5% (current $${currentPrice.toFixed(4)} vs avg $${avgBuyPrice.toFixed(4)})`);
+              continue; // Not enough profit yet — HOLD
             }
-            profitPct = ((currentPrice - avgBuyPrice) / avgBuyPrice * 100).toFixed(2) + "%";
+            profitPct = (profitPctNum * 100).toFixed(2) + "%";
           } else {
             // No buy history — sell anyway to free capital (100% autonomous)
             console.log(`[AutoConvert] KuCoin: No buy history for ${symbol}, selling to free capital (~$${usdValue.toFixed(2)})`);

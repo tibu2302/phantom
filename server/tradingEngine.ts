@@ -860,19 +860,19 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
 
   const openPositions = engine.openBuyPositions[symbol] ?? [];
 
-  // ─── Protection System: Stop-Loss + Trailing Stop + Time Stop ───
+  // ─── Protection System: Trailing Stop (profit only) + Time-Profit ───
+  // Philosophy: NEVER sell at a loss. Smart entries + patience = always win.
   const stratConfig = config ?? {};
-  const stopLossPct = (stratConfig.stopLossPct ?? 0) / 100; // Default 0% = DISABLED (never sell at loss) (crypto is volatile)
+  // stopLossPct is IGNORED — no stop-loss philosophy: HOLD until profit
+  // const stopLossPct = (stratConfig.stopLossPct ?? 0) / 100;
   // Dynamic trailing: use ATR-based trailing from smart analysis, fallback to config
   const configTrailingPct = (stratConfig.trailingStopPct ?? 0.5) / 100;
   const trailingPct = dynamicTrailingPct > 0 ? dynamicTrailingPct : configTrailingPct; // ATR-based trailing
   const trailingActivation = (stratConfig.trailingActivationPct ?? 0.5) / 100;
   const maxHoldTimeMs = (stratConfig.maxHoldHours ?? 12) * 60 * 60 * 1000; // Default 48 hours max hold
   const maxOpenPositions = stratConfig.maxOpenPositions ?? 3; // Max open positions per symbol
-  // Dynamic minProfitUsd: proportional to trade amount (0.3% of tradeAmount, min $0.30, max $2)
-  const tradeAmountForMin = strat?.allocationPct ? (parseFloat((await db.getOrCreateBotState(engine.userId))?.currentBalance ?? "5000") * strat.allocationPct / 100) : 100;
-  const dynamicMinProfit = Math.max(0.15, Math.min(1.0, tradeAmountForMin * 0.002));
-  const minProfitUsd = stratConfig.minProfitUsd ?? dynamicMinProfit; // Proportional to position size
+  // Minimum 0.5% net profit on ALL sells — NEVER sell below this threshold
+  const MIN_PROFIT_PCT = 0.005; // 0.5% minimum net profit after fees
   const positionsToSell: { pos: OpenBuyPosition; reason: string }[] = [];
 
   for (let i = openPositions.length - 1; i >= 0; i--) {
@@ -881,61 +881,47 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
     const profitPct = (price - pos.buyPrice) / pos.buyPrice;
     const holdTimeMs = Date.now() - (pos.openedAt ?? Date.now());
 
-    // 1. STOP-LOSS: Cut losses if price drops below threshold
-    // BTC and ETH are EXEMPT from stop-loss — never sell at a loss, always HOLD
-    // stopLossPct === 0 means stop-loss is DISABLED
-    const noStopLossSymbols: string[] = []; // No exemptions — all symbols rotate capital
-    if (stopLossPct > 0 && lossPct >= stopLossPct && !noStopLossSymbols.includes(symbol)) {
-      positionsToSell.push({ pos, reason: `STOP-LOSS (${(lossPct * 100).toFixed(2)}% loss)` });
-      openPositions.splice(i, 1);
-      continue;
-    } else if (lossPct >= stopLossPct && noStopLossSymbols.includes(symbol)) {
-      console.log(`[Grid] ${symbol} HOLD — ${(lossPct * 100).toFixed(2)}% loss but BTC/ETH exempt from stop-loss`);
+    // 1. NO STOP-LOSS — NUNCA vender a pérdida. HOLD hasta que recupere.
+    // La inteligencia del bot está en ENTRAR bien, no en cortar pérdidas.
+    if (profitPct < 0) {
+      // Log only every ~50 cycles to avoid spam
+      if (holdTimeMs > 3600000) { // Only log if held > 1h
+        console.log(`[Grid] ${symbol} HOLD — ${(lossPct * 100).toFixed(2)}% loss, held ${(holdTimeMs / 3600000).toFixed(1)}h, waiting for recovery`);
+      }
     }
 
-    // 2. TIME STOP: Only close if held VERY long AND losing money
-    // First threshold: if held > maxHoldTime and price is below buy price, just log warning
-    // Only force-sell if held > 2x maxHoldTime AND still losing
-    const doubleMaxHold = maxHoldTimeMs; // Close after maxHoldTime (4h) to rotate capital faster
-    if (maxHoldTimeMs > 0 && holdTimeMs > doubleMaxHold && profitPct < -0.002 && !noStopLossSymbols.includes(symbol)) {
-      // Only time-stop if the loss is small enough (< stop-loss threshold) — otherwise let stop-loss handle it
+    // 2. TIME-PROFIT: If held long AND net profit >= 0.5%, close to rotate capital
+    if (maxHoldTimeMs > 0 && holdTimeMs > maxHoldTimeMs && profitPct > 0) {
       const estGrossPnl = (price - pos.buyPrice) * parseFloat(pos.qty);
       const estNetPnl = calcNetPnl(estGrossPnl, pos.tradeAmount, category, true, engine.exchange);
-      if (estNetPnl > 0) { // ONLY close if in profit — NEVER sell at a loss
-        // Loss is tiny, close to free up capital
-        positionsToSell.push({ pos, reason: `TIME-PROFIT (held ${(holdTimeMs / 3600000).toFixed(1)}h, profit $${estNetPnl.toFixed(2)})` });
+      const minProfitForPos = pos.tradeAmount * MIN_PROFIT_PCT;
+      if (estNetPnl >= minProfitForPos) {
+        positionsToSell.push({ pos, reason: `TIME-PROFIT (held ${(holdTimeMs / 3600000).toFixed(1)}h, profit $${estNetPnl.toFixed(2)} >= ${(MIN_PROFIT_PCT * 100).toFixed(1)}%)` });
         openPositions.splice(i, 1);
         continue;
-      } else {
-        console.log(`[Grid] ${symbol} TIME-WARNING — held ${(holdTimeMs / 3600000).toFixed(1)}h, loss $${estNetPnl.toFixed(2)} too large for time-stop, waiting for recovery`);
+      } else if (estNetPnl > 0) {
+        console.log(`[Grid] ${symbol} HOLD — time-profit $${estNetPnl.toFixed(2)} < min ${(MIN_PROFIT_PCT * 100).toFixed(1)}% ($${minProfitForPos.toFixed(2)}), waiting`);
       }
-    } else if (maxHoldTimeMs > 0 && holdTimeMs > doubleMaxHold && profitPct < -0.002 && noStopLossSymbols.includes(symbol)) {
-      console.log(`[Grid] ${symbol} HOLD — held ${(holdTimeMs / 3600000).toFixed(1)}h, BTC/ETH exempt from time-stop`);
-    } else if (maxHoldTimeMs > 0 && holdTimeMs > maxHoldTimeMs && profitPct >= 0) {
-      // Held long but in profit — let trailing stop handle it, don't force close
-      console.log(`[Grid] ${symbol} held ${(holdTimeMs / 3600000).toFixed(1)}h but in profit ${(profitPct * 100).toFixed(2)}%, trailing stop will handle exit`);
     }
 
-    // 3. TRAILING STOP: Lock in profits (only if estimated profit >= minProfitUsd)
+    // 3. TRAILING STOP: Lock in profits (only if net profit >= 0.5%)
     if (!pos.highestPrice || price > pos.highestPrice) {
       pos.highestPrice = price;
     }
     if (pos.highestPrice && pos.highestPrice > pos.buyPrice * (1 + trailingActivation)) {
       const dropFromHigh = (pos.highestPrice - price) / pos.highestPrice;
       if (dropFromHigh >= trailingPct) {
-        // Check minimum profit before selling
         const estGrossPnl = (price - pos.buyPrice) * parseFloat(pos.qty);
         const estNetPnl = calcNetPnl(estGrossPnl, pos.tradeAmount, category, true, engine.exchange);
-        if (estNetPnl >= minProfitUsd && estNetPnl > 0) {
-          positionsToSell.push({ pos, reason: `TRAILING-STOP (high=${pos.highestPrice.toFixed(2)}, drop=${(dropFromHigh * 100).toFixed(2)}%, est=$${estNetPnl.toFixed(2)})` });
+        const minProfitForPos = pos.tradeAmount * MIN_PROFIT_PCT;
+        if (estNetPnl >= minProfitForPos) {
+          positionsToSell.push({ pos, reason: `TRAILING-STOP (high=${pos.highestPrice.toFixed(2)}, drop=${(dropFromHigh * 100).toFixed(2)}%, net=$${estNetPnl.toFixed(2)} >= ${(MIN_PROFIT_PCT * 100).toFixed(1)}%)` });
           openPositions.splice(i, 1);
           continue;
         } else if (estNetPnl <= 0) {
-          // NEVER sell at a loss from trailing stop
           console.log(`[Grid] ${symbol} BLOCK SELL — trailing triggered but net PnL $${estNetPnl.toFixed(2)} is NEGATIVE, holding`);
         } else {
-          // Profit too small, keep holding — don't sell yet
-          console.log(`[Grid] ${symbol} HOLD — trailing triggered but profit $${estNetPnl.toFixed(2)} < min $${minProfitUsd}`);
+          console.log(`[Grid] ${symbol} HOLD — trailing profit $${estNetPnl.toFixed(2)} < min ${(MIN_PROFIT_PCT * 100).toFixed(1)}% ($${minProfitForPos.toFixed(2)})`);
         }
       }
     }
@@ -994,16 +980,16 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
 
       console.log(`[Grid] ${reason} ${symbol} @ ${price.toFixed(2)} buyPrice=${pos.buyPrice.toFixed(2)} high=${pos.highestPrice?.toFixed(2)} pnl=${pnl.toFixed(2)} order=${orderId}`);
 
-      // Telegram notification
-      const emoji = pnl > 0 ? "✅" : "🛑";
-      const label = pnl > 0 ? "Profit" : "Stop-Loss";
-      await sendTelegramNotification(engine,
-        `${emoji} <b>PHANTOM Grid ${label}</b>\n` +
-        `Par: ${symbol}\n` +
-        `Compra: $${pos.buyPrice.toFixed(2)}\n` +
-        `Venta: $${price.toFixed(2)} (${reason.split(" ")[0]})\n` +
-        `Resultado: <b>$${pnl.toFixed(2)}</b>`
-      );
+      // Telegram notification — only send for profitable exits
+      if (pnl > 0) {
+        await sendTelegramNotification(engine,
+          `✅ <b>PHANTOM Grid Profit</b>\n` +
+          `Par: ${symbol}\n` +
+          `Compra: $${pos.buyPrice.toFixed(2)}\n` +
+          `Venta: $${price.toFixed(2)} (${reason.split(" ")[0]})\n` +
+          `Ganancia: <b>$${pnl.toFixed(2)}</b>`
+        );
+      }
       traded = true;
     }
   }
@@ -1056,10 +1042,18 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
         console.log(`[Grid] SKIP BUY ${symbol} @ ${level.price.toFixed(2)} — ${trendLabel} trend (regime=${marketRegime})`);
         continue;
       }
-      // Additional: skip buy if smart score explicitly says sell with high confidence
-      if (level.side === "Buy" && smartScore && smartScore.direction === "sell" && smartScore.confidence >= 60) {
-        console.log(`[Grid] SKIP BUY ${symbol} @ ${level.price.toFixed(2)} — smart score SELL conf=${smartScore.confidence}`);
-        continue;
+      // Additional: skip buy if smart score says sell OR confidence is too low
+      if (level.side === "Buy" && smartScore) {
+        // Block buy if analysis says sell with moderate confidence
+        if (smartScore.direction === "sell" && smartScore.confidence >= 45) {
+          console.log(`[Grid] SKIP BUY ${symbol} @ ${level.price.toFixed(2)} — smart score SELL conf=${smartScore.confidence}`);
+          continue;
+        }
+        // Block buy if confidence is too low (weak signal = risky entry)
+        if (smartScore.direction === "buy" && smartScore.confidence < 30) {
+          console.log(`[Grid] SKIP BUY ${symbol} @ ${level.price.toFixed(2)} — buy confidence too low (${smartScore.confidence}%)`);
+          continue;
+        }
       }
 
       // ─── Max open positions guard: don't accumulate too many buys ───
@@ -1115,15 +1109,10 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
             const sellQty = parseFloat(qty);
             const grossPnl = (price - pairedBuy.buyPrice) * sellQty;
             pnl = calcNetPnl(grossPnl, pairedBuy.tradeAmount, category, true, engine.exchange);
-            // NEVER sell at a loss from grid levels — only protection system (stop-loss) can sell at a loss
-            if (pnl < 0) {
-              console.log(`[Grid] HOLD ${symbol} — grid sell would lose $${pnl.toFixed(2)}, keeping position open`);
-              level.filled = false;
-              continue;
-            }
-            // Minimum profit check: don't sell if profit < minProfitUsd
-            if (pnl < 0.10) { // Allow any sell with > $0.10 profit
-              console.log(`[Grid] HOLD ${symbol} — grid sell profit $${pnl.toFixed(2)} < min $${minProfitUsd}, waiting for better price`);
+            // Minimum 0.5% net profit required on ALL sells
+            const minProfitForSell = pairedBuy.tradeAmount * MIN_PROFIT_PCT;
+            if (pnl < minProfitForSell) {
+              console.log(`[Grid] HOLD ${symbol} — grid sell net $${pnl.toFixed(2)} < min ${(MIN_PROFIT_PCT * 100).toFixed(1)}% ($${minProfitForSell.toFixed(2)}), waiting`);
               level.filled = false;
               continue;
             }
@@ -1142,9 +1131,10 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
             // No paired buy — estimate PnL from grid level price
             const grossPnl = (price - level.price) * parseFloat(qty);
             pnl = calcNetPnl(grossPnl, tradeAmount, category, true, engine.exchange);
-            // Block sell if it would result in a loss or profit < minimum
-            if (pnl < 0.10) { // Allow any sell with > $0.10 profit
-              console.log(`[Grid] HOLD ${symbol} — no-paired sell profit $${pnl.toFixed(2)} < min $${minProfitUsd}, skipping`);
+            // Minimum 0.5% net profit required
+            const minProfitNoPair = tradeAmount * MIN_PROFIT_PCT;
+            if (pnl < minProfitNoPair) {
+              console.log(`[Grid] HOLD ${symbol} — no-paired sell net $${pnl.toFixed(2)} < min ${(MIN_PROFIT_PCT * 100).toFixed(1)}% ($${minProfitNoPair.toFixed(2)}), skipping`);
               level.filled = false;
               continue;
             }
@@ -1271,8 +1261,8 @@ async function runScalpingStrategy(engine: EngineState, symbol: string, category
   let signal: "Buy" | "Sell" | null = null;
   const reasons = smartScore.reasons;
 
-  // Smart scoring determines signal — minimum confidence threshold
-  const minConfidence = 35; // Scalping needs at least 35% confidence
+  // Smart scoring determines signal — higher confidence = smarter entries = no need for stop-loss
+  const minConfidence = 45; // Scalping needs at least 45% confidence (no SL, so enter wisely)
   if (smartScore.direction === "buy" && smartScore.confidence >= minConfidence) {
     signal = "Buy";
   } else if (smartScore.direction === "sell" && smartScore.confidence >= minConfidence) {
@@ -1309,12 +1299,14 @@ async function runScalpingStrategy(engine: EngineState, symbol: string, category
         return;
       }
 
-      // Close the oldest position — ONLY if in profit
+      // Close the oldest position — ONLY if net profit >= 0.5%
       const pos = myPositions[0];
+      const posValue = pos.buyPrice * parseFloat(pos.qty);
       const estGross = (price - pos.buyPrice) * parseFloat(pos.qty);
-      const estNet = calcNetPnl(estGross, pos.buyPrice * parseFloat(pos.qty), category, true, engine.exchange);
-      if (estNet <= 0) {
-        console.log(`[Scalp] HOLD ${symbol} — sell signal but PnL $${estNet.toFixed(2)} is negative, waiting for profit`);
+      const estNet = calcNetPnl(estGross, posValue, category, true, engine.exchange);
+      const scalpMinProfit = posValue * 0.005; // 0.5% minimum net profit
+      if (estNet < scalpMinProfit) {
+        console.log(`[Scalp] HOLD ${symbol} — net $${estNet.toFixed(2)} < min 0.5% ($${scalpMinProfit.toFixed(2)}), waiting for better exit`);
         return;
       }
       const sellQty = pos.qty;
@@ -1427,7 +1419,8 @@ async function runFuturesStrategy(engine: EngineState, symbol: string) {
   const futStrats = await db.getUserStrategies(engine.userId);
   const futStrat = futStrats.find(s => s.symbol === symbol && s.strategyType === "futures");
   const futConfig = futStrat?.config as any ?? {};
-  const futuresStopLossPct = (futConfig.stopLossPct ?? 0) / 100;
+  // futuresStopLossPct is IGNORED — no stop-loss philosophy: HOLD until profit
+  // const futuresStopLossPct = (futConfig.stopLossPct ?? 0) / 100;
   const futuresMaxHoldHours = futConfig.maxHoldHours ?? 0;
   const futuresNoSL = ["BTCUSDT", "ETHUSDT"];
 
@@ -1463,19 +1456,28 @@ async function runFuturesStrategy(engine: EngineState, symbol: string) {
 
     let closeReason = "";
 
-    // 1. STOP-LOSS: Only if explicitly enabled and NOT BTC/ETH
-    if (futuresStopLossPct > 0 && lossPct >= futuresStopLossPct && !futuresNoSL.includes(symbol)) {
-      closeReason = `STOP-LOSS (${(lossPct * 100).toFixed(2)}% loss, ${pos.leverage}x ${isLong ? "LONG" : "SHORT"})`;
-    } else if (lossPct > 0.01) {
-      console.log(`[Futures] ${symbol} ${isLong ? "LONG" : "SHORT"} HOLD — ${(lossPct * 100).toFixed(2)}% loss, waiting`);
+    // 1. NO STOP-LOSS — NUNCA cerrar a pérdida. HOLD hasta que recupere.
+    if (profitPct < 0 && holdTimeMs > 3600000) {
+      console.log(`[Futures] ${symbol} ${isLong ? "LONG" : "SHORT"} HOLD — ${(lossPct * 100).toFixed(2)}% loss, held ${(holdTimeMs / 3600000).toFixed(1)}h, waiting for recovery`);
     }
 
-    // 2. TIME STOP: Only if explicitly enabled and NOT BTC/ETH
-    if (!closeReason && futuresMaxHoldHours > 0 && holdTimeMs > futuresMaxHoldHours * 3600000 && profitPct > 0.003 && !futuresNoSL.includes(symbol)) {
-      closeReason = `TIME-PROFIT (held ${(holdTimeMs / 3600000).toFixed(1)}h, profit ${(profitPct * 100).toFixed(2)}% ${isLong ? "LONG" : "SHORT"})`;
+    // Minimum 0.5% net profit on ALL futures exits
+    const futMinProfit = pos.tradeAmount * 0.005; // 0.5% of position value
+
+    // 2. TIME-PROFIT: Only close if held long AND net profit >= 0.5%
+    if (futuresMaxHoldHours > 0 && holdTimeMs > futuresMaxHoldHours * 3600000 && profitPct > 0.003) {
+      const estGross = isLong
+        ? (price - pos.entryPrice) * parseFloat(pos.qty) * pos.leverage
+        : (pos.entryPrice - price) * parseFloat(pos.qty) * pos.leverage;
+      const estNet = calcNetPnl(estGross, pos.tradeAmount * pos.leverage, "linear", true, "bybit", holdTimeMs);
+      if (estNet >= futMinProfit) {
+        closeReason = `TIME-PROFIT (held ${(holdTimeMs / 3600000).toFixed(1)}h, net $${estNet.toFixed(2)} >= 0.5% ${isLong ? "LONG" : "SHORT"})`;  
+      } else if (estNet > 0) {
+        console.log(`[Futures] ${symbol} HOLD — time-profit $${estNet.toFixed(2)} < min 0.5% ($${futMinProfit.toFixed(2)})`);
+      }
     }
 
-    // 3. TRAILING STOP: Lock in profits
+    // 3. TRAILING STOP: Lock in profits (only if net >= 0.5%)
     if (!closeReason && profitPct > 0) {
       if (isLong) {
         if (!pos.highestPrice || price > pos.highestPrice) pos.highestPrice = price;
@@ -1484,7 +1486,8 @@ async function runFuturesStrategy(engine: EngineState, symbol: string) {
           if (dropFromHigh >= trailingDistancePct) {
             const estGross = (price - pos.entryPrice) * parseFloat(pos.qty) * pos.leverage;
             const estNet = calcNetPnl(estGross, pos.tradeAmount * pos.leverage, "linear", true, "bybit", holdTimeMs);
-            if (estNet > 0) closeReason = `TRAILING-STOP (high=${pos.highestPrice.toFixed(2)}, net=$${estNet.toFixed(2)} LONG)`;
+            if (estNet >= futMinProfit) closeReason = `TRAILING-STOP (high=${pos.highestPrice.toFixed(2)}, net=$${estNet.toFixed(2)} >= 0.5% LONG)`;
+            else if (estNet > 0) console.log(`[Futures] ${symbol} HOLD — trailing net $${estNet.toFixed(2)} < min 0.5% ($${futMinProfit.toFixed(2)}) LONG`);
           }
         }
       } else {
@@ -1494,23 +1497,26 @@ async function runFuturesStrategy(engine: EngineState, symbol: string) {
           if (riseFromLow >= trailingDistancePct) {
             const estGross = (pos.entryPrice - price) * parseFloat(pos.qty) * pos.leverage;
             const estNet = calcNetPnl(estGross, pos.tradeAmount * pos.leverage, "linear", true, "bybit", holdTimeMs);
-            if (estNet > 0) closeReason = `TRAILING-STOP (low=${pos.lowestPrice.toFixed(2)}, net=$${estNet.toFixed(2)} SHORT)`;
+            if (estNet >= futMinProfit) closeReason = `TRAILING-STOP (low=${pos.lowestPrice.toFixed(2)}, net=$${estNet.toFixed(2)} >= 0.5% SHORT)`;
+            else if (estNet > 0) console.log(`[Futures] ${symbol} HOLD — trailing net $${estNet.toFixed(2)} < min 0.5% ($${futMinProfit.toFixed(2)}) SHORT`);
           }
         }
       }
     }
 
-    // 4. TAKE PROFIT: Dynamic TP based on volatility
-    const effectiveTp = pos.takeProfitPct / 100; // Use the TP set at entry time
+    // 4. TAKE PROFIT: Dynamic TP (only if net >= 0.5%)
+    const effectiveTp = pos.takeProfitPct / 100;
     if (!closeReason && profitPct >= effectiveTp) {
       const estGrossPnl = isLong
         ? (price - pos.entryPrice) * parseFloat(pos.qty) * pos.leverage
         : (pos.entryPrice - price) * parseFloat(pos.qty) * pos.leverage;
       const estNetPnl = calcNetPnl(estGrossPnl, pos.tradeAmount * pos.leverage, "linear", true, "bybit", holdTimeMs);
-      if (estNetPnl > 0) {
-        closeReason = `TAKE-PROFIT (${(profitPct * 100).toFixed(2)}%, net=$${estNetPnl.toFixed(2)} ${isLong ? "LONG" : "SHORT"})`;
+      if (estNetPnl >= futMinProfit) {
+        closeReason = `TAKE-PROFIT (${(profitPct * 100).toFixed(2)}%, net=$${estNetPnl.toFixed(2)} >= 0.5% ${isLong ? "LONG" : "SHORT"})`;
+      } else if (estNetPnl > 0) {
+        console.log(`[Futures] ${symbol} HOLD — TP net $${estNetPnl.toFixed(2)} < min 0.5% ($${futMinProfit.toFixed(2)}) after fees+funding`);
       } else {
-        console.log(`[Futures] ${symbol} ${isLong ? "LONG" : "SHORT"} HOLD — TP triggered but net $${estNetPnl.toFixed(2)} after fees+funding`);
+        console.log(`[Futures] ${symbol} HOLD — TP triggered but net $${estNetPnl.toFixed(2)} NEGATIVE after fees+funding`);
       }
     }
 
@@ -1584,7 +1590,7 @@ async function runFuturesStrategy(engine: EngineState, symbol: string) {
   }
 
   // Smart scoring determines entry direction
-  const minFuturesConfidence = 40; // Futures needs higher confidence (leveraged)
+  const minFuturesConfidence = 50; // Futures needs high confidence (leveraged, no SL — enter wisely)
   let entryDirection: "long" | "short" | null = null;
 
   if (futSmartScore.direction === "buy" && futSmartScore.confidence >= minFuturesConfidence && longPositions.length < 2) {

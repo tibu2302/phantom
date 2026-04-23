@@ -472,3 +472,23 @@
 - [ ] Volume Profile: detectar zonas de soporte/resistencia por volumen
 - [ ] Cooldown inteligente post-pérdida (reducir tamaño después de pérdidas consecutivas)
 - [ ] Optimización de umbrales por condición de mercado
+
+## Eliminar Stop-Loss — Solo vender en ganancia (23 Abril 2026)
+- [ ] Eliminar STOP-LOSS completamente en Grid strategy (nunca vender a pérdida, sin excepciones)
+- [ ] Eliminar TIME-STOP que vende a pérdida en Grid (solo cerrar si hay ganancia)
+- [ ] Asegurar trailing stop SOLO vende cuando hay ganancia neta positiva
+- [ ] Eliminar STOP-LOSS en Futures strategy (holdear hasta profit)
+- [ ] Eliminar TIME-STOP en Futures que cierra en pérdida
+- [ ] Asegurar Futures solo cierra en profit (TP o trailing en profit)
+- [ ] Verificar Scalping solo vende en profit
+- [ ] Subir confianza mínima del smart score para entrar (mejor entrada = no necesitar SL)
+- [ ] Sync y deploy
+
+## Ganancia mínima 0.5% neta en TODAS las ventas (23 Abril 2026)
+- [ ] Grid: trailing stop solo vende si ganancia neta >= 0.5% del tradeAmount
+- [ ] Grid: time-profit solo cierra si ganancia neta >= 0.5%
+- [ ] Grid: grid level sells solo si ganancia neta >= 0.5%
+- [ ] Scalping: solo vende si ganancia neta >= 0.5% del tradeAmount
+- [ ] Futures: TP y trailing solo cierran si ganancia neta >= 0.5% del tradeAmount
+- [ ] Auto-convert: solo vende si precio actual > avgBuyPrice + 0.5% + fees
+- [ ] Sync y deploy
