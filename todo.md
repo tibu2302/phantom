@@ -601,3 +601,12 @@
 - [x] Dashboard: Panel de Market Intelligence con sesión activa, BTC trend, funding rates
 - [x] Dashboard: Panel de Optimizer con auto-tuning params, adaptive state, portfolio allocation
 - [x] Dashboard: Todo interconectado con el motor de trading en tiempo real
+
+## Dashboard Mejorado — PnL Detallado (23 Abril 2026)
+- [ ] Botones de período: Hoy, 7D, 30D, Año, Todo
+- [ ] PnL real por período: ganancias - pérdidas = ganancia neta
+- [ ] Mostrar trades ganadores vs perdedores por período
+- [ ] Ganancia diaria promedio, mejor día, peor día
+- [ ] PnL por estrategia (Grid vs Scalping vs Futures) por período
+- [ ] Gráfico de PnL acumulado por período seleccionado
+- [ ] Agregar AI Intelligence al menú Más del móvil

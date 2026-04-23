@@ -453,6 +453,113 @@ export const appRouter = router({
     history: protectedProcedure.input(z.object({ days: z.number().default(30) }).optional()).query(async ({ ctx, input }) => {
       return db.getPnlHistory(ctx.user.id, input?.days ?? 30);
     }),
+    // Advanced period-based PnL stats
+    advancedStats: protectedProcedure.input(z.object({
+      period: z.enum(["today", "7d", "30d", "year", "all"]).default("today"),
+    }).optional()).query(async ({ ctx, input }) => {
+      const period = input?.period ?? "today";
+      const allTrades = await db.getUserTrades(ctx.user.id, 50000);
+      const allStrategies = await db.getUserStrategies(ctx.user.id);
+      const pnlHist = await db.getPnlHistory(ctx.user.id, 365);
+      const now = new Date();
+      // Calculate period start date
+      let periodStart: Date;
+      switch (period) {
+        case "today": periodStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()); break;
+        case "7d": periodStart = new Date(now.getTime() - 7 * 86400000); break;
+        case "30d": periodStart = new Date(now.getTime() - 30 * 86400000); break;
+        case "year": periodStart = new Date(now.getFullYear(), 0, 1); break;
+        case "all": periodStart = new Date(0); break;
+      }
+      // Filter trades by period
+      const periodTrades = allTrades.filter(t => new Date(t.createdAt) >= periodStart);
+      const sellTrades = periodTrades.filter(t => t.side === "sell");
+      const buyTrades = periodTrades.filter(t => t.side === "buy");
+      // PnL calculations — gains minus losses = real profit
+      const totalGains = sellTrades.filter(t => parseFloat(t.pnl ?? "0") > 0).reduce((s, t) => s + parseFloat(t.pnl ?? "0"), 0);
+      const totalLosses = Math.abs(sellTrades.filter(t => parseFloat(t.pnl ?? "0") < 0).reduce((s, t) => s + parseFloat(t.pnl ?? "0"), 0));
+      const netProfit = totalGains - totalLosses;
+      const winTrades = sellTrades.filter(t => parseFloat(t.pnl ?? "0") > 0).length;
+      const loseTrades = sellTrades.filter(t => parseFloat(t.pnl ?? "0") < 0).length;
+      const winRate = sellTrades.length > 0 ? (winTrades / sellTrades.length) * 100 : 0;
+      // Average trade PnL
+      const avgWin = winTrades > 0 ? totalGains / winTrades : 0;
+      const avgLoss = loseTrades > 0 ? totalLosses / loseTrades : 0;
+      // Best and worst single trade
+      const allPnls = sellTrades.map(t => parseFloat(t.pnl ?? "0"));
+      const bestTrade = allPnls.length > 0 ? Math.max(...allPnls) : 0;
+      const worstTrade = allPnls.length > 0 ? Math.min(...allPnls) : 0;
+      // PnL by strategy type
+      const strategyBreakdown: Record<string, { pnl: number; trades: number; wins: number; losses: number }> = {};
+      for (const t of periodTrades) {
+        const sType = t.strategy ?? "unknown";
+        if (!strategyBreakdown[sType]) strategyBreakdown[sType] = { pnl: 0, trades: 0, wins: 0, losses: 0 };
+        strategyBreakdown[sType].trades++;
+        const pnl = parseFloat(t.pnl ?? "0");
+        strategyBreakdown[sType].pnl += pnl;
+        if (t.side === "sell") {
+          if (pnl > 0) strategyBreakdown[sType].wins++;
+          else if (pnl < 0) strategyBreakdown[sType].losses++;
+        }
+      }
+      // PnL by symbol (top performers)
+      const symbolBreakdown: Record<string, { pnl: number; trades: number }> = {};
+      for (const t of periodTrades) {
+        const sym = t.symbol;
+        if (!symbolBreakdown[sym]) symbolBreakdown[sym] = { pnl: 0, trades: 0 };
+        symbolBreakdown[sym].pnl += parseFloat(t.pnl ?? "0");
+        symbolBreakdown[sym].trades++;
+      }
+      const topSymbols = Object.entries(symbolBreakdown)
+        .map(([symbol, data]) => ({ symbol, ...data }))
+        .sort((a, b) => b.pnl - a.pnl)
+        .slice(0, 10);
+      // Daily PnL from pnl_history for chart
+      const filteredHistory = pnlHist.filter(h => {
+        const d = new Date(h.date);
+        return d >= periodStart;
+      });
+      // Best day / worst day / avg daily
+      const dailyPnls = filteredHistory.map(h => parseFloat(h.pnl ?? "0"));
+      const bestDay = dailyPnls.length > 0 ? Math.max(...dailyPnls) : 0;
+      const worstDay = dailyPnls.length > 0 ? Math.min(...dailyPnls) : 0;
+      const avgDaily = dailyPnls.length > 0 ? dailyPnls.reduce((s, v) => s + v, 0) / dailyPnls.length : 0;
+      // Profit factor
+      const profitFactor = totalLosses > 0 ? totalGains / totalLosses : totalGains > 0 ? 999 : 0;
+      // Strategy-level PnL from strategies table (cumulative)
+      const strategyStats = allStrategies.map(s => ({
+        symbol: s.symbol,
+        strategyType: s.strategyType,
+        pnl: parseFloat(s.pnl ?? "0"),
+        trades: s.trades ?? 0,
+        winningTrades: s.winningTrades ?? 0,
+        enabled: s.enabled,
+      }));
+      return {
+        period,
+        totalTrades: periodTrades.length,
+        sellTrades: sellTrades.length,
+        buyTrades: buyTrades.length,
+        totalGains: parseFloat(totalGains.toFixed(2)),
+        totalLosses: parseFloat(totalLosses.toFixed(2)),
+        netProfit: parseFloat(netProfit.toFixed(2)),
+        winTrades,
+        loseTrades,
+        winRate: parseFloat(winRate.toFixed(1)),
+        avgWin: parseFloat(avgWin.toFixed(2)),
+        avgLoss: parseFloat(avgLoss.toFixed(2)),
+        bestTrade: parseFloat(bestTrade.toFixed(2)),
+        worstTrade: parseFloat(worstTrade.toFixed(2)),
+        bestDay: parseFloat(bestDay.toFixed(2)),
+        worstDay: parseFloat(worstDay.toFixed(2)),
+        avgDaily: parseFloat(avgDaily.toFixed(2)),
+        profitFactor: parseFloat(profitFactor.toFixed(2)),
+        strategyBreakdown,
+        topSymbols,
+        pnlChart: filteredHistory.reverse(),
+        strategyStats,
+      };
+    }),
   }),
 
   trades: router({
