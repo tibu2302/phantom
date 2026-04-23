@@ -515,13 +515,42 @@
 - [x] Sync y deploy
 
 ## Notificaciones Futures + Optimización 2-5% Diario (23 Abril 2026)
-- [ ] Telegram: notificar apertura de posición futures (LONG/SHORT, moneda, leverage, monto)
-- [ ] Telegram: notificar cierre de posición futures con PnL en USDT
-- [ ] Telegram: notificar trailing stop activado en futures
-- [ ] Optimizar: reducir umbrales de confianza para más operaciones (más ciclos = más ganancia)
-- [ ] Optimizar: grid más agresivo — más posiciones simultáneas, spreads más chicos
-- [ ] Optimizar: futures más agresivos — más monedas, leverage optimizado
-- [ ] Optimizar: scalping más frecuente con entradas más rápidas
-- [ ] Optimizar: position sizing más grande en señales fuertes (score > 70)
-- [ ] Optimizar: reducir tiempo entre ciclos para capturar más movimientos
-- [ ] Sync y deploy
+- [x] Telegram: notificar apertura de posición futures (LONG/SHORT, moneda, leverage, monto)
+- [x] Telegram: notificar cierre de posición futures con PnL en USDT (ya existía)
+- [x] Telegram: notificar trailing stop activado en futures (incluido en cierre)
+- [x] Optimizar: reducir umbrales de confianza (Grid 30→20, Scalp 45→30, Futures 50→35)
+- [x] Optimizar: grid más agresivo — 5 posiciones, spreads más chicos, strength boost
+- [x] Optimizar: futures más agresivos — 5 posiciones, 11 monedas, strength boost 1.5-2x
+- [x] Optimizar: scalping más frecuente — 3 posiciones, strength boost 1.3-1.8x
+- [x] Optimizar: position sizing boost en señales fuertes (Grid/Scalp/Futures)
+- [x] Optimizar: ciclo 20s→15s, scanner 2min→1min, auto-convert 5min→2.5min
+- [x] Sync y deploy
+
+## Superinteligencia v7.0 — 19 Mejoras (23 Abril 2026)
+
+### Análisis Avanzado
+- [ ] 1. Multi-Timeframe Analysis (5min + 15min + 1h) — confirmar señales en 3 timeframes
+- [ ] 2. Correlación BTC-Alts — no comprar alts si BTC cae, comprar agresivo si BTC sube
+- [ ] 3. Detección de Spikes de Volumen — entrar rápido cuando volumen sube 2-3x
+- [ ] 4. Order Book Imbalance — leer bids vs asks para predecir dirección
+- [ ] 5. Funding Rate para Futures — usar funding rate para timing de entries
+- [ ] 6. Detección de Liquidaciones — detectar short/long squeezes
+
+### Estrategias Nuevas
+- [ ] 7. Mean Reversion — comprar rebotes de caídas rápidas sin fundamento
+- [ ] 8. Breakout Trading — entrar en rupturas de rango con volumen
+- [ ] 9. Arbitraje Bybit-KuCoin — comprar barato en un exchange, vender caro en otro
+- [ ] 10. Grid Dinámico Adaptativo — recalcular grid cada 5min según volatilidad
+
+### Gestión de Capital
+- [ ] 11. Compound Interest — reinvertir ganancias automáticamente
+- [ ] 12. Distribución Inteligente de Capital — más capital a estrategias ganadoras
+- [ ] 13. Kelly Criterion — tamaño óptimo de posición matemático
+- [ ] 14. Detección de Sesiones de Mercado — ajustar agresividad por sesión (Asia/Europa/USA)
+- [ ] 15. Momentum Intraday — más agresivo en horas de mayor movimiento
+
+### Protección
+- [ ] 16. Drawdown Diario Máximo — reducir posiciones si pierde >1%, pausar si >2%
+- [ ] 17. Diversificación Forzada — máximo 20% del capital por moneda
+- [ ] 18. Anti-Manipulación — detectar wicks falsos y evitar entrar
+- [ ] 19. Sync y deploy

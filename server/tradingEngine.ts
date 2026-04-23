@@ -26,6 +26,17 @@ import {
   detectMarketRegime, findSupportResistance, recordTradeResult, getLossCooldownMultiplier,
   type MarketRegime, type SignalScore
 } from "./smartAnalysis";
+import {
+  updateBTCState, getBTCCorrelationFilter, detectVolumeSpike,
+  getOrderBookImbalance, getFundingRateSignal, detectSqueeze,
+  detectMeanReversion, detectBreakout, detectManipulation,
+  calculateAdaptiveGrid, getCurrentSession, getIntradayMomentumBoost,
+  updateDrawdownState, getDrawdownMultiplier, resetDailyDrawdown,
+  checkDiversification, updateSymbolExposure, clearSymbolExposure,
+  recordStrategyPerformance, getCapitalAllocation, kellyOptimalSize,
+  scanArbitrage, updateArbPrice, aggregateMasterSignal,
+  type MasterSignal, type MarketSession
+} from "./marketIntelligence";
 
 // ─── Fee Constants (per exchange) ───
 const FEES: Record<string, { spot: number; linear: number }> = {
@@ -799,9 +810,64 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
     }
   } catch { /* keep trendAllowsBuy = true on error */ }
 
-  // ─── Multi-Timeframe Analysis (additional confirmation) ───
+  // ─── MARKET INTELLIGENCE v7.0: Master Signal Integration ───
+  let masterSignal: MasterSignal | null = null;
+  try {
+    // Fetch multi-timeframe klines for MTA
+    const klines5m = await fetchKlines(engine.client, symbol, "5", 60, category);
+    const klines15m_mta = await fetchKlines(engine.client, symbol, "15", 60, category);
+    const klines1h = await fetchKlines(engine.client, symbol, "60", 60, category);
+    
+    // Get order book imbalance
+    let orderBookData;
+    try { orderBookData = await getOrderBookImbalance(engine.client, symbol, category); } catch { /* silent */ }
+    
+    // Get bot state for capital info
+    const miState = await db.getOrCreateBotState(engine.userId);
+    const miCapital = parseFloat(miState?.currentBalance ?? "5000");
+    const miTodayPnl = parseFloat(miState?.todayPnl ?? "0");
+    
+    masterSignal = aggregateMasterSignal({
+      symbol,
+      currentPrice: price,
+      klines5m,
+      klines15m: klines15m_mta,
+      klines1h,
+      orderBookImbalance: orderBookData,
+      totalCapital: miCapital,
+      proposedAmount: miCapital * 0.05,
+      todayPnl: miTodayPnl,
+      currentBalance: miCapital,
+      strategy: "grid",
+    });
+    
+    // Apply master signal to buy permission
+    if (masterSignal.blocked) {
+      trendAllowsBuy = false;
+      trendLabel = `BLOCKED: ${masterSignal.blockReason}`;
+    } else if (masterSignal.direction === "sell" && masterSignal.confidence > 40) {
+      trendAllowsBuy = false;
+      trendLabel = `master-sell-${masterSignal.confidence}`;
+    }
+    
+    // Apply master sizing multiplier
+    positionSizeMultiplier *= masterSignal.sizingMultiplier;
+    
+    // Anti-manipulation check
+    const manipulation = detectManipulation(klines15m_mta);
+    if (manipulation.isFakeWick) {
+      console.log(`[Grid] ${symbol} MANIPULATION: ${manipulation.reason}`);
+      positionSizeMultiplier *= 0.3;
+    }
+    
+    console.log(`[Grid] ${symbol} MASTER: dir=${masterSignal.direction} conf=${masterSignal.confidence} sizing=${masterSignal.sizingMultiplier.toFixed(2)}x blocked=${masterSignal.blocked} reasons=${masterSignal.reasons.length}`);
+  } catch (e) {
+    console.warn(`[Grid] ${symbol} Master signal error: ${(e as Error).message}`);
+  }
+  
+  // Legacy MTA fallback
   const mtf = await multiTimeframeCheck(engine.client, symbol, category);
-  if (mtf.direction === "bearish" && mtf.aligned) {
+  if (mtf.direction === "bearish" && mtf.aligned && !masterSignal) {
     trendAllowsBuy = false;
     trendLabel = "bearish-mtf";
   }
@@ -1274,7 +1340,7 @@ async function runScalpingStrategy(engine: EngineState, symbol: string, category
     return;
   }
 
-  // ─── SMART ANALYSIS v6.0 for Scalping ───
+  // ─── SMART ANALYSIS v6.0 + MARKET INTELLIGENCE v7.0 for Scalping ───
   const klines = await fetchKlines(engine.client, symbol, "15", 50, category);
   if (klines.closes.length < 26) return;
 
@@ -1282,23 +1348,45 @@ async function runScalpingStrategy(engine: EngineState, symbol: string, category
   const smartScore = calculateSignalScore(klines, price);
   const scalpCooldown = getLossCooldownMultiplier(symbol, "scalping");
 
+  // ─── MASTER SIGNAL for Scalping ───
+  let scalpMaster: MasterSignal | null = null;
+  try {
+    const klines5m = await fetchKlines(engine.client, symbol, "5", 60, category);
+    const klines1h = await fetchKlines(engine.client, symbol, "60", 60, category);
+    let orderBookData;
+    try { orderBookData = await getOrderBookImbalance(engine.client, symbol, category); } catch { /* silent */ }
+    const miState = await db.getOrCreateBotState(engine.userId);
+    const miCapital = parseFloat(miState?.currentBalance ?? "5000");
+    const miTodayPnl = parseFloat(miState?.todayPnl ?? "0");
+    scalpMaster = aggregateMasterSignal({
+      symbol, currentPrice: price, klines5m, klines15m: klines, klines1h,
+      orderBookImbalance: orderBookData,
+      totalCapital: miCapital, proposedAmount: miCapital * 0.03,
+      todayPnl: miTodayPnl, currentBalance: miCapital, strategy: "scalping",
+    });
+  } catch { /* use smartScore only */ }
+
   let signal: "Buy" | "Sell" | null = null;
   const reasons = smartScore.reasons;
 
-  // Smart scoring determines signal — more aggressive for daily gains
-  const minConfidence = 30; // Lower threshold = more scalping trades = more daily USDT gains
-  if (smartScore.direction === "buy" && smartScore.confidence >= minConfidence) {
+  // Use master signal if available, fallback to smart score
+  const effectiveConfidence = scalpMaster ? scalpMaster.confidence : smartScore.confidence;
+  const effectiveDirection = scalpMaster ? scalpMaster.direction : smartScore.direction;
+  const isBlocked = scalpMaster?.blocked ?? false;
+
+  const minConfidence = 30;
+  if (!isBlocked && effectiveDirection === "buy" && effectiveConfidence >= minConfidence) {
     signal = "Buy";
-  } else if (smartScore.direction === "sell" && smartScore.confidence >= minConfidence) {
+  } else if (effectiveDirection === "sell" && effectiveConfidence >= minConfidence) {
     signal = "Sell";
   }
 
   // In simulation, be more lenient
-  if (engine.simulationMode && !signal && smartScore.confidence >= 20) {
-    signal = smartScore.direction === "buy" ? "Buy" : smartScore.direction === "sell" ? "Sell" : null;
+  if (engine.simulationMode && !signal && effectiveConfidence >= 20) {
+    signal = effectiveDirection === "buy" ? "Buy" : effectiveDirection === "sell" ? "Sell" : null;
   }
 
-  console.log(`[Scalp] ${symbol} SMART: price=${price.toFixed(2)} score=${smartScore.confidence} dir=${smartScore.direction} regime=${smartScore.regime} signal=${signal ?? 'none'} reasons=${reasons.length} cooldown=${scalpCooldown.toFixed(1)}x dailyMode=${dailyProfitMode}`);
+  console.log(`[Scalp] ${symbol} SMART+MASTER: price=${price.toFixed(2)} score=${effectiveConfidence} dir=${effectiveDirection} regime=${smartScore.regime} signal=${signal ?? 'none'} blocked=${isBlocked} reasons=${reasons.length} cooldown=${scalpCooldown.toFixed(1)}x dailyMode=${dailyProfitMode}`);
 
   // ─── Daily Profit Target Guard for Scalping ───
   if (signal === "Buy") {
@@ -1320,10 +1408,11 @@ async function runScalpingStrategy(engine: EngineState, symbol: string, category
     const allocation = strat?.allocationPct ?? 30;
     const state = await db.getOrCreateBotState(engine.userId);
     const balance = parseFloat(state?.currentBalance ?? "5000");
-    // Smart sizing: confidence-weighted + cooldown + BOOST on strong signals
+    // Smart sizing: confidence-weighted + cooldown + BOOST + master signal multiplier
     const baseAmount = balance * allocation / 100 * 0.7;
-    const scalpBoost = smartScore.confidence > 75 ? 1.8 : smartScore.confidence > 55 ? 1.3 : 1.0;
-    const tradeAmount = baseAmount * smartScore.suggestedSizePct * scalpCooldown * scalpBoost;
+    const scalpBoost = effectiveConfidence > 75 ? 1.8 : effectiveConfidence > 55 ? 1.3 : 1.0;
+    const masterSizing = scalpMaster?.sizingMultiplier ?? 1.0;
+    const tradeAmount = baseAmount * smartScore.suggestedSizePct * scalpCooldown * scalpBoost * masterSizing;
     const qty = (tradeAmount / price).toFixed(6);
 
     // ─── Position-Tracked Scalping ───
@@ -1464,23 +1553,46 @@ async function runFuturesStrategy(engine: EngineState, symbol: string, dailyProf
   const futuresMaxHoldHours = futConfig.maxHoldHours ?? 0;
   const futuresNoSL = ["BTCUSDT", "ETHUSDT"];
 
-  // ─── SMART ANALYSIS v6.0 for Futures ───
+  // ─── SMART ANALYSIS v6.0 + MARKET INTELLIGENCE v7.0 for Futures ───
   const klines = await fetchKlines(engine.client, symbol, "15", 50, "linear");
   if (klines.closes.length < 26) return;
   const futSmartScore = calculateSignalScore(klines, price);
   const futCooldown = getLossCooldownMultiplier(symbol, "futures");
 
+  // ─── MASTER SIGNAL for Futures ───
+  let futMaster: MasterSignal | null = null;
+  try {
+    const klines5m = await fetchKlines(engine.client, symbol, "5", 60, "linear");
+    const klines1h = await fetchKlines(engine.client, symbol, "60", 60, "linear");
+    let orderBookData;
+    try { orderBookData = await getOrderBookImbalance(engine.client, symbol, "linear"); } catch { /* silent */ }
+    const miState = await db.getOrCreateBotState(engine.userId);
+    const miCapital = parseFloat(miState?.currentBalance ?? "5000");
+    const miTodayPnl = parseFloat(miState?.todayPnl ?? "0");
+    futMaster = aggregateMasterSignal({
+      symbol, currentPrice: price, klines5m, klines15m: klines, klines1h,
+      orderBookImbalance: orderBookData,
+      totalCapital: miCapital, proposedAmount: miCapital * 0.05,
+      todayPnl: miTodayPnl, currentBalance: miCapital, strategy: "futures",
+    });
+  } catch { /* use smartScore only */ }
+
   // ATR-based dynamic TP and trailing
   const atrPct = calculateATRPercent(klines.highs, klines.lows, klines.closes);
   const baseTpPct = futConfig.takeProfitPct ?? 1.5;
-  // Scale TP: use ATR for more accurate volatility-based TP
   const dynamicTpPct = Math.max(0.8, Math.min(3.0, baseTpPct * Math.max(1, atrPct / 0.5)));
 
   // ─── ATR-based trailing stop for futures ───
-  const trailingActivationPct = Math.max(0.003, atrPct / 100 * 1.0); // 1x ATR activation
-  const trailingDistancePct = Math.max(0.002, atrPct / 100 * 0.7);   // 0.7x ATR distance
+  const trailingActivationPct = Math.max(0.003, atrPct / 100 * 1.0);
+  const trailingDistancePct = Math.max(0.002, atrPct / 100 * 0.7);
 
-  console.log(`[Futures] ${symbol} SMART: score=${futSmartScore.confidence} dir=${futSmartScore.direction} regime=${futSmartScore.regime} atrPct=${atrPct.toFixed(2)}% TP=${dynamicTpPct.toFixed(1)}% trail=${(trailingDistancePct * 100).toFixed(2)}%`);
+  // Effective confidence from master signal or smart score
+  const futEffConf = futMaster ? futMaster.confidence : futSmartScore.confidence;
+  const futEffDir = futMaster ? futMaster.direction : futSmartScore.direction;
+  const futBlocked = futMaster?.blocked ?? false;
+  const futMasterSizing = futMaster?.sizingMultiplier ?? 1.0;
+
+  console.log(`[Futures] ${symbol} SMART+MASTER: score=${futEffConf} dir=${futEffDir} regime=${futSmartScore.regime} blocked=${futBlocked} atrPct=${atrPct.toFixed(2)}% TP=${dynamicTpPct.toFixed(1)}% sizing=${futMasterSizing.toFixed(2)}x`);
 
   // ─── Manage existing positions ───
   for (let i = positions.length - 1; i >= 0; i--) {
@@ -1635,28 +1747,32 @@ async function runFuturesStrategy(engine: EngineState, symbol: string, dailyProf
     return;
   }
 
-  // Smart scoring determines entry direction — lower threshold for more entries
-  const minFuturesConfidence = dailyProfitMode === "cautious" ? 70 : 35; // Lower bar = more trades = more daily gains
+  // Smart scoring determines entry direction — use master signal when available
+  const minFuturesConfidence = dailyProfitMode === "cautious" ? 70 : 35;
   let entryDirection: "long" | "short" | null = null;
 
-  if (futSmartScore.direction === "buy" && futSmartScore.confidence >= minFuturesConfidence && longPositions.length < 3) {
-    // Regime filter: don't go long in strong downtrend
+  // Block entry if master signal says blocked
+  if (futBlocked) {
+    console.log(`[Futures] ${symbol} BLOCKED by master signal: ${futMaster?.blockReason}`);
+    return;
+  }
+
+  if (futEffDir === "buy" && futEffConf >= minFuturesConfidence && longPositions.length < 3) {
     if (futSmartScore.regime !== "strong_trend_down") {
       entryDirection = "long";
     }
-  } else if (futSmartScore.direction === "sell" && futSmartScore.confidence >= minFuturesConfidence && shortPositions.length < 3) {
-    // Regime filter: don't go short in strong uptrend
+  } else if (futEffDir === "sell" && futEffConf >= minFuturesConfidence && shortPositions.length < 3) {
     if (futSmartScore.regime !== "strong_trend_up") {
       entryDirection = "short";
     }
   }
 
   if (dailyProfitMode === "cautious" && entryDirection) {
-    console.log(`[Futures] 💡 EXCEPTIONAL ${entryDirection.toUpperCase()} ${symbol} — score ${futSmartScore.confidence} >= 75 despite daily target`);
+    console.log(`[Futures] 💡 EXCEPTIONAL ${entryDirection.toUpperCase()} ${symbol} — score ${futEffConf} >= 70 despite daily target`);
   }
 
   if (!entryDirection) {
-    console.log(`[Futures] ${symbol} SKIP entry — score=${futSmartScore.confidence} dir=${futSmartScore.direction} regime=${futSmartScore.regime}`);
+    console.log(`[Futures] ${symbol} SKIP entry — score=${futEffConf} dir=${futEffDir} regime=${futSmartScore.regime}`);
     return;
   }
 
@@ -1666,11 +1782,10 @@ async function runFuturesStrategy(engine: EngineState, symbol: string, dailyProf
   const allocation = strat?.allocationPct ?? 25;
   const state = await db.getOrCreateBotState(engine.userId);
   const balance = parseFloat(state?.currentBalance ?? "5000");
-  // Smart sizing: confidence-weighted + cooldown + BOOST on strong signals
+  // Smart sizing: confidence-weighted + cooldown + BOOST + master signal multiplier
   const baseTradeAmount = (balance * allocation / 100) / maxPositions;
-  // Boost 1.5x on strong signals (score > 65), 2x on very strong (score > 80)
-  const strengthBoost = futSmartScore.confidence > 80 ? 2.0 : futSmartScore.confidence > 65 ? 1.5 : 1.0;
-  const tradeAmount = baseTradeAmount * futSmartScore.suggestedSizePct * futCooldown * strengthBoost;
+  const strengthBoost = futEffConf > 80 ? 2.0 : futEffConf > 65 ? 1.5 : 1.0;
+  const tradeAmount = baseTradeAmount * futSmartScore.suggestedSizePct * futCooldown * strengthBoost * futMasterSizing;
   const qty = ((tradeAmount * leverage) / price).toFixed(6);
 
   // LONG → Buy to open, SHORT → Sell to open
@@ -1694,6 +1809,7 @@ async function runFuturesStrategy(engine: EngineState, symbol: string, dailyProf
     // Telegram notification for futures entry
     const dirEmoji = entryDirection === "long" ? "🟢" : "🔴";
     const dirLabel = entryDirection === "long" ? "LONG" : "SHORT";
+    const masterReasons = futMaster?.reasons?.slice(0, 3).join(", ") ?? futSmartScore.reasons.slice(0, 3).join(", ");
     await sendTelegramNotification(engine,
       `${dirEmoji} <b>PHANTOM Futures ${dirLabel}</b>\n` +
       `Par: ${symbol}\n` +
@@ -1701,8 +1817,8 @@ async function runFuturesStrategy(engine: EngineState, symbol: string, dailyProf
       `Apalancamiento: ${leverage}x\n` +
       `Monto: $${tradeAmount.toFixed(2)}\n` +
       `TP: ${dynamicTpPct.toFixed(1)}%\n` +
-      `Score: ${futSmartScore.confidence} | Régimen: ${futSmartScore.regime}\n` +
-      `Razones: ${futSmartScore.reasons.slice(0, 3).join(", ")}`
+      `Score: ${futEffConf} | Régimen: ${futSmartScore.regime}\n` +
+      `Master: ${masterReasons}`
     );
   }
 }
@@ -1710,9 +1826,9 @@ async function runFuturesStrategy(engine: EngineState, symbol: string, dailyProf
 // Backward compatibility alias
 const runFuturesLongOnly = runFuturesStrategy;
 
-// ─── Opportunity Scanner (Smart Analysis v6.0) ───
+// ─── Opportunity Scanner (Smart Analysis v6.0 + Market Intelligence v7.0) ───
 async function runOpportunityScanner(engine: EngineState) {
-  console.log(`[Scanner] Scanning ${SCANNER_COINS.length} coins with Smart Analysis...`);
+  console.log(`[Scanner] Scanning ${SCANNER_COINS.length} coins with Smart+Master Analysis...`);
   for (const symbol of SCANNER_COINS) {
     try {
       const klines = await fetchKlines(null, symbol, "15", 50, "spot");
@@ -1723,38 +1839,70 @@ async function runOpportunityScanner(engine: EngineState) {
       // Full smart analysis
       const score = calculateSignalScore(klines, price);
 
+      // Master signal for enhanced scanning
+      let scanMaster: MasterSignal | null = null;
+      try {
+        const k5m = await fetchKlines(null, symbol, "5", 60, "spot");
+        const k1h = await fetchKlines(null, symbol, "60", 60, "spot");
+        const miState = await db.getOrCreateBotState(engine.userId);
+        const miCap = parseFloat(miState?.currentBalance ?? "5000");
+        scanMaster = aggregateMasterSignal({
+          symbol, currentPrice: price, klines5m: k5m, klines15m: klines, klines1h: k1h,
+          totalCapital: miCap, proposedAmount: miCap * 0.05,
+          todayPnl: parseFloat(miState?.todayPnl ?? "0"), currentBalance: miCap, strategy: "grid",
+        });
+      } catch { /* use score only */ }
+
+      // Use best available confidence
+      const effConf = scanMaster ? Math.max(score.confidence, scanMaster.confidence) : score.confidence;
+      const effDir = scanMaster ? scanMaster.direction : score.direction;
+
       // Map direction to signal label
       let signal: string | null = null;
-      if (score.direction === "buy" && score.confidence >= 70) signal = "STRONG BUY";
-      else if (score.direction === "buy" && score.confidence >= 40) signal = "BUY";
-      else if (score.direction === "sell" && score.confidence >= 70) signal = "STRONG SELL";
-      else if (score.direction === "sell" && score.confidence >= 40) signal = "SELL";
+      if (effDir === "buy" && effConf >= 70) signal = "STRONG BUY";
+      else if (effDir === "buy" && effConf >= 40) signal = "BUY";
+      else if (effDir === "sell" && effConf >= 70) signal = "STRONG SELL";
+      else if (effDir === "sell" && effConf >= 40) signal = "SELL";
 
-      if (signal && score.confidence >= 40 && score.reasons.length >= 2) {
-        const confidence = Math.min(score.confidence, 95);
+      // Also detect mean reversion and breakout opportunities
+      const meanRev = detectMeanReversion(klines, price);
+      if (meanRev?.active && !signal) {
+        signal = meanRev.direction === "buy" ? "MEAN REVERSION BUY" : "MEAN REVERSION SELL";
+      }
+      const breakout = detectBreakout(klines, price);
+      if (breakout?.active && !signal) {
+        signal = breakout.direction === "buy" ? "BREAKOUT BUY" : "BREAKOUT SELL";
+      }
+
+      if (signal && effConf >= 35 && score.reasons.length >= 1) {
+        const confidence = Math.min(effConf, 95);
+        const allReasons = [...score.reasons, ...(scanMaster?.reasons ?? [])].slice(0, 6);
         await db.insertOpportunity({
           userId: engine.userId, symbol, signal, price: price.toString(),
-          confidence, reasons: score.reasons, isRead: false,
+          confidence, reasons: allReasons, isRead: false,
         });
-        console.log(`[Scanner] ${signal} ${symbol} @ ${price} confidence=${confidence}% regime=${score.regime} reasons=${score.reasons.join(", ")}`);
-        if (confidence >= 75) {
+        console.log(`[Scanner] ${signal} ${symbol} @ ${price} confidence=${confidence}% regime=${score.regime} master=${scanMaster ? 'yes' : 'no'}`);
+        if (confidence >= 70) {
           try {
             const { notifyOwner } = await import("./_core/notification");
             await notifyOwner({
               title: `📊 PHANTOM: ${signal} ${symbol} (${confidence}%)`,
-              content: `Par: ${symbol}\nSeñal: ${signal}\nConfianza: ${confidence}%\nRégimen: ${score.regime}\nPrecio: $${price.toFixed(4)}\nRazones: ${score.reasons.join(", ")}`,
+              content: `Par: ${symbol}\nSeñal: ${signal}\nConfianza: ${confidence}%\nRégimen: ${score.regime}\nPrecio: $${price.toFixed(4)}\nRazones: ${allReasons.join(", ")}`,
             });
           } catch { /* non-blocking */ }
 
-          if (confidence >= 85) {
+          if (confidence >= 80) {
             await sendTelegramNotification(engine,
-              `📊 <b>PHANTOM Scanner: ${signal}</b>\nPar: ${symbol}\nPrecio: $${price.toFixed(4)}\nConfianza: ${confidence}%\nRégimen: ${score.regime}\n${score.reasons.join("\n")}`
+              `📊 <b>PHANTOM Scanner: ${signal}</b>\nPar: ${symbol}\nPrecio: $${price.toFixed(4)}\nConfianza: ${confidence}%\nRégimen: ${score.regime}\n${allReasons.join("\n")}`
             );
           }
         }
       }
 
-      await new Promise(r => setTimeout(r, 4000));
+      // Update arbitrage prices for multi-exchange scanning
+      updateArbPrice(symbol, "bybit", price);
+
+      await new Promise(r => setTimeout(r, 3000));
     } catch (e) {
       // Skip this coin on error
     }
@@ -1905,7 +2053,49 @@ export async function startEngine(userId: number): Promise<{ success: boolean; e
     try {
       const cycleNum = (engineCycles.get(userId) ?? 0) + 1;
       engineCycles.set(userId, cycleNum);
-      console.log(`[Engine] Cycle #${cycleNum} for user ${userId}`);
+
+      // ─── MARKET INTELLIGENCE: Update BTC state every cycle ───
+      try {
+        const btcTicker = livePrices.get("BTCUSDT");
+        if (btcTicker) {
+          updateBTCState(btcTicker.lastPrice);
+        } else {
+          const btcData = await fetchTicker(engine.client, "BTCUSDT", "linear");
+          if (btcData) updateBTCState(btcData.lastPrice);
+        }
+      } catch { /* silent */ }
+
+      // ─── MARKET INTELLIGENCE: Session & Momentum logging ───
+      const currentSession = getCurrentSession();
+      const intradayBoost = getIntradayMomentumBoost();
+      if (cycleNum % 20 === 1) {
+        console.log(`[Intelligence] Session=${currentSession.session} aggressiveness=${currentSession.aggressiveness} intradayBoost=${intradayBoost} reason=${currentSession.reason}`);
+      }
+
+      // ─── MARKET INTELLIGENCE: Drawdown check ───
+      try {
+        const ddState = await db.getOrCreateBotState(userId);
+        const ddPnl = parseFloat(ddState?.todayPnl ?? "0");
+        const ddBal = parseFloat(ddState?.currentBalance ?? "5000");
+        updateDrawdownState(ddBal, ddPnl);
+        const ddCheck = getDrawdownMultiplier();
+        if (ddCheck.mode !== "normal" && cycleNum % 10 === 1) {
+          console.log(`[Intelligence] DRAWDOWN: mode=${ddCheck.mode} multiplier=${ddCheck.multiplier} reason=${ddCheck.reason}`);
+        }
+      } catch { /* silent */ }
+
+      // ─── MARKET INTELLIGENCE: Arbitrage scan (every 10 cycles) ───
+      if (cycleNum % 10 === 0 && engine.exchange === "both") {
+        try {
+          const arbOpps = scanArbitrage(0.3);
+          if (arbOpps.length > 0) {
+            console.log(`[Intelligence] Arbitrage opportunities: ${arbOpps.map(a => `${a.symbol} ${a.spreadPct.toFixed(2)}%`).join(", ")}`);
+            // TODO: Execute arbitrage trades in future version
+          }
+        } catch { /* silent */ }
+      }
+
+      console.log(`[Engine] Cycle #${cycleNum} for user ${userId} (session=${currentSession.session}, boost=${intradayBoost})`);
 
       // Periodic position save every 10 cycles (~5 minutes)
       if (cycleNum % 10 === 0) {

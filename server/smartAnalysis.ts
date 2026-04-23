@@ -438,7 +438,7 @@ export interface SignalScore {
   urgency: "high" | "medium" | "low";
 }
 
-interface FullKlineData {
+export interface FullKlineData {
   opens: number[];
   highs: number[];
   lows: number[];
