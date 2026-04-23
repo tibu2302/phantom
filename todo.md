@@ -500,16 +500,28 @@
 - [x] Notificación Telegram cuando se alcanza la meta diaria
 - [x] Permitir que posiciones abiertas sigan cerrando normalmente (solo bloquear NUEVAS compras)
 - [x] Log claro de por qué se bloquea cada operación
-- [ ] Sync y deploy
+- [x] Sync y deploy
 
 ## Estrategia USDT-First + Futures Multi-Moneda (23 Abril 2026)
-- [ ] Grid: forzar LINEAR en Bybit para operar en USDT (no comprar monedas reales)
-- [ ] Grid: reducir maxHoldHours para rotar capital más rápido
-- [ ] Grid: spread más chico en ranging para más ciclos de ganancia
-- [ ] Auto-convert: más agresivo frecuencia pero NUNCA vender a pérdida — mantener regla 0.5% mínimo
-- [ ] Futures: activar en BTC, ETH, SOL, XRP, DOGE, AVAX, LINK, SUI, ARB (todo en linear/USDT)
-- [ ] Futures: LONG y SHORT inteligente según smart score
-- [ ] Futures: PnL se liquida en USDT automáticamente (linear perpetuals)
-- [ ] Strategy seeding: agregar futures para todas las monedas principales
-- [ ] Verificar que todo el flujo queda en USDT sin acumular monedas
+- [x] Grid: forzar LINEAR en Bybit para operar en USDT (no comprar monedas reales)
+- [x] Grid: reducir maxHoldHours de 12h a 4h para rotar capital más rápido
+- [x] Grid: spread más chico en ranging (0.65x) para más ciclos de ganancia
+- [x] Auto-convert: frecuencia cada 2.5min pero NUNCA vende a pérdida — regla 0.5% mínimo
+- [x] Futures: activar en BTC, ETH, SOL, XRP, DOGE, AVAX, LINK, SUI, ARB, ADA (todo en linear/USDT)
+- [x] Futures: LONG y SHORT inteligente según smart score
+- [x] Futures: PnL se liquida en USDT automáticamente (linear perpetuals)
+- [x] Strategy seeding: agregar futures para todas las monedas principales
+- [x] Verificar que todo el flujo queda en USDT sin acumular monedas
+- [x] Sync y deploy
+
+## Notificaciones Futures + Optimización 2-5% Diario (23 Abril 2026)
+- [ ] Telegram: notificar apertura de posición futures (LONG/SHORT, moneda, leverage, monto)
+- [ ] Telegram: notificar cierre de posición futures con PnL en USDT
+- [ ] Telegram: notificar trailing stop activado en futures
+- [ ] Optimizar: reducir umbrales de confianza para más operaciones (más ciclos = más ganancia)
+- [ ] Optimizar: grid más agresivo — más posiciones simultáneas, spreads más chicos
+- [ ] Optimizar: futures más agresivos — más monedas, leverage optimizado
+- [ ] Optimizar: scalping más frecuente con entradas más rápidas
+- [ ] Optimizar: position sizing más grande en señales fuertes (score > 70)
+- [ ] Optimizar: reducir tiempo entre ciclos para capturar más movimientos
 - [ ] Sync y deploy

@@ -879,7 +879,7 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
   const trailingPct = dynamicTrailingPct > 0 ? dynamicTrailingPct : configTrailingPct; // ATR-based trailing
   const trailingActivation = (stratConfig.trailingActivationPct ?? 0.5) / 100;
   const maxHoldTimeMs = (stratConfig.maxHoldHours ?? 4) * 60 * 60 * 1000; // Default 4 hours — fast USDT rotation
-  const maxOpenPositions = stratConfig.maxOpenPositions ?? 3; // Max open positions per symbol
+  const maxOpenPositions = stratConfig.maxOpenPositions ?? 5; // Max open positions per symbol — more positions = more cycles = more USDT gains
   // Minimum 0.5% net profit on ALL sells — NEVER sell below this threshold
   const MIN_PROFIT_PCT = 0.005; // 0.5% minimum net profit after fees
   const positionsToSell: { pos: OpenBuyPosition; reason: string }[] = [];
@@ -1073,7 +1073,7 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
           continue;
         }
         // Block buy if confidence is too low (weak signal = risky entry)
-        if (smartScore.direction === "buy" && smartScore.confidence < 30) {
+        if (smartScore.direction === "buy" && smartScore.confidence < 20) {
           console.log(`[Grid] SKIP BUY ${symbol} @ ${level.price.toFixed(2)} — buy confidence too low (${smartScore.confidence}%)`);
           continue;
         }
@@ -1101,8 +1101,9 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
       const state = await db.getOrCreateBotState(engine.userId);
       const balance = parseFloat(state?.currentBalance ?? "5000");
       const baseTradeAmount = (balance * allocation / 100) / (levels.length / 2);
-      // Apply smart multiplier: higher confidence = larger position, loss streak = smaller
-      const tradeAmount = baseTradeAmount * positionSizeMultiplier;
+      // Apply smart multiplier + strength boost: strong signals get bigger positions
+      const gridBoost = (smartScore?.confidence ?? 50) > 70 ? 1.5 : (smartScore?.confidence ?? 50) > 50 ? 1.2 : 1.0;
+      const tradeAmount = baseTradeAmount * positionSizeMultiplier * gridBoost;
       const qty = (tradeAmount / price).toFixed(6);
 
       const orderId = await placeOrder(engine, symbol, level.side, qty, category);
@@ -1284,8 +1285,8 @@ async function runScalpingStrategy(engine: EngineState, symbol: string, category
   let signal: "Buy" | "Sell" | null = null;
   const reasons = smartScore.reasons;
 
-  // Smart scoring determines signal — higher confidence = smarter entries = no need for stop-loss
-  const minConfidence = 45; // Scalping needs at least 45% confidence (no SL, so enter wisely)
+  // Smart scoring determines signal — more aggressive for daily gains
+  const minConfidence = 30; // Lower threshold = more scalping trades = more daily USDT gains
   if (smartScore.direction === "buy" && smartScore.confidence >= minConfidence) {
     signal = "Buy";
   } else if (smartScore.direction === "sell" && smartScore.confidence >= minConfidence) {
@@ -1319,9 +1320,10 @@ async function runScalpingStrategy(engine: EngineState, symbol: string, category
     const allocation = strat?.allocationPct ?? 30;
     const state = await db.getOrCreateBotState(engine.userId);
     const balance = parseFloat(state?.currentBalance ?? "5000");
-    // Smart sizing: confidence-weighted + cooldown multiplier
+    // Smart sizing: confidence-weighted + cooldown + BOOST on strong signals
     const baseAmount = balance * allocation / 100 * 0.7;
-    const tradeAmount = baseAmount * smartScore.suggestedSizePct * scalpCooldown;
+    const scalpBoost = smartScore.confidence > 75 ? 1.8 : smartScore.confidence > 55 ? 1.3 : 1.0;
+    const tradeAmount = baseAmount * smartScore.suggestedSizePct * scalpCooldown * scalpBoost;
     const qty = (tradeAmount / price).toFixed(6);
 
     // ─── Position-Tracked Scalping ───
@@ -1383,7 +1385,7 @@ async function runScalpingStrategy(engine: EngineState, symbol: string, category
         const holdTime = ((Date.now() - pos.openedAt) / 60000).toFixed(1);
         console.log(`[Scalp] SELL ${symbol} @ ${price.toFixed(4)} qty=${sellQty} buyPrice=${pos.buyPrice.toFixed(4)} pnl=$${pnl.toFixed(2)} hold=${holdTime}min`);
 
-        if (pnl > 0.5) {
+        if (pnl > 0) {
           await sendTelegramNotification(engine,
             `⚡ <b>PHANTOM Scalp Profit</b>\nPar: ${symbol}\nCompra: $${pos.buyPrice.toFixed(4)}\nVenta: $${price.toFixed(4)}\nGanancia: <b>$${pnl.toFixed(2)}</b>\nTiempo: ${holdTime}min`
           );
@@ -1394,8 +1396,8 @@ async function runScalpingStrategy(engine: EngineState, symbol: string, category
         console.log(`[Scalp] Removed phantom scalp position ${symbol} buyPrice=${pos.buyPrice} — sell failed`);
       }
     } else if (signal === "Buy") {
-      // Allow up to 2 scalp positions per symbol per exchange
-      const maxScalpPositions = 2;
+      // Allow up to 3 scalp positions per symbol per exchange — more positions = more daily gains
+      const maxScalpPositions = 3;
       if (myPositions.length >= maxScalpPositions) {
         console.log(`[Scalp] SKIP ${symbol} Buy — already have ${myPositions.length}/${maxScalpPositions} scalp position(s) on ${exchangeKey}`);
         return;
@@ -1618,7 +1620,7 @@ async function runFuturesStrategy(engine: EngineState, symbol: string, dailyProf
   }
 
   // ─── Smart Entry: LONG or SHORT based on scoring ───
-  const maxPositions = 3;
+  const maxPositions = 5; // More positions = more USDT gains from futures
   const longPositions = positions.filter(p => (p.direction ?? "long") === "long");
   const shortPositions = positions.filter(p => p.direction === "short");
 
@@ -1633,18 +1635,18 @@ async function runFuturesStrategy(engine: EngineState, symbol: string, dailyProf
     return;
   }
 
-  // Smart scoring determines entry direction
-  const minFuturesConfidence = dailyProfitMode === "cautious" ? 75 : 50; // Higher bar in cautious mode
+  // Smart scoring determines entry direction — lower threshold for more entries
+  const minFuturesConfidence = dailyProfitMode === "cautious" ? 70 : 35; // Lower bar = more trades = more daily gains
   let entryDirection: "long" | "short" | null = null;
 
-  if (futSmartScore.direction === "buy" && futSmartScore.confidence >= minFuturesConfidence && longPositions.length < 2) {
+  if (futSmartScore.direction === "buy" && futSmartScore.confidence >= minFuturesConfidence && longPositions.length < 3) {
     // Regime filter: don't go long in strong downtrend
-    if (futSmartScore.regime !== "strong_trend_down" && futSmartScore.regime !== "trend_down") {
+    if (futSmartScore.regime !== "strong_trend_down") {
       entryDirection = "long";
     }
-  } else if (futSmartScore.direction === "sell" && futSmartScore.confidence >= minFuturesConfidence && shortPositions.length < 2) {
+  } else if (futSmartScore.direction === "sell" && futSmartScore.confidence >= minFuturesConfidence && shortPositions.length < 3) {
     // Regime filter: don't go short in strong uptrend
-    if (futSmartScore.regime !== "strong_trend_up" && futSmartScore.regime !== "trend_up") {
+    if (futSmartScore.regime !== "strong_trend_up") {
       entryDirection = "short";
     }
   }
@@ -1664,9 +1666,11 @@ async function runFuturesStrategy(engine: EngineState, symbol: string, dailyProf
   const allocation = strat?.allocationPct ?? 25;
   const state = await db.getOrCreateBotState(engine.userId);
   const balance = parseFloat(state?.currentBalance ?? "5000");
-  // Smart sizing: confidence-weighted + cooldown
+  // Smart sizing: confidence-weighted + cooldown + BOOST on strong signals
   const baseTradeAmount = (balance * allocation / 100) / maxPositions;
-  const tradeAmount = baseTradeAmount * futSmartScore.suggestedSizePct * futCooldown;
+  // Boost 1.5x on strong signals (score > 65), 2x on very strong (score > 80)
+  const strengthBoost = futSmartScore.confidence > 80 ? 2.0 : futSmartScore.confidence > 65 ? 1.5 : 1.0;
+  const tradeAmount = baseTradeAmount * futSmartScore.suggestedSizePct * futCooldown * strengthBoost;
   const qty = ((tradeAmount * leverage) / price).toFixed(6);
 
   // LONG → Buy to open, SHORT → Sell to open
@@ -1686,6 +1690,20 @@ async function runFuturesStrategy(engine: EngineState, symbol: string, dailyProf
     });
 
     console.log(`[Futures] ${entryDirection.toUpperCase()} ${symbol} @ ${price.toFixed(2)} qty=${qty} leverage=${leverage}x TP=${dynamicTpPct.toFixed(1)}% score=${futSmartScore.confidence} regime=${futSmartScore.regime} order=${orderId}`);
+
+    // Telegram notification for futures entry
+    const dirEmoji = entryDirection === "long" ? "🟢" : "🔴";
+    const dirLabel = entryDirection === "long" ? "LONG" : "SHORT";
+    await sendTelegramNotification(engine,
+      `${dirEmoji} <b>PHANTOM Futures ${dirLabel}</b>\n` +
+      `Par: ${symbol}\n` +
+      `Entrada: $${price.toFixed(2)}\n` +
+      `Apalancamiento: ${leverage}x\n` +
+      `Monto: $${tradeAmount.toFixed(2)}\n` +
+      `TP: ${dynamicTpPct.toFixed(1)}%\n` +
+      `Score: ${futSmartScore.confidence} | Régimen: ${futSmartScore.regime}\n` +
+      `Razones: ${futSmartScore.reasons.slice(0, 3).join(", ")}`
+    );
   }
 }
 
@@ -2060,13 +2078,13 @@ export async function startEngine(userId: number): Promise<{ success: boolean; e
     } catch (e) {
       console.error("[Engine] Trading loop error:", (e as Error).message);
     }
-  }, 20_000);
+  }, 15_000); // 15s cycle — more frequent = more opportunities captured
 
-  // Opportunity scanner — every 2 minutes
+  // Opportunity scanner — every 1 minute (aggressive for daily target)
   engine.scannerIntervalId = setInterval(async () => {
     if (!engine.isRunning) return;
     await runOpportunityScanner(engine);
-  }, 120_000);
+  }, 60_000);
 
   setTimeout(() => runOpportunityScanner(engine), 5000);
 
