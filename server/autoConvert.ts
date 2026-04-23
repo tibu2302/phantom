@@ -4,6 +4,7 @@
 // NEVER sells at a loss — if current price < avg buy price, it holds.
 
 import type { EngineState } from "./tradingEngine";
+import { withRetry } from "./tradingEngine";
 import { getDb } from "./db";
 import { trades } from "../drizzle/schema";
 import { eq, and, sql } from "drizzle-orm";
@@ -54,7 +55,7 @@ export async function autoConvertCoinsToUSDT(engine: EngineState): Promise<void>
   try {
     // ─── Bybit: Get all coin balances from unified account ───
     if (engine.client) {
-      const res = await engine.client.getWalletBalance({ accountType: "UNIFIED" });
+      const res = await withRetry(() => engine.client.getWalletBalance({ accountType: "UNIFIED" }), "AutoConvert Bybit getWalletBalance");
       if (res.retCode === 0) {
         const coins: CoinBalance[] = (res.result as any)?.list?.[0]?.coin ?? [];
         for (const coin of coins) {
@@ -103,13 +104,13 @@ export async function autoConvertCoinsToUSDT(engine: EngineState): Promise<void>
           // In profit — sell it
           try {
             const qtyStr = available.toFixed(8);
-            const sellRes = await engine.client.submitOrder({
+            const sellRes = await withRetry(() => engine.client.submitOrder({
               category: "spot",
               symbol: pair,
               side: "Sell",
               orderType: "Market",
               qty: qtyStr,
-            });
+            }), `AutoConvert Bybit sell ${symbol}`);
             
             if (sellRes.result?.orderId) {
               console.log(`[AutoConvert] Bybit: Sold ${available.toFixed(4)} ${symbol} (~$${usdValue.toFixed(2)}) to USDT — profit +${profitPct}% — orderId: ${sellRes.result.orderId}`);
@@ -181,13 +182,13 @@ export async function autoConvertCoinsToUSDT(engine: EngineState): Promise<void>
           
           try {
             const kucoinPair = `${symbol}-USDT`;
-            const res = await engine.kucoinClient!.submitOrder({
+            const res: any = await withRetry(() => engine.kucoinClient!.submitOrder({
               clientOid: `phantom_ac_${Date.now()}`,
               side: "sell",
               symbol: kucoinPair,
               type: "market",
               size: qty.toFixed(8),
-            });
+            }), `AutoConvert KuCoin sell ${symbol}`);
             
             if (res?.data?.orderId) {
               console.log(`[AutoConvert] KuCoin: Sold ${qty.toFixed(4)} ${symbol} (~$${usdValue.toFixed(2)}) to USDT — profit +${profitPct}% — orderId: ${res.data.orderId}`);

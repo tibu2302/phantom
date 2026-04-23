@@ -135,6 +135,31 @@ function shouldNotifyError(key: string, isBalanceError = false): boolean {
   return true;
 }
 
+// ─── Network Error Detection & Retry ───
+const NETWORK_ERROR_CODES = ["EAI_AGAIN", "ECONNRESET", "ETIMEDOUT", "ENOTFOUND", "ECONNREFUSED", "EPIPE", "EHOSTUNREACH", "ENETUNREACH", "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_SOCKET"];
+
+function isNetworkError(err: unknown): boolean {
+  const msg = (err as any)?.message ?? String(err);
+  const code = (err as any)?.code ?? "";
+  return NETWORK_ERROR_CODES.some(c => msg.includes(c) || code === c) || msg.includes("fetch failed") || msg.includes("network");
+}
+
+export async function withRetry<T>(fn: () => Promise<T>, label: string, maxRetries = 3): Promise<T> {
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      return await fn();
+    } catch (e) {
+      lastErr = e;
+      if (!isNetworkError(e) || attempt === maxRetries) throw e;
+      const delayMs = 1000 * Math.pow(2, attempt - 1); // 1s, 2s, 4s
+      console.warn(`[Retry] ${label} attempt ${attempt}/${maxRetries} failed (${(e as Error).message}), retrying in ${delayMs}ms...`);
+      await new Promise(r => setTimeout(r, delayMs));
+    }
+  }
+  throw lastErr;
+}
+
 export function getEngineCycles(userId: number): number {
   return engineCycles.get(userId) ?? 0;
 }
@@ -297,7 +322,7 @@ async function fetchTicker(_client: RestClientV5 | null, symbol: string, categor
   if (cached) return cached;
   try {
     const url = `https://api.bybit.com/v5/market/tickers?category=${category}&symbol=${symbol}`;
-    const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
+    const res = await withRetry(() => fetch(url, { signal: AbortSignal.timeout(5000) }), `fetchTicker ${symbol}`);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json() as any;
     const t = data?.result?.list?.[0];
@@ -375,7 +400,7 @@ async function fetchKlines(_client: RestClientV5 | null, symbol: string, _interv
     const intervalMap: Record<string, string> = { "1": "1", "5": "5", "15": "15", "60": "60", "240": "240" };
     const bybitInterval = intervalMap[_interval] ?? "15";
     const bybitUrl = `https://api.bybit.com/v5/market/kline?category=${bybitCategory}&symbol=${symbol}&interval=${bybitInterval}&limit=${limit}`;
-    const res = await fetch(bybitUrl, { signal: AbortSignal.timeout(8000) });
+    const res = await withRetry(() => fetch(bybitUrl, { signal: AbortSignal.timeout(8000) }), `fetchKlines ${symbol}`);
     if (res.ok) {
       const data = await res.json() as any;
       const klines = data?.result?.list;
@@ -490,7 +515,7 @@ async function placeOrder(engine: EngineState, symbol: string, side: "Buy" | "Se
                 console.log(`[Engine] SKIP KuCoin ${side} ${symbol} — funds $${funds} below $1 minimum`);
               } else {
                 orderParams.funds = funds;
-                const res = await engine.kucoinClient.submitOrder(orderParams);
+                const res: any = await withRetry(() => engine.kucoinClient.submitOrder(orderParams), `KuCoin Buy ${symbol}`);
                 const kcId = res?.data?.orderId;
                 if (kcId) { orderIds.push(`KC:${kcId}`); console.log(`[Engine] BOTH/KuCoin order: ${side} ${symbol} funds=$${funds} id=${kcId}`); }
                 else {
@@ -504,7 +529,7 @@ async function placeOrder(engine: EngineState, symbol: string, side: "Buy" | "Se
               }
             } else {
               orderParams.size = qty;
-              const res = await engine.kucoinClient.submitOrder(orderParams);
+              const res: any = await withRetry(() => engine.kucoinClient.submitOrder(orderParams), `KuCoin Sell ${symbol}`);
               const kcId = res?.data?.orderId;
               if (kcId) { orderIds.push(`KC:${kcId}`); console.log(`[Engine] BOTH/KuCoin order: ${side} ${symbol} qty=${qty} id=${kcId}`); }
               else {
@@ -521,8 +546,9 @@ async function placeOrder(engine: EngineState, symbol: string, side: "Buy" | "Se
           const errMsg = (e as Error).message;
           console.error(`[Engine] BOTH/KuCoin order failed:`, errMsg);
           const isBalanceErr = errMsg === "OK" || errMsg.includes("Balance insufficient") || errMsg.includes("balance");
+          const isNetErr = isNetworkError(e);
           const nKey = `kc_${symbol}_${side}`;
-          if (shouldNotifyError(nKey, isBalanceErr)) {
+          if (!isNetErr && shouldNotifyError(nKey, isBalanceErr)) {
             const reason = isBalanceErr ? "Balance insuficiente en KuCoin" : errMsg;
             await sendTelegramNotification(engine, `❌ <b>Orden Fallida</b>\nExchange: KuCoin\nPar: ${symbol}\nLado: ${side}\nQty: ${qty}\nRazón: ${reason}`);
           }
@@ -530,15 +556,16 @@ async function placeOrder(engine: EngineState, symbol: string, side: "Buy" | "Se
       }
       // Bybit
       try {
-        const res = await engine.client.submitOrder({ category, symbol, side, orderType: "Market", qty });
+        const res = await withRetry(() => engine.client.submitOrder({ category, symbol, side, orderType: "Market", qty }), `Bybit ${side} ${symbol}`);
         const bybitId = res.result?.orderId;
         if (bybitId) { orderIds.push(`BY:${bybitId}`); console.log(`[Engine] BOTH/Bybit order: ${side} ${symbol} qty=${qty} id=${bybitId}`); }
       } catch (e) {
         const errMsg = (e as Error).message;
         console.error(`[Engine] BOTH/Bybit order failed:`, errMsg);
         const isBalanceErr2 = errMsg.includes("Balance insufficient") || errMsg.includes("balance") || errMsg.includes("Insufficient");
+        const isNetErr = isNetworkError(e);
         const nKey = `by_${symbol}_${side}`;
-        if (shouldNotifyError(nKey, isBalanceErr2)) {
+        if (!isNetErr && shouldNotifyError(nKey, isBalanceErr2)) {
           await sendTelegramNotification(engine, `❌ <b>Orden Fallida</b>\nExchange: Bybit\nPar: ${symbol}\nLado: ${side}\nQty: ${qty}\nError: ${errMsg}`);
         }
       }
@@ -577,7 +604,7 @@ async function placeOrder(engine: EngineState, symbol: string, side: "Buy" | "Se
       } else {
         orderParams.size = qty;
       }
-      const res = await engine.kucoinClient.submitOrder(orderParams);
+      const res: any = await withRetry(() => engine.kucoinClient.submitOrder(orderParams), `KuCoin-only ${side} ${symbol}`);
       const kcOrderId = res?.data?.orderId;
       if (kcOrderId) {
         console.log(`[Engine] KuCoin order OK: ${side} ${symbol} ${side === "Buy" ? `funds=$${orderParams.funds}` : `qty=${qty}`} id=${kcOrderId}`);
@@ -595,15 +622,17 @@ async function placeOrder(engine: EngineState, symbol: string, side: "Buy" | "Se
         return null;
       }
     } else {
-      const res = await engine.client.submitOrder({ category, symbol, side, orderType: "Market", qty });
+      const res = await withRetry(() => engine.client.submitOrder({ category, symbol, side, orderType: "Market", qty }), `Bybit-only ${side} ${symbol}`);
       return res.result?.orderId ?? null;
     }
   } catch (e) {
     const errMsg = (e as Error).message;
     console.error(`[Engine] Order failed ${side} ${symbol} (${engine.exchange}):`, errMsg);
     const isBalanceErr = errMsg === "OK" || errMsg.includes("Balance insufficient") || errMsg.includes("balance") || errMsg.includes("Insufficient");
+    const isNetErr = isNetworkError(e);
     const nKey = `${engine.exchange}_${symbol}_${side}`;
-    if (shouldNotifyError(nKey, isBalanceErr)) {
+    // Network errors: suppress from Telegram (transient, already retried 3x)
+    if (!isNetErr && shouldNotifyError(nKey, isBalanceErr)) {
       const reason = isBalanceErr ? `Balance insuficiente en ${engine.exchange}` : errMsg;
       await sendTelegramNotification(engine, `❌ <b>Orden Fallida</b>\nExchange: ${engine.exchange}\nPar: ${symbol}\nLado: ${side}\nQty: ${qty}\nRazón: ${reason}`);
     }
@@ -2043,7 +2072,7 @@ async function sendStatusReport(engine: EngineState) {
       if (bybitKeys && !engine.simulationMode) {
         const { RestClientV5 } = await import("bybit-api");
         const cl = new RestClientV5({ key: bybitKeys.apiKey, secret: bybitKeys.apiSecret });
-        const res = await cl.getWalletBalance({ accountType: "UNIFIED" });
+        const res = await withRetry(() => cl.getWalletBalance({ accountType: "UNIFIED" }), "Status Bybit balance");
         if (res.retCode === 0) {
           bybitBalNum = parseFloat((res.result as any)?.list?.[0]?.totalEquity ?? "0");
         }
@@ -2055,9 +2084,9 @@ async function sendStatusReport(engine: EngineState) {
         const { SpotClient } = await import("kucoin-api");
         const cl = new SpotClient({ apiKey: kucoinKeys.apiKey, apiSecret: kucoinKeys.apiSecret, apiPassphrase: kucoinKeys.passphrase ?? "" });
         const [mainRes, tradeRes, hfRes] = await Promise.allSettled([
-          cl.getBalances({ type: "main" }),
-          cl.getBalances({ type: "trade" }),
-          cl.getBalances({ type: "trade_hf" as any }),
+          withRetry(() => cl.getBalances({ type: "main" }), "Status KuCoin main"),
+          withRetry(() => cl.getBalances({ type: "trade" }), "Status KuCoin trade"),
+          withRetry(() => cl.getBalances({ type: "trade_hf" as any }), "Status KuCoin trade_hf"),
         ]);
         const prices = getLivePrices();
         const proc = (r: any) => {
@@ -2163,7 +2192,7 @@ async function sendDailySummary(engine: EngineState) {
       if (bybitKeys && !engine.simulationMode) {
         const { RestClientV5 } = await import("bybit-api");
         const cl = new RestClientV5({ key: bybitKeys.apiKey, secret: bybitKeys.apiSecret });
-        const res = await cl.getWalletBalance({ accountType: "UNIFIED" });
+        const res = await withRetry(() => cl.getWalletBalance({ accountType: "UNIFIED" }), "DailySummary Bybit balance");
         if (res.retCode === 0) {
           bybitBalNum = parseFloat((res.result as any)?.list?.[0]?.totalEquity ?? "0");
         }
@@ -2175,9 +2204,9 @@ async function sendDailySummary(engine: EngineState) {
         const { SpotClient } = await import("kucoin-api");
         const cl = new SpotClient({ apiKey: kucoinKeys.apiKey, apiSecret: kucoinKeys.apiSecret, apiPassphrase: kucoinKeys.passphrase ?? "" });
         const [mainRes, tradeRes, hfRes] = await Promise.allSettled([
-          cl.getBalances({ type: "main" }),
-          cl.getBalances({ type: "trade" }),
-          cl.getBalances({ type: "trade_hf" as any }),
+          withRetry(() => cl.getBalances({ type: "main" }), "DailySummary KuCoin main"),
+          withRetry(() => cl.getBalances({ type: "trade" }), "DailySummary KuCoin trade"),
+          withRetry(() => cl.getBalances({ type: "trade_hf" as any }), "DailySummary KuCoin trade_hf"),
         ]);
         const prices = getLivePrices();
         const proc = (r: any) => {

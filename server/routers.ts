@@ -5,7 +5,7 @@ import { publicProcedure, protectedProcedure, router } from "./_core/trpc";
 import { z } from "zod";
 import * as db from "./db";
 import { invokeLLM } from "./_core/llm";
-import { startEngine, stopEngine, emergencyStopEngine, getLivePrices, isEngineRunning, getEngineCycles, getOpenPositions } from "./tradingEngine";
+import { startEngine, stopEngine, emergencyStopEngine, getLivePrices, isEngineRunning, getEngineCycles, getOpenPositions, withRetry } from "./tradingEngine";
 
 export const appRouter = router({
   system: systemRouter,
@@ -165,7 +165,7 @@ export const appRouter = router({
         if (bybitKeys) {
           const { RestClientV5 } = await import("bybit-api");
           const client = new RestClientV5({ key: bybitKeys.apiKey, secret: bybitKeys.apiSecret });
-          const res = await client.getWalletBalance({ accountType: "UNIFIED" });
+          const res = await withRetry(() => client.getWalletBalance({ accountType: "UNIFIED" }), "Bybit getWalletBalance");
           if (res.retCode === 0) {
             const account = (res.result as any)?.list?.[0];
             bybitBal = parseFloat(account?.totalEquity ?? "0");
@@ -192,9 +192,9 @@ export const appRouter = router({
           const client = new SpotClient({ apiKey: kucoinKeys.apiKey, apiSecret: kucoinKeys.apiSecret, apiPassphrase: kucoinKeys.passphrase ?? "" });
           // Query all account types: main, trade, trade_hf
           const [mainRes, tradeRes, hfRes] = await Promise.allSettled([
-            client.getBalances({ type: "main" }),
-            client.getBalances({ type: "trade" }),
-            client.getBalances({ type: "trade_hf" as any }),
+            withRetry(() => client.getBalances({ type: "main" }), "KuCoin getBalances main"),
+            withRetry(() => client.getBalances({ type: "trade" }), "KuCoin getBalances trade"),
+            withRetry(() => client.getBalances({ type: "trade_hf" as any }), "KuCoin getBalances trade_hf"),
           ]);
           let totalBal = 0;
           let totalAvail = 0;
@@ -342,7 +342,7 @@ export const appRouter = router({
         } else {
           const { RestClientV5 } = await import("bybit-api");
           const client = new RestClientV5({ key: keys.apiKey, secret: keys.apiSecret });
-          const res = await client.getWalletBalance({ accountType: "UNIFIED" });
+          const res = await withRetry(() => client.getWalletBalance({ accountType: "UNIFIED" }), "Bybit testConnection");
           if (res.retCode === 0) {
             const coins = (res.result as any)?.list?.[0]?.coin ?? [];
             const totalUsd = (res.result as any)?.list?.[0]?.totalEquity ?? "0";

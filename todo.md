@@ -452,4 +452,11 @@
 - [x] Calcular precio promedio de compra de cada moneda desde historial de trades (AVG de buys en DB)
 - [x] Solo vender si precio actual > precio promedio de compra (ganancia)
 - [x] Si está en pérdida, HOLD y esperar a que suba
-- [x] Sin historial de compra, HOLD (no vende sin cost basis conocido)
+- [x] Sin historial de compra, VENDE para liberar capital (100% autónomo)
+- [x] Con historial de compra, solo vende si está en ganancia (HOLD si pérdida)
+
+## Retry automático para errores de red (DNS/EAI_AGAIN) - Abril 23
+- [x] Agregar función de retry con backoff exponencial para llamadas a exchanges (Bybit + KuCoin)
+- [x] Reintentar automáticamente en errores de red: EAI_AGAIN, ECONNRESET, ETIMEDOUT, ENOTFOUND
+- [x] Suprimir errores de red transitorios de notificaciones Telegram (no alertar por DNS temporal)
+- [x] Máximo 3 reintentos con delay 1s, 2s, 4s antes de reportar error real
