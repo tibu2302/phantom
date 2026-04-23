@@ -556,7 +556,7 @@
 - [x] 19. Sync y deploy
 
 ## SP500USDT Futures + PDF Documentación (23 Abril 2026)
-- [ ] Agregar SP500USDT como estrategia de futures en el bot (Bybit linear perpetual)
-- [ ] Agregar SP500USDT al strategy seeding (force-sync e initial seed)
+- [x] Agregar SP500USDT como estrategia de futures en el bot (Bybit linear perpetual)
+- [x] Agregar SP500USDT al strategy seeding (force-sync e initial seed)
 - [ ] Crear PDF largo y completo explicando absolutamente todo el bot
 - [ ] Sync y deploy
