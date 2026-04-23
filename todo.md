@@ -602,11 +602,20 @@
 - [x] Dashboard: Panel de Optimizer con auto-tuning params, adaptive state, portfolio allocation
 - [x] Dashboard: Todo interconectado con el motor de trading en tiempo real
 
-## Dashboard Mejorado — PnL Detallado (23 Abril 2026)
-- [ ] Botones de período: Hoy, 7D, 30D, Año, Todo
-- [ ] PnL real por período: ganancias - pérdidas = ganancia neta
-- [ ] Mostrar trades ganadores vs perdedores por período
-- [ ] Ganancia diaria promedio, mejor día, peor día
-- [ ] PnL por estrategia (Grid vs Scalping vs Futures) por período
-- [ ] Gráfico de PnL acumulado por período seleccionado
-- [ ] Agregar AI Intelligence al menú Más del móvil
+## Dashboard Premium v8.1 (23 Abril 2026)
+- [x] Botones de período: Hoy / 7D / 30D / Año / Todo
+- [x] PnL real por período (ganancias - pérdidas = neto)
+- [x] Ganancias, Pérdidas y Neto Real separados
+- [x] Win Rate, Trades Ganados, Trades Perdidos por período
+- [x] Profit Factor, Avg Win, Avg Loss por período
+- [x] Mejor Trade / Peor Trade por período
+- [x] Mejor Día / Peor Día / Promedio Diario
+- [x] PnL por Estrategia (Grid / Scalping / Futures) con pie chart
+- [x] Top Pares por PnL en el período seleccionado
+- [x] Curva PnL acumulada por período
+- [x] Bar chart PnL por par acumulado
+- [x] Endpoint tRPC advancedStats con breakdown completo
+- [x] AI Intelligence en menú Más del móvil
+- [x] Diseño premium mobile + desktop
+- [x] Tests pasando (38/38)
+- [x] Sync GitHub y deploy
