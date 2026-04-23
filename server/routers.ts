@@ -74,6 +74,8 @@ export const appRouter = router({
           { symbol: "ARBUSDT", strategyType: "futures", market: "crypto", category: "linear", allocationPct: 10, enabled: true, config: { leverage: 3, takeProfitPct: 1.5 } },
           { symbol: "SUIUSDT", strategyType: "futures", market: "crypto", category: "linear", allocationPct: 10, enabled: true, config: { leverage: 3, takeProfitPct: 1.5 } },
           { symbol: "ADAUSDT", strategyType: "futures", market: "crypto", category: "linear", allocationPct: 10, enabled: true, config: { leverage: 3, takeProfitPct: 1.5 } },
+          // TradFi: SP500 index futures
+          { symbol: "SP500USDT", strategyType: "futures", market: "tradfi", category: "linear", allocationPct: 15, enabled: true, config: { leverage: 3, takeProfitPct: 1.5 } },
         ];
         let synced = 0;
         for (const strat of defaultStrats) {
@@ -112,6 +114,8 @@ export const appRouter = router({
         await db.upsertStrategy(ctx.user.id, { symbol: "ARBUSDT", strategyType: "futures", market: "crypto", category: "linear", allocationPct: 10, enabled: true, config: { leverage: 3, takeProfitPct: 1.5 } } as any);
         await db.upsertStrategy(ctx.user.id, { symbol: "SUIUSDT", strategyType: "futures", market: "crypto", category: "linear", allocationPct: 10, enabled: true, config: { leverage: 3, takeProfitPct: 1.5 } } as any);
         await db.upsertStrategy(ctx.user.id, { symbol: "ADAUSDT", strategyType: "futures", market: "crypto", category: "linear", allocationPct: 10, enabled: true, config: { leverage: 3, takeProfitPct: 1.5 } } as any);
+        // TradFi: SP500 index futures
+        await db.upsertStrategy(ctx.user.id, { symbol: "SP500USDT", strategyType: "futures", market: "tradfi", category: "linear", allocationPct: 15, enabled: true, config: { leverage: 3, takeProfitPct: 1.5 } } as any);
         console.log(`[Bot] Seeded default strategies for user ${ctx.user.id}`);
       }
       const result = await startEngine(ctx.user.id);

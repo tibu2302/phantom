@@ -403,7 +403,7 @@ const YAHOO_TICKERS: Record<string, string> = {
 };
 
 // Bybit klines API as fallback for linear symbols
-const BYBIT_KLINE_SYMBOLS = new Set(["XAUUSDT", "SPXUSDT", "BTCUSDT", "ETHUSDT", "SOLUSDT"]);
+const BYBIT_KLINE_SYMBOLS = new Set(["XAUUSDT", "SPXUSDT", "SP500USDT", "BTCUSDT", "ETHUSDT", "SOLUSDT"]);
 
 async function fetchKlines(_client: RestClientV5 | null, symbol: string, _interval: any = "15", limit: number = 50, _category: "spot" | "linear" = "spot"): Promise<KlineData> {
   // Check cache first
@@ -531,7 +531,7 @@ async function placeOrder(engine: EngineState, symbol: string, side: "Buy" | "Se
         "SUI-USDT": 0.1, "OP-USDT": 0.1, "APT-USDT": 0.01,
         "SEI-USDT": 1, "SHIB-USDT": 1,
       };
-      if (engine.kucoinClient && symbol !== "XAUUSDT" && symbol !== "XAGUSD" && symbol !== "SPXUSDT" && category === "spot") {
+      if (engine.kucoinClient && symbol !== "XAUUSDT" && symbol !== "XAGUSD" && symbol !== "SPXUSDT" && symbol !== "SP500USDT" && category === "spot") {
         try {
           const kucoinSymbol = symbol.replace("USDT", "-USDT");
           const minSize = KC_MIN_SIZE[kucoinSymbol] ?? 0.1;
@@ -2201,7 +2201,7 @@ export async function startEngine(userId: number): Promise<{ success: boolean; e
         const cat = strat.category === "linear" ? "linear" : "spot";
 
         // XAUUSDT and XAGUSD always run on Bybit
-        if (strat.symbol === "XAUUSDT" || strat.symbol === "XAGUSD" || strat.symbol === "SPXUSDT") {
+        if (strat.symbol === "XAUUSDT" || strat.symbol === "XAGUSD" || strat.symbol === "SPXUSDT" || strat.symbol === "SP500USDT") {
           if (engine.exchange === "kucoin") {
             const bybitKeys = await db.getApiKey(userId, "bybit");
             if (bybitKeys) {
@@ -2287,7 +2287,7 @@ export async function startEngine(userId: number): Promise<{ success: boolean; e
       const cat = strat.category === "linear" ? "linear" : "spot";
 
       // XAUUSDT, XAGUSD, SPXUSDT always route to Bybit
-      if (strat.symbol === "XAUUSDT" || strat.symbol === "XAGUSD" || strat.symbol === "SPXUSDT") {
+      if (strat.symbol === "XAUUSDT" || strat.symbol === "XAGUSD" || strat.symbol === "SPXUSDT" || strat.symbol === "SP500USDT") {
         if (engine.exchange === "kucoin") {
           const bybitKeys = await db.getApiKey(userId, "bybit");
           if (bybitKeys || engine.simulationMode) {
@@ -2714,7 +2714,7 @@ const SPOT_SYMBOLS = [
   "PEPEUSDT", "FLOKIUSDT", "BONKUSDT", "JUPUSDT", "AAVEUSDT",
   "MKRUSDT", "FILUSDT",
 ];
-const LINEAR_SYMBOLS = ["XAUUSDT", "SPXUSDT", "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "AVAXUSDT"];
+const LINEAR_SYMBOLS = ["XAUUSDT", "SPXUSDT", "SP500USDT", "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "AVAXUSDT"];
 
 function parseWsTickerMsg(data: Buffer | string): void {
   try {

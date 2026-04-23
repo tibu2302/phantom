@@ -529,28 +529,34 @@
 ## Superinteligencia v7.0 — 19 Mejoras (23 Abril 2026)
 
 ### Análisis Avanzado
-- [ ] 1. Multi-Timeframe Analysis (5min + 15min + 1h) — confirmar señales en 3 timeframes
-- [ ] 2. Correlación BTC-Alts — no comprar alts si BTC cae, comprar agresivo si BTC sube
-- [ ] 3. Detección de Spikes de Volumen — entrar rápido cuando volumen sube 2-3x
-- [ ] 4. Order Book Imbalance — leer bids vs asks para predecir dirección
-- [ ] 5. Funding Rate para Futures — usar funding rate para timing de entries
-- [ ] 6. Detección de Liquidaciones — detectar short/long squeezes
+- [x] 1. Multi-Timeframe Analysis (5min + 15min + 1h) — confirmar señales en 3 timeframes
+- [x] 2. Correlación BTC-Alts — no comprar alts si BTC cae, comprar agresivo si BTC sube
+- [x] 3. Detección de Spikes de Volumen — entrar rápido cuando volumen sube 2-3x
+- [x] 4. Order Book Imbalance — leer bids vs asks para predecir dirección
+- [x] 5. Funding Rate para Futures — usar funding rate para timing de entries
+- [x] 6. Detección de Liquidaciones — detectar short/long squeezes
 
 ### Estrategias Nuevas
-- [ ] 7. Mean Reversion — comprar rebotes de caídas rápidas sin fundamento
-- [ ] 8. Breakout Trading — entrar en rupturas de rango con volumen
-- [ ] 9. Arbitraje Bybit-KuCoin — comprar barato en un exchange, vender caro en otro
-- [ ] 10. Grid Dinámico Adaptativo — recalcular grid cada 5min según volatilidad
+- [x] 7. Mean Reversion — comprar rebotes de caídas rápidas sin fundamento
+- [x] 8. Breakout Trading — entrar en rupturas de rango con volumen
+- [x] 9. Arbitraje Bybit-KuCoin — comprar barato en un exchange, vender caro en otro
+- [x] 10. Grid Dinámico Adaptativo — recalcular grid cada 5min según volatilidad
 
 ### Gestión de Capital
-- [ ] 11. Compound Interest — reinvertir ganancias automáticamente
-- [ ] 12. Distribución Inteligente de Capital — más capital a estrategias ganadoras
-- [ ] 13. Kelly Criterion — tamaño óptimo de posición matemático
-- [ ] 14. Detección de Sesiones de Mercado — ajustar agresividad por sesión (Asia/Europa/USA)
-- [ ] 15. Momentum Intraday — más agresivo en horas de mayor movimiento
+- [x] 11. Compound Interest — reinvertir ganancias automáticamente
+- [x] 12. Distribución Inteligente de Capital — más capital a estrategias ganadoras
+- [x] 13. Kelly Criterion — tamaño óptimo de posición matemático
+- [x] 14. Detección de Sesiones de Mercado — ajustar agresividad por sesión (Asia/Europa/USA)
+- [x] 15. Momentum Intraday — más agresivo en horas de mayor movimiento
 
 ### Protección
-- [ ] 16. Drawdown Diario Máximo — reducir posiciones si pierde >1%, pausar si >2%
-- [ ] 17. Diversificación Forzada — máximo 20% del capital por moneda
-- [ ] 18. Anti-Manipulación — detectar wicks falsos y evitar entrar
-- [ ] 19. Sync y deploy
+- [x] 16. Drawdown Diario Máximo — reducir posiciones si pierde >1%, pausar si >2%
+- [x] 17. Diversificación Forzada — máximo 20% del capital por moneda
+- [x] 18. Anti-Manipulación — detectar wicks falsos y evitar entrar
+- [x] 19. Sync y deploy
+
+## SP500USDT Futures + PDF Documentación (23 Abril 2026)
+- [ ] Agregar SP500USDT como estrategia de futures en el bot (Bybit linear perpetual)
+- [ ] Agregar SP500USDT al strategy seeding (force-sync e initial seed)
+- [ ] Crear PDF largo y completo explicando absolutamente todo el bot
+- [ ] Sync y deploy
