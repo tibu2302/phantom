@@ -786,28 +786,33 @@
 - [x] 38/38 tests passing, 0 errores TypeScript
 
 ## Bug Fix: Error generando el reporte PDF (v9.1.2.1 - 24 Abril 2026)
-- [ ] Diagnosticar error 500 en /api/report/daily en VPS
-- [ ] Corregir el bug y verificar que funcione
+- [x] Diagnosticar error 500 en /api/report/daily en VPS
+- [x] Corregir el bug: caracteres especiales (em-dash, acentos) incompatibles con Helvetica en pdfkit
+- [x] Agregar mejor logging de errores en el endpoint
 
 ## Optimización Integral PHANTOM v10.0 (24 Abril 2026)
 
 ### Motor de Trading
-- [ ] Estudio completo del tradingEngine.ts - analizar cada estrategia
-- [ ] 50% del capital dedicado a XAU scalping
-- [ ] Ciclos más rápidos de compra-venta para maximizar rotación
-- [ ] Siempre cerrar en USDT - mantener liquidez máxima
-- [ ] Optimizar timing de entrada/salida en scalping
-- [ ] Mejorar trailing stop para capturar más ganancia
-- [ ] Reducir pérdidas con stop-loss más inteligente
-- [ ] Optimizar parámetros de grid trading
-- [ ] Optimizar parámetros de futures
-- [ ] Mejorar AI Capital Allocator para redistribuir capital dinámicamente
+- [x] Estudio completo del tradingEngine.ts (2830 líneas analizadas)
+- [x] 50% del capital dedicado a XAU scalping (allocation 50%, boost 2.0x-3.5x)
+- [x] Ciclos más rápidos: 10s main, 30s scanner (era 15s/60s)
+- [x] Siempre cerrar en USDT: todo forzado a LINEAR (USDT-settled), nunca spot
+- [x] Scalping minProfit reducido: 0.15% (era 0.3%)
+- [x] Grid minProfit reducido: 0.25% (era 0.5%)
+- [x] Trailing stop mejorado: 0.4% para SHORT, PROTECT-PROFIT-SHORT
+- [x] FORCED-CLOSE-BIG-GAIN: cierre inmediato >= 8%
+- [x] Futures maxPositions: 10 XAU, 7 otros (era 5)
+- [x] AI Capital Allocator: MAX_ALLOCATION 60%, reinvest step 8%, sin techo
 
 ### Dashboard Moderno
-- [ ] Rediseño visual más moderno y profesional
-- [ ] Mejor interconexión de datos en tiempo real
-- [ ] Indicadores más inteligentes y útiles
-- [ ] UX mejorada para mobile y desktop
+- [x] Rediseño visual completo: animaciones fade-in-up stagger, count-up, progress-ring
+- [x] Daily Target Ring: progreso circular animado hacia meta de $300/día
+- [x] XAU destacado: Crown icon, xau-glow dorado, float-particle animation
+- [x] AI Modules panel: 12 módulos expandibles con estado activo
+- [x] USDT Liquidity bar: indicador de % de liquidez disponible
+- [x] Version badge v10.1 LINEAR en header y footer
+- [x] Mobile + Desktop layouts completamente modernizados
+- [x] 38/38 tests passing, 0 errores TypeScript
 
 ### Bug Fix PDF
 - [x] Fix caracteres especiales en PDF (em-dash, acentos)
