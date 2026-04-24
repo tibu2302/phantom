@@ -60,7 +60,7 @@ export const appRouter = router({
           { symbol: "ARBUSDT", strategyType: "grid", market: "crypto", category: "spot", allocationPct: 10, enabled: true },
           { symbol: "SUIUSDT", strategyType: "grid", market: "crypto", category: "spot", allocationPct: 10, enabled: true },
           // Scalping (expanded: XAUUSDT + DOGE, ADA, LINK)
-          { symbol: "XAUUSDT", strategyType: "scalping", market: "tradfi", category: "linear", allocationPct: 20, enabled: true },
+          { symbol: "XAUUSDT", strategyType: "scalping", market: "tradfi", category: "linear", allocationPct: 50, enabled: true },
           { symbol: "DOGEUSDT", strategyType: "scalping", market: "crypto", category: "spot", allocationPct: 15, enabled: true },
           { symbol: "ADAUSDT", strategyType: "scalping", market: "crypto", category: "spot", allocationPct: 15, enabled: true },
           { symbol: "LINKUSDT", strategyType: "scalping", market: "crypto", category: "spot", allocationPct: 15, enabled: true },
@@ -70,7 +70,7 @@ export const appRouter = router({
           { symbol: "SOLUSDT", strategyType: "futures", market: "crypto", category: "linear", allocationPct: 20, enabled: true, config: { leverage: 3, takeProfitPct: 1.5 } },
           { symbol: "XRPUSDT", strategyType: "futures", market: "crypto", category: "linear", allocationPct: 15, enabled: true, config: { leverage: 3, takeProfitPct: 1.5 } },
           { symbol: "AVAXUSDT", strategyType: "futures", market: "crypto", category: "linear", allocationPct: 15, enabled: true, config: { leverage: 3, takeProfitPct: 1.5 } },
-          { symbol: "XAUUSDT", strategyType: "futures", market: "tradfi", category: "linear", allocationPct: 15, enabled: true, config: { leverage: 3, takeProfitPct: 1.5 } },
+          { symbol: "XAUUSDT", strategyType: "futures", market: "tradfi", category: "linear", allocationPct: 30, enabled: true, config: { leverage: 5, takeProfitPct: 1.5 } },
           // USDT-FIRST: More futures for multi-coin USDT gains
           { symbol: "DOGEUSDT", strategyType: "futures", market: "crypto", category: "linear", allocationPct: 10, enabled: true, config: { leverage: 3, takeProfitPct: 1.5 } },
           { symbol: "LINKUSDT", strategyType: "futures", market: "crypto", category: "linear", allocationPct: 10, enabled: true, config: { leverage: 3, takeProfitPct: 1.5 } },
@@ -100,7 +100,7 @@ export const appRouter = router({
         await db.upsertStrategy(ctx.user.id, { symbol: "ARBUSDT", strategyType: "grid", market: "crypto", category: "spot", allocationPct: 10, enabled: true });
         await db.upsertStrategy(ctx.user.id, { symbol: "SUIUSDT", strategyType: "grid", market: "crypto", category: "spot", allocationPct: 10, enabled: true });
         // Scalping (expanded v8.2 — XAU boosted + volatile pairs)
-        await db.upsertStrategy(ctx.user.id, { symbol: "XAUUSDT", strategyType: "scalping", market: "tradfi", category: "linear", allocationPct: 35, enabled: true }); // XAU top performer — max allocation
+        await db.upsertStrategy(ctx.user.id, { symbol: "XAUUSDT", strategyType: "scalping", market: "tradfi", category: "linear", allocationPct: 50, enabled: true }); // XAU top performer — BOOSTED allocation
         await db.upsertStrategy(ctx.user.id, { symbol: "DOGEUSDT", strategyType: "scalping", market: "crypto", category: "spot", allocationPct: 15, enabled: true });
         await db.upsertStrategy(ctx.user.id, { symbol: "ADAUSDT", strategyType: "scalping", market: "crypto", category: "spot", allocationPct: 15, enabled: true });
         await db.upsertStrategy(ctx.user.id, { symbol: "LINKUSDT", strategyType: "scalping", market: "crypto", category: "spot", allocationPct: 15, enabled: true });
@@ -116,7 +116,7 @@ export const appRouter = router({
         await db.upsertStrategy(ctx.user.id, { symbol: "SOLUSDT", strategyType: "futures", market: "crypto", category: "linear", allocationPct: 20, enabled: true, config: { leverage: 3, takeProfitPct: 1.5 } } as any);
         await db.upsertStrategy(ctx.user.id, { symbol: "XRPUSDT", strategyType: "futures", market: "crypto", category: "linear", allocationPct: 15, enabled: true, config: { leverage: 3, takeProfitPct: 1.5 } } as any);
         await db.upsertStrategy(ctx.user.id, { symbol: "AVAXUSDT", strategyType: "futures", market: "crypto", category: "linear", allocationPct: 15, enabled: true, config: { leverage: 3, takeProfitPct: 1.5 } } as any);
-        await db.upsertStrategy(ctx.user.id, { symbol: "XAUUSDT", strategyType: "futures", market: "tradfi", category: "linear", allocationPct: 15, enabled: true, config: { leverage: 3, takeProfitPct: 1.5 } } as any);
+        await db.upsertStrategy(ctx.user.id, { symbol: "XAUUSDT", strategyType: "futures", market: "tradfi", category: "linear", allocationPct: 30, enabled: true, config: { leverage: 5, takeProfitPct: 1.5 } } as any);
         // USDT-FIRST: More futures for multi-coin USDT gains
         await db.upsertStrategy(ctx.user.id, { symbol: "DOGEUSDT", strategyType: "futures", market: "crypto", category: "linear", allocationPct: 10, enabled: true, config: { leverage: 3, takeProfitPct: 1.5 } } as any);
         await db.upsertStrategy(ctx.user.id, { symbol: "LINKUSDT", strategyType: "futures", market: "crypto", category: "linear", allocationPct: 10, enabled: true, config: { leverage: 3, takeProfitPct: 1.5 } } as any);
@@ -341,7 +341,7 @@ export const appRouter = router({
       if (existingStrategies.length === 0) {
         await db.upsertStrategy(ctx.user.id, { symbol: "BTCUSDT", strategyType: "grid", market: "crypto", category: "spot", allocationPct: 40 });
         await db.upsertStrategy(ctx.user.id, { symbol: "ETHUSDT", strategyType: "grid", market: "crypto", category: "spot", allocationPct: 30 });
-        await db.upsertStrategy(ctx.user.id, { symbol: "XAUUSDT", strategyType: "scalping", market: "tradfi", category: "linear", allocationPct: 30 });
+        await db.upsertStrategy(ctx.user.id, { symbol: "XAUUSDT", strategyType: "scalping", market: "tradfi", category: "linear", allocationPct: 50 });
       }
       return { success: true };
     }),

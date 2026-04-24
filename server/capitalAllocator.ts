@@ -10,7 +10,7 @@
  * - Scalping XAU boost: aggressive allocation when XAU scalping is top performer
  * - Auto-reinvestment: compound gains into best strategies
  * - Nocturnal mode: lower thresholds during low-volume hours for predictable moves
- * - Safety limits: no single strategy+pair can exceed 40% of total capital
+ * - Safety limits: no single strategy+pair can exceed 60% of total capital (raised for XAU)
  */
 
 import * as db from "./db";
@@ -49,7 +49,7 @@ export interface AllocatorState {
 }
 
 // ─── Constants ───
-const MAX_ALLOCATION_PCT = 40; // No single strategy+pair can exceed 40%
+const MAX_ALLOCATION_PCT = 60; // Raised from 40% to allow XAU to dominate
 const MIN_ALLOCATION_PCT = 5;  // Minimum allocation to keep diversity
 const REBALANCE_INTERVAL_MS = 4 * 60 * 60 * 1000; // 4 hours
 const MIN_TRADES_FOR_SCORING = 5; // Need at least 5 trades to score
@@ -234,7 +234,7 @@ export async function checkAutoReinvest(userId: number, minAmount: number = REIN
   
   // Reinvest 50% of accumulated gains into the best performer
   const reinvestAmount = accumulatedGains * 0.5;
-  const newAllocation = Math.min(MAX_ALLOCATION_PCT, best.currentAllocation + 5);
+  const newAllocation = Math.min(MAX_ALLOCATION_PCT, best.currentAllocation + 8);
   
   try {
     await db.upsertStrategy(userId, {
@@ -322,18 +322,16 @@ export function calculateDynamicTrailingStop(
 }
 
 // ─── Scalping XAU Boost ───
-// When XAU is the top performer, allow more aggressive scalping
+// XAU is the top money maker — ALWAYS boost aggressively
 export function getXAUBoostMultiplier(performances: StrategyPerformance[]): number {
   const xauScalp = performances.find(p => p.symbol === "XAUUSDT" && p.strategy === "scalping");
-  if (!xauScalp) return 1.0;
+  // Always boost XAU minimum 2.0x even without performance data
+  if (!xauScalp) return 2.0;
   
-  // If XAU scalping is top 3 performer with score > 40
-  const rank = performances.findIndex(p => p.symbol === "XAUUSDT" && p.strategy === "scalping");
-  if (rank <= 2 && xauScalp.score > 40) {
-    // Boost: 1.5x to 2.5x based on score
-    return 1.5 + (xauScalp.score / 100);
-  }
-  return 1.0;
+  // XAU always gets boosted: 2.0x base + up to 1.5x based on score
+  // Top performer → up to 3.5x sizing
+  const scoreBoost = xauScalp.score / 100 * 1.5;
+  return 2.0 + scoreBoost;
 }
 
 // ─── Grid Trending Adjustment ───

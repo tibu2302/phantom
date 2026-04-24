@@ -1578,7 +1578,8 @@ async function runScalpingStrategy(engine: EngineState, symbol: string, category
 
   // ─── v8.2: Nocturnal Mode — lower thresholds during 2am-6am UTC ───
   const nocturnal = getNocturnalMultiplier();
-  const baseMinConfidence = 30;
+  // v9.1.1: XAU gets lower threshold (20) to trade more frequently
+  const baseMinConfidence = symbol === "XAUUSDT" ? 20 : 30;
   const minConfidence = Math.round(baseMinConfidence * (1 - nocturnal.confidenceReduction));
   if (nocturnal.confidenceReduction > 0) {
     console.log(`[Scalp] ${symbol} NOCTURNAL MODE: minConfidence reduced ${baseMinConfidence} → ${minConfidence}`);
@@ -1620,13 +1621,15 @@ async function runScalpingStrategy(engine: EngineState, symbol: string, category
     const baseAmount = balance * allocation / 100 * 0.7;
     const scalpBoost = effectiveConfidence > 75 ? 1.8 : effectiveConfidence > 55 ? 1.3 : 1.0;
     const masterSizing = scalpMaster?.sizingMultiplier ?? 1.0;
-    // v8.2: XAU Boost — if XAU scalping is top performer, increase sizing
+    // v9.1.1: XAU BOOST — always active for XAUUSDT, minimum 2.0x sizing
     let xauBoost = 1.0;
-    try {
-      const perfs = await analyzeStrategyPerformance(engine.userId);
-      xauBoost = getXAUBoostMultiplier(perfs);
-      if (xauBoost > 1.0) console.log(`[Scalp] ${symbol} XAU BOOST: ${xauBoost.toFixed(2)}x (top performer)`);
-    } catch { /* silent */ }
+    if (symbol === "XAUUSDT") {
+      try {
+        const perfs = await analyzeStrategyPerformance(engine.userId);
+        xauBoost = getXAUBoostMultiplier(perfs);
+      } catch { xauBoost = 2.0; /* default boost even on error */ }
+      console.log(`[Scalp] ${symbol} XAU BOOST: ${xauBoost.toFixed(2)}x (top earner — always boosted)`);
+    }
     const nocturnalSizing = nocturnal.sizeMultiplier;
     // v9.0: Market Timing + Volume Profile sizing
     const vpBoost = volumeProfile.isHighVolumeZone ? 1.15 : 0.85;
@@ -1733,8 +1736,8 @@ async function runScalpingStrategy(engine: EngineState, symbol: string, category
         console.log(`[Scalp] Removed phantom scalp position ${symbol} buyPrice=${pos.buyPrice} — sell failed`);
       }
     } else if (signal === "Buy") {
-      // Allow up to 3 scalp positions per symbol per exchange — more positions = more daily gains
-      const maxScalpPositions = 3;
+      // XAU gets 6 scalp positions (top earner), others get 3
+      const maxScalpPositions = symbol === "XAUUSDT" ? 6 : 3;
       if (myPositions.length >= maxScalpPositions) {
         console.log(`[Scalp] SKIP ${symbol} Buy — already have ${myPositions.length}/${maxScalpPositions} scalp position(s) on ${exchangeKey}`);
         return;
@@ -2043,7 +2046,8 @@ async function runFuturesStrategy(engine: EngineState, symbol: string, dailyProf
   }
 
   // ─── Smart Entry: LONG or SHORT based on scoring ───
-  const maxPositions = 5; // More positions = more USDT gains from futures
+  // XAU gets more positions (7), other coins share 5
+    const maxPositions = symbol === "XAUUSDT" ? 7 : 5;
   const longPositions = positions.filter(p => (p.direction ?? "long") === "long");
   const shortPositions = positions.filter(p => p.direction === "short");
 
@@ -2113,10 +2117,12 @@ async function runFuturesStrategy(engine: EngineState, symbol: string, dailyProf
   // Smart sizing: confidence-weighted + cooldown + BOOST + master signal multiplier
   const baseTradeAmount = (balance * allocation / 100) / maxPositions;
   const strengthBoost = futEffConf > 80 ? 2.0 : futEffConf > 65 ? 1.5 : 1.0;
+  // v9.1.1: XAU futures gets 1.5x extra sizing (top earner)
+  const futXauBoost = symbol === "XAUUSDT" ? 1.5 : 1.0;
   // v9.0: Market Timing + Volume Profile sizing for futures
   const futTimingMult = futTiming.sizingMultiplier;
   const futVPBoost = futVolProfile.isHighVolumeZone ? 1.2 : 0.85;
-  const tradeAmount = baseTradeAmount * futSmartScore.suggestedSizePct * futCooldown * strengthBoost * futMasterSizing * futTimingMult * futVPBoost;
+  const tradeAmount = baseTradeAmount * futSmartScore.suggestedSizePct * futCooldown * strengthBoost * futMasterSizing * futTimingMult * futVPBoost * futXauBoost;
   const qty = ((tradeAmount * leverage) / price).toFixed(6);
 
   // LONG → Buy to open, SHORT → Sell to open
@@ -2778,7 +2784,8 @@ export async function startEngine(userId: number): Promise<{ success: boolean; e
         positions.map(p => ({ symbol: sym, buyPrice: p.buyPrice, currentPrice: engine.lastPrices[sym] ?? p.buyPrice, openedAt: p.openedAt, strategy: "grid" as const }))
       );
       for (const pos of [...allScalpPositions, ...allGridPositions]) {
-        const staleHours = pos.strategy === "scalping" ? 2 : 6;
+        // v9.1.1: Faster USDT recovery — shorter stale timeouts
+        const staleHours = pos.strategy === "scalping" ? 1 : 4;
         const staleAnalysis = analyzeStalePosition(pos.buyPrice, pos.currentPrice, pos.openedAt, staleHours);
         if (staleAnalysis.isStale) {
           console.log(`[v9.0] STALE: ${pos.symbol} ${pos.strategy} — ${staleAnalysis.recommendation} (held ${staleAnalysis.holdTimeHours.toFixed(1)}h, ${staleAnalysis.priceChangePct.toFixed(2)}%)`);

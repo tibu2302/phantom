@@ -748,3 +748,25 @@
 - [x] Agregar cierre automático cuando ganancia >= 2x del TP original (EXTENDED-TP)
 - [x] Reducir futMinProfit de 0.5% a 0.1% para que cierre más fácil
 - [x] 38/38 tests passing, 0 errores TypeScript
+
+## Boost XAU (Oro) — Mayor Asignación de Capital (v9.1.1 - 24 Abril 2026)
+- [x] Aumentar % de capital asignado a XAU scalping (50% allocation + 2.0x-3.5x boost)
+- [x] Aumentar tradeAmount de XAU en futures (30% alloc + 5x leverage + 1.5x sizing)
+- [x] Priorizar XAU en el AI Capital Allocator como top performer (always-on boost)
+- [x] Permitir más posiciones simultáneas de XAU (6 scalp, 7 futures)
+- [x] Reducir threshold de confianza para XAU (20 vs 30)
+
+## XAU Scalping Boost + Liquidez USDT (v9.1.1 - 24 Abril 2026)
+- [x] Subir default allocation de XAU scalping a 50% (era 20% en force-sync, 35% en seed)
+- [x] Subir default allocation de XAU futures a 30% con 5x leverage (era 15%/3x)
+- [x] Subir MAX_ALLOCATION_PCT de 40% a 60% para permitir más capital en XAU
+- [x] XAU Boost multiplier: siempre activo (mínimo 2.0x, hasta 3.5x con score alto)
+- [x] Más posiciones simultáneas de XAU scalping (de 3 a 6)
+- [x] Más posiciones simultáneas de XAU futures (7 vs 5 para otros pares)
+- [x] XAU futures sizing boost: 1.5x extra sobre el cálculo base
+- [x] XAU scalping confidence threshold reducido: 20 (vs 30 para otros pares)
+- [x] Todas las monedas siguen operando — ninguna eliminada
+- [x] Stale position killer más agresivo: scalping 1h (era 2h), grid 4h (era 6h)
+- [x] Liquidez USDT: USDT_MIN_RESERVE_PCT=60%, spot buys bloqueados si baja reserva
+- [x] Reinvest step aumentado: +8% por ciclo (era +5%)
+- [x] 38/38 tests passing, 0 errores TypeScript
