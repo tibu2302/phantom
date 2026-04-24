@@ -860,6 +860,15 @@
 - [x] 38/38 tests passing, 0 errores TypeScript
 
 ## Fix Futures SKIP entry regime=ranging (v10.5 - 24 Abril 2026)
-- [ ] Permitir futures entry en regime=ranging (especialmente XAU)
-- [ ] Bajar score mínimo para entry en futures
-- [ ] Asegurar que XAU nunca sea bloqueado por regime filter
+- [x] Futures confidence: XAU 5 (era 15), otros 10 (era 20) — entra mucho más fácil
+- [x] Per-pair limits: XAU 8 long + 8 short (era 3), otros 4+4
+- [x] XAU NEUTRAL-ENTRY: abre long incluso cuando dir=neutral (score >= 5)
+- [x] Scalping confidence: XAU 10 (era 30), otros 20 (era 30)
+- [x] 38/38 tests passing, 0 errores TypeScript
+
+## Auto-Start + Flujo Completo de Operación (v10.6 - 24 Abril 2026)
+- [ ] Verificar que auto-start funcione después de docker compose up -d
+- [ ] Verificar que el bot conecte a Bybit API automáticamente
+- [ ] Verificar que abra posiciones reales sin intervención manual
+- [ ] Verificar que cierre posiciones en ganancia automáticamente
+- [ ] Corregir cualquier bug en el flujo completo
