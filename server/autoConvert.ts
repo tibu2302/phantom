@@ -1,7 +1,7 @@
-// ─── Auto-Convert Accumulated Coins to USDT ───
-// This runs every 15 cycles (~5 min) and sells any non-USDT coins
-// that don't have an open position AND are in profit.
-// NEVER sells at a loss — if current price < avg buy price, it holds.
+// ─── Auto-Convert ALL Coins to USDT ───
+// v10.4: AGGRESSIVE MODE — sell ALL non-USDT coins immediately
+// No profit threshold — we want 100% of capital in USDT for linear trading
+// The small loss on spot positions is worth it to free capital for XAU scalping
 
 import type { EngineState } from "./tradingEngine";
 import { withRetry } from "./tradingEngine";
@@ -18,8 +18,6 @@ interface CoinBalance {
 
 /**
  * Calculate the average buy price for a coin from trade history.
- * Only considers BUY trades for the given symbol.
- * Returns 0 if no buy history found (meaning we don't know the cost basis — don't sell).
  */
 async function getAvgBuyPrice(userId: number, symbol: string): Promise<number> {
   try {
@@ -45,7 +43,7 @@ async function getAvgBuyPrice(userId: number, symbol: string): Promise<number> {
     return avgPrice;
   } catch (e) {
     console.log(`[AutoConvert] Cannot get avg buy price for ${symbol}: ${(e as Error).message}`);
-    return 0; // Unknown cost basis — don't sell
+    return 0;
   }
 }
 
@@ -70,39 +68,26 @@ export async function autoConvertCoinsToUSDT(engine: EngineState): Promise<void>
           
           const pair = `${symbol}USDT`;
           
-          // Check if there's an open position for this coin — if so, don't sell
-          const openPositions = engine.openBuyPositions[pair] ?? [];
-          const scalpPositions = engine.scalpPositions[pair] ?? [];
+          // v10.4: SELL EVERYTHING — no position check for spot coins
+          // Linear positions don't hold actual coins, so spot balances are always stale
+          // Only skip if there's an active futures position (which uses margin, not coins)
           const futuresPositions = engine.futuresPositions[pair] ?? [];
+          if (futuresPositions.length > 0) continue;
           
-          if (openPositions.length > 0 || scalpPositions.length > 0 || futuresPositions.length > 0) {
-            continue; // Has active positions, don't convert
-          }
-          
-          // ─── ZERO LOSS CHECK ───
-          // Get average buy price from trade history
+          // Calculate profit/loss for logging only
           const avgBuyPrice = await getAvgBuyPrice(engine.userId, pair);
-          
-          // Calculate current price from usdValue / available
           const currentPrice = usdValue / available;
-          let profitPct = "N/A";
+          let profitInfo = "";
           
           if (avgBuyPrice > 0) {
-            // Has buy history — only sell if net profit >= 0.5% (covers fees)
             const profitPctNum = (currentPrice - avgBuyPrice) / avgBuyPrice;
-            if (profitPctNum < 0.002) { // v10: convert at 0.2% profit for faster USDT recovery
-              const pctStr = (profitPctNum * 100).toFixed(2);
-              console.log(`[AutoConvert] Bybit: HOLD ${symbol} — profit ${pctStr}% < min 0.5% (current $${currentPrice.toFixed(4)} vs avg $${avgBuyPrice.toFixed(4)})`);
-              continue; // Not enough profit yet — HOLD
-            }
-            profitPct = (profitPctNum * 100).toFixed(2) + "%";
+            const pctStr = (profitPctNum * 100).toFixed(2);
+            profitInfo = `${profitPctNum >= 0 ? "+" : ""}${pctStr}% (avg=$${avgBuyPrice.toFixed(4)})`;
           } else {
-            // No buy history — sell anyway to free capital (100% autonomous)
-            console.log(`[AutoConvert] Bybit: No buy history for ${symbol}, selling to free capital (~$${usdValue.toFixed(2)})`);
-            profitPct = "unknown";
+            profitInfo = "no buy history";
           }
           
-          // In profit — sell it
+          // v10.4: FORCE SELL — no profit threshold, free ALL capital to USDT
           try {
             const qtyStr = available.toFixed(8);
             const sellRes = await withRetry(() => engine.client.submitOrder({
@@ -114,7 +99,7 @@ export async function autoConvertCoinsToUSDT(engine: EngineState): Promise<void>
             }), `AutoConvert Bybit sell ${symbol}`);
             
             if (sellRes.result?.orderId) {
-              console.log(`[AutoConvert] Bybit: Sold ${available.toFixed(4)} ${symbol} (~$${usdValue.toFixed(2)}) to USDT — profit +${profitPct}% — orderId: ${sellRes.result.orderId}`);
+              console.log(`[AutoConvert] Bybit: FORCE SOLD ${available.toFixed(4)} ${symbol} (~$${usdValue.toFixed(2)}) to USDT — ${profitInfo} — orderId: ${sellRes.result.orderId}`);
             } else {
               console.log(`[AutoConvert] Bybit: Failed to sell ${symbol}: ${JSON.stringify(sellRes)}`);
             }
@@ -147,12 +132,6 @@ export async function autoConvertCoinsToUSDT(engine: EngineState): Promise<void>
             const usdVal = bal * price;
             if (usdVal < 1 || bal <= 0) continue;
             
-            const pair = `${cur}USDT`;
-            const openPositions = engine.openBuyPositions[pair] ?? [];
-            const scalpPositions = engine.scalpPositions[pair] ?? [];
-            
-            if (openPositions.length > 0 || scalpPositions.length > 0) continue;
-            
             coinsToSell.push({ symbol: cur, qty: bal, usdValue: usdVal, currentPrice: price });
           }
         };
@@ -161,25 +140,16 @@ export async function autoConvertCoinsToUSDT(engine: EngineState): Promise<void>
         processBalances(hfRes);
         
         for (const { symbol, qty, usdValue, currentPrice } of coinsToSell) {
-          // ─── ZERO LOSS CHECK ───
+          // v10.4: FORCE SELL — no profit check, liquidate everything to USDT
           const pair = `${symbol}USDT`;
           const avgBuyPrice = await getAvgBuyPrice(engine.userId, pair);
-          
-          let profitPct = "N/A";
+          let profitInfo = "";
           
           if (avgBuyPrice > 0) {
-            // Has buy history — only sell if net profit >= 0.5% (covers fees)
             const profitPctNum = (currentPrice - avgBuyPrice) / avgBuyPrice;
-            if (profitPctNum < 0.005) {
-              const pctStr = (profitPctNum * 100).toFixed(2);
-              console.log(`[AutoConvert] KuCoin: HOLD ${symbol} — profit ${pctStr}% < min 0.5% (current $${currentPrice.toFixed(4)} vs avg $${avgBuyPrice.toFixed(4)})`);
-              continue; // Not enough profit yet — HOLD
-            }
-            profitPct = (profitPctNum * 100).toFixed(2) + "%";
+            profitInfo = `${profitPctNum >= 0 ? "+" : ""}${(profitPctNum * 100).toFixed(2)}%`;
           } else {
-            // No buy history — sell anyway to free capital (100% autonomous)
-            console.log(`[AutoConvert] KuCoin: No buy history for ${symbol}, selling to free capital (~$${usdValue.toFixed(2)})`);
-            profitPct = "unknown";
+            profitInfo = "no buy history";
           }
           
           try {
@@ -193,7 +163,7 @@ export async function autoConvertCoinsToUSDT(engine: EngineState): Promise<void>
             }), `AutoConvert KuCoin sell ${symbol}`);
             
             if (res?.data?.orderId) {
-              console.log(`[AutoConvert] KuCoin: Sold ${qty.toFixed(4)} ${symbol} (~$${usdValue.toFixed(2)}) to USDT — profit +${profitPct}% — orderId: ${res.data.orderId}`);
+              console.log(`[AutoConvert] KuCoin: FORCE SOLD ${qty.toFixed(4)} ${symbol} (~$${usdValue.toFixed(2)}) to USDT — ${profitInfo} — orderId: ${res.data.orderId}`);
             }
           } catch (e) {
             console.log(`[AutoConvert] KuCoin: Cannot sell ${symbol}: ${(e as Error).message}`);

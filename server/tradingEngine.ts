@@ -1014,7 +1014,7 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
   } catch { /* use base spread */ }
 
   // Minimum profitable spread (lower = more cycles = more USDT gains)
-  const minProfitableSpread = 0.002; // 0.2% minimum — aggressive for USDT-first
+  const minProfitableSpread = 0.0015; // v10.4: 0.15% minimum — ultra-aggressive for fast cycles
   effectiveSpread = Math.max(effectiveSpread, minProfitableSpread);
 
   // Initialize grid if not exists
@@ -1063,7 +1063,7 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
   const maxHoldTimeMs = (stratConfig.maxHoldHours ?? 4) * 60 * 60 * 1000; // Default 4 hours — fast USDT rotation
   const maxOpenPositions = stratConfig.maxOpenPositions ?? 5; // Max open positions per symbol — more positions = more cycles = more USDT gains
   // Minimum 0.5% net profit on ALL sells — NEVER sell below this threshold
-  const MIN_PROFIT_PCT = 0.003; // 0.3% minimum net profit after fees (v10: faster cycles)
+  const MIN_PROFIT_PCT = 0.002; // v10.4: 0.2% minimum net profit (was 0.3%) — faster USDT recovery
   const positionsToSell: { pos: OpenBuyPosition; reason: string }[] = [];
 
   for (let i = openPositions.length - 1; i >= 0; i--) {
@@ -1563,7 +1563,7 @@ async function runScalpingStrategy(engine: EngineState, symbol: string, category
   // ─── v8.2: Nocturnal Mode — lower thresholds during 2am-6am UTC ───
   const nocturnal = getNocturnalMultiplier();
   // v9.1.1: XAU gets lower threshold (20) to trade more frequently
-  const baseMinConfidence = symbol === "XAUUSDT" ? 15 : 28; // v10: XAU trades more, others slightly easier
+  const baseMinConfidence = symbol === "XAUUSDT" ? 10 : 25; // v10.4: XAU ultra-aggressive (10), others 25
   const minConfidence = Math.round(baseMinConfidence * (1 - nocturnal.confidenceReduction));
   if (nocturnal.confidenceReduction > 0) {
     console.log(`[Scalp] ${symbol} NOCTURNAL MODE: minConfidence reduced ${baseMinConfidence} → ${minConfidence}`);
@@ -1610,8 +1610,8 @@ async function runScalpingStrategy(engine: EngineState, symbol: string, category
     if (symbol === "XAUUSDT") {
       try {
         const perfs = await analyzeStrategyPerformance(engine.userId);
-        xauBoost = getXAUBoostMultiplier(perfs);
-      } catch { xauBoost = 2.0; /* default boost even on error */ }
+        xauBoost = Math.max(3.0, getXAUBoostMultiplier(perfs)); // v10.4: minimum 3.0x for XAU
+      } catch { xauBoost = 3.0; /* default boost even on error */ }
       console.log(`[Scalp] ${symbol} XAU BOOST: ${xauBoost.toFixed(2)}x (top earner — always boosted)`);
     }
     const nocturnalSizing = nocturnal.sizeMultiplier;
@@ -1660,7 +1660,7 @@ async function runScalpingStrategy(engine: EngineState, symbol: string, category
       const posValue = pos.buyPrice * parseFloat(pos.qty);
       const estGross = (price - pos.buyPrice) * parseFloat(pos.qty);
       const estNet = calcNetPnl(estGross, posValue, category, true, engine.exchange);
-      const scalpMinProfit = posValue * (symbol === "XAUUSDT" ? 0.0015 : 0.003); // v10: XAU 0.15%, others 0.3%
+      const scalpMinProfit = posValue * (symbol === "XAUUSDT" ? 0.001 : 0.002); // v10.4: XAU 0.1%, others 0.2% — faster cycles
       if (estNet < scalpMinProfit) {
         console.log(`[Scalp] HOLD ${symbol} — net $${estNet.toFixed(2)} < min 0.3% ($${scalpMinProfit.toFixed(2)}), waiting for better exit`);
         return;
@@ -1721,7 +1721,7 @@ async function runScalpingStrategy(engine: EngineState, symbol: string, category
       }
     } else if (signal === "Buy") {
       // XAU gets 6 scalp positions (top earner), others get 3
-      const maxScalpPositions = symbol === "XAUUSDT" ? 8 : 3; // v10: XAU gets 8 scalp slots
+      const maxScalpPositions = symbol === "XAUUSDT" ? 12 : 5; // v10.4: XAU 12 slots, others 5
       if (myPositions.length >= maxScalpPositions) {
         console.log(`[Scalp] SKIP ${symbol} Buy — already have ${myPositions.length}/${maxScalpPositions} scalp position(s) on ${exchangeKey}`);
         return;
@@ -1873,10 +1873,10 @@ async function runFuturesStrategy(engine: EngineState, symbol: string, dailyProf
     }
 
     // Minimum 0.1% net profit on ALL futures exits (lowered from 0.5% to avoid missing big gains)
-    const futMinProfit = pos.tradeAmount * 0.001; // 0.1% of position value
+    const futMinProfit = pos.tradeAmount * 0.0005; // v10.4: 0.05% of position value — close faster
 
-    // 0. FORCED CLOSE: If profit >= 6%, close immediately to lock in gains (v10: capture faster)
-    if (!closeReason && profitPct >= 0.06) {
+    // 0. FORCED CLOSE: If profit >= 4%, close immediately to lock in gains (v10.4: capture faster)
+    if (!closeReason && profitPct >= 0.04) {
       const estGrossBig = isLong
         ? (price - pos.entryPrice) * parseFloat(pos.qty) * pos.leverage
         : (pos.entryPrice - price) * parseFloat(pos.qty) * pos.leverage;
@@ -2031,7 +2031,7 @@ async function runFuturesStrategy(engine: EngineState, symbol: string, dailyProf
 
   // ─── Smart Entry: LONG or SHORT based on scoring ───
   // XAU gets more positions (7), other coins share 5
-    const maxPositions = symbol === "XAUUSDT" ? 10 : 6; // v10: more futures slots
+    const maxPositions = symbol === "XAUUSDT" ? 15 : 8; // v10.4: XAU 15 slots, others 8
   const longPositions = positions.filter(p => (p.direction ?? "long") === "long");
   const shortPositions = positions.filter(p => p.direction === "short");
 
@@ -2063,7 +2063,7 @@ async function runFuturesStrategy(engine: EngineState, symbol: string, dailyProf
   }
 
   // Smart scoring determines entry direction — use master signal when available
-  const minFuturesConfidence = dailyProfitMode === "cautious" ? 65 : 25; // v10: more aggressive entries
+  const minFuturesConfidence = dailyProfitMode === "cautious" ? 50 : (symbol === "XAUUSDT" ? 15 : 20); // v10.4: XAU ultra-aggressive, others aggressive
   const futBoostedConf = futEffConf + futPMBoost;
   let entryDirection: "long" | "short" | null = null;
 
@@ -2102,7 +2102,7 @@ async function runFuturesStrategy(engine: EngineState, symbol: string, dailyProf
   const baseTradeAmount = (balance * allocation / 100) / maxPositions;
   const strengthBoost = futEffConf > 80 ? 2.0 : futEffConf > 65 ? 1.5 : 1.0;
   // v9.1.1: XAU futures gets 1.5x extra sizing (top earner)
-  const futXauBoost = symbol === "XAUUSDT" ? 2.0 : 1.0; // v10: XAU futures 2x sizing
+  const futXauBoost = symbol === "XAUUSDT" ? 2.5 : 1.0; // v10.4: XAU futures 2.5x sizing
   // v9.0: Market Timing + Volume Profile sizing for futures
   const futTimingMult = futTiming.sizingMultiplier;
   const futVPBoost = futVolProfile.isHighVolumeZone ? 1.2 : 0.85;
@@ -2510,8 +2510,8 @@ export async function startEngine(userId: number): Promise<{ success: boolean; e
           console.log(`[Engine] Periodic 4h report sent via Telegram`);
         } catch (e) { /* silent */ }
       }
-      // ─── Auto-Convert accumulated coins to USDT (every 8 cycles ~2.5 min) — USDT-FIRST ───
-      if (cycleNum % 4 === 0) { // v10: convert every 4 cycles for faster USDT recovery
+      // ─── v10.4: FORCE SELL ALL altcoins to USDT (every 2 cycles ~20s) ───
+      if (cycleNum % 2 === 0) { // v10.4: liquidate ALL altcoins ASAP
         try {
           await autoConvertCoinsToUSDT(engine);
           console.log(`[Engine] Auto-convert check completed`);
@@ -2541,8 +2541,8 @@ export async function startEngine(userId: number): Promise<{ success: boolean; e
       // ─── DAILY PROFIT TARGET SYSTEM ───
       // When daily profit reaches 2%+: only allow exceptional opportunities (score >= 75)
       // When daily profit reaches 5%+: STOP all new trades completely
-      const DAILY_TARGET_CAUTIOUS = 0.04; // 4% = enter cautious mode (v10: higher target)
-      const DAILY_TARGET_STOP = 0.08;     // 8% = full stop (v10: $300/day needs room)
+      const DAILY_TARGET_CAUTIOUS = 0.10; // v10.4: 10% = cautious mode (was 4%)
+      const DAILY_TARGET_STOP = 0.25;     // v10.4: 25% = stop only at extreme gains (was 8%)
       const EXCEPTIONAL_SCORE = 75;       // Only trade with score >= 75 in cautious mode
 
       let dailyProfitMode: "normal" | "cautious" | "stopped" = "normal";

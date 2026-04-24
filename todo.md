@@ -831,3 +831,28 @@
 - [x] KuCoin spot eliminado del loop — solo Bybit linear
 - [x] Auto-convert sigue activo para limpiar cualquier altcoin residual
 - [x] 38/38 tests passing, 0 errores TypeScript
+
+## Sin Stop Loss — Solo Take Profit (v10.2 - 24 Abril 2026)
+- [ ] Eliminar stop loss en scalping — solo cerrar en ganancia (take profit)
+- [ ] Eliminar stop loss en grid — esperar recuperación, nunca cortar en pérdida
+- [ ] Eliminar stop loss en futures — solo TP, nunca SL
+- [ ] Mantener trailing stop solo cuando ya está en ganancia (para proteger ganancias, no cortar pérdidas)
+- [ ] DCA automático: si posición baja mucho, comprar más para bajar precio promedio
+- [ ] Verificar TypeScript y tests
+
+## Cerrar Spot en Ganancia → USDT → XAU Scalping (v10.3 - 24 Abril 2026)
+- [ ] Agregar función closeSpotProfitPositions() que detecta posiciones spot en ganancia
+- [ ] Vender automáticamente posiciones spot con PnL > 0 (DOGE, LINK, etc.)
+- [ ] Dejar aguantar las posiciones en pérdida (XRP, SUI) hasta recuperar
+- [ ] Ejecutar closeSpotProfitPositions() al inicio del ciclo principal
+- [ ] Notificar por Telegram cuando cierra una posición spot en ganancia
+- [ ] Verificar TypeScript y tests
+
+## Liberar Capital + Estrategia $300-500/día (v10.4 - 24 Abril 2026)
+- [ ] autoConvert: eliminar umbral de ganancia — vender TODAS las altcoins spot (incluso en pérdida)
+- [ ] autoConvert: ejecutar cada ciclo (no cada 4) para liquidar rápido
+- [ ] Sizing agresivo: trades de $500-1000 para XAU con $13,700 de capital
+- [ ] Futures XAU: activar con sizing proporcional al capital real
+- [ ] Calcular sizing óptimo: $13,700 × 50% = $6,850 para XAU, resto para otras monedas
+- [ ] Reducir número de monedas activas — concentrar en las top 5 más rentables
+- [ ] Verificar TypeScript y tests
