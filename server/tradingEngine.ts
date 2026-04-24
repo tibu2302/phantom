@@ -1727,10 +1727,11 @@ async function runScalpingStrategy(engine: EngineState, symbol: string, category
         return;
       }
 
-      // Smart pre-check: only enter if confidence is adequate (with v9.0 boosts)
+      // v10.5: ultra-low confidence thresholds to maximize entries
       const boostedConfidence = smartScore.confidence + breakoutBoost + meanRevBoost;
-      if (boostedConfidence < 30) {
-        console.log(`[Scalp] SKIP ${symbol} Buy — confidence too low (${smartScore.confidence}% + boosts ${breakoutBoost + meanRevBoost} = ${boostedConfidence}%)`);
+      const minScalpConfidence = symbol === "XAUUSDT" ? 10 : 20;
+      if (boostedConfidence < minScalpConfidence) {
+        console.log(`[Scalp] SKIP ${symbol} Buy — confidence too low (${smartScore.confidence}% + boosts ${breakoutBoost + meanRevBoost} = ${boostedConfidence}% < ${minScalpConfidence})`);
         return;
       }
       console.log(`[Scalp] ${symbol} Buy — confidence=${smartScore.confidence}% regime=${smartScore.regime} size=${(smartScore.suggestedSizePct * scalpCooldown).toFixed(2)}x`);
@@ -2063,7 +2064,7 @@ async function runFuturesStrategy(engine: EngineState, symbol: string, dailyProf
   }
 
   // Smart scoring determines entry direction — use master signal when available
-  const minFuturesConfidence = dailyProfitMode === "cautious" ? 50 : (symbol === "XAUUSDT" ? 15 : 20); // v10.4: XAU ultra-aggressive, others aggressive
+  const minFuturesConfidence = dailyProfitMode === "cautious" ? 40 : (symbol === "XAUUSDT" ? 5 : 10); // v10.5: ultra-low thresholds to maximize entries
   const futBoostedConf = futEffConf + futPMBoost;
   let entryDirection: "long" | "short" | null = null;
 
@@ -2073,14 +2074,22 @@ async function runFuturesStrategy(engine: EngineState, symbol: string, dailyProf
     return;
   }
 
-  if (futEffDir === "buy" && futBoostedConf >= minFuturesConfidence && longPositions.length < 3) {
+  // v10.5: increased per-pair limits (was 3), allow neutral dir for XAU
+  const maxLongPerPair = symbol === "XAUUSDT" ? 8 : 4;
+  const maxShortPerPair = symbol === "XAUUSDT" ? 8 : 4;
+
+  if (futEffDir === "buy" && futBoostedConf >= minFuturesConfidence && longPositions.length < maxLongPerPair) {
     if (futSmartScore.regime !== "strong_trend_down") {
       entryDirection = "long";
     }
-  } else if (futEffDir === "sell" && futBoostedConf >= minFuturesConfidence && shortPositions.length < 3) {
+  } else if (futEffDir === "sell" && futBoostedConf >= minFuturesConfidence && shortPositions.length < maxShortPerPair) {
     if (futSmartScore.regime !== "strong_trend_up") {
       entryDirection = "short";
     }
+  } else if (symbol === "XAUUSDT" && futEffDir === "neutral" && futBoostedConf >= 5 && longPositions.length < maxLongPerPair) {
+    // v10.5: XAU always enters long even on neutral signal
+    entryDirection = "long";
+    console.log(`[Futures] XAUUSDT NEUTRAL-ENTRY — forcing long (score=${futBoostedConf})`);
   }
 
   if (dailyProfitMode === "cautious" && entryDirection) {
