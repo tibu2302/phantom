@@ -5,7 +5,7 @@ import {
   ChevronRight, Flame, Pencil, DollarSign, Percent, Award, Scale,
   Calendar, PieChart, Layers, ArrowUp, ArrowDown, Minus, Brain,
   Cpu, Gauge, CircleDollarSign, TrendingUp as Trending, LayoutGrid,
-  Crosshair, Bot, Sparkles, LineChart
+  Crosshair, Bot, Sparkles, LineChart, FileDown
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -269,6 +269,9 @@ export default function Home() {
             ))}
           </div>
           <div className="flex items-center gap-0.5">
+            <button onClick={() => { const d = new Date().toISOString().slice(0,10); window.open(`/api/report/daily?date=${d}`, '_blank'); }} className="h-9 w-9 flex items-center justify-center rounded-xl hover:bg-accent/50 transition-all active:scale-95" title="Descargar reporte PDF">
+              <FileDown className="h-4 w-4 text-muted-foreground" />
+            </button>
             <button onClick={() => setHideBalances(!hideBalances)} className="h-9 w-9 flex items-center justify-center rounded-xl hover:bg-accent/50 transition-all active:scale-95">
               {hideBalances ? <EyeOff className="h-4 w-4 text-muted-foreground" /> : <Eye className="h-4 w-4 text-muted-foreground" />}
             </button>
@@ -731,6 +734,7 @@ export default function Home() {
           </div>
         </div>
         <div className="flex items-center gap-2">
+          <button onClick={() => { const d = new Date().toISOString().slice(0,10); window.open(`/api/report/daily?date=${d}`, '_blank'); }} className="h-9 w-9 flex items-center justify-center rounded-xl hover:bg-accent/50 transition-all" title="Descargar reporte PDF"><FileDown className="h-4 w-4 text-muted-foreground" /></button>
           <button onClick={() => setHideBalances(!hideBalances)} className="h-9 w-9 flex items-center justify-center rounded-xl hover:bg-accent/50 transition-all">{hideBalances ? <EyeOff className="h-4 w-4 text-muted-foreground" /> : <Eye className="h-4 w-4 text-muted-foreground" />}</button>
           <button onClick={handleRefresh} className="h-9 w-9 flex items-center justify-center rounded-xl hover:bg-accent/50 transition-all"><RefreshCw className={`h-4 w-4 text-muted-foreground ${isRefreshing ? "animate-spin" : ""}`} /></button>
           {notifPopover}

@@ -9,6 +9,7 @@ import { appRouter } from "../routers";
 import { createContext } from "./context";
 import { ENV } from "./env";
 import { registerLocalAuthRoutes } from "../localAuth";
+import { registerReportRoutes } from "../dailyReport";
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise(resolve => {
@@ -45,6 +46,9 @@ async function startServer() {
     console.log("[OAuth] Initialized with baseURL:", ENV.oAuthServerUrl || "https://api.manus.im");
     registerOAuthRoutes(app);
   }
+
+  // PDF Report routes
+  registerReportRoutes(app);
 
   // tRPC API
   app.use(

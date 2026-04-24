@@ -770,3 +770,17 @@
 - [x] Liquidez USDT: USDT_MIN_RESERVE_PCT=60%, spot buys bloqueados si baja reserva
 - [x] Reinvest step aumentado: +8% por ciclo (era +5%)
 - [x] 38/38 tests passing, 0 errores TypeScript
+
+## Reporte Diario PDF Descargable (v9.1.2 - 24 Abril 2026)
+- [x] Endpoint GET /api/report/daily?date=YYYY-MM-DD que genera PDF
+- [x] Contenido del PDF: encabezado con logo PHANTOM, fecha, balance
+- [x] Tabla de todos los trades del día (hora, par, lado, precio, qty, PnL, estrategia)
+- [x] Resumen PnL por estrategia (grid, scalping, futures)
+- [x] Resumen PnL por moneda (BTC, ETH, XAU, etc.)
+- [x] Sección de crecimiento de capital: balance inicial vs final del día + gráfico 14 días
+- [x] Posiciones abiertas al cierre del día
+- [x] Estadísticas: win rate, total trades, mejor trade, peor trade, compras, ventas
+- [x] Botón de descarga en el Dashboard (mobile + desktop) con icono FileDown
+- [x] Funciona en VPS sin dependencias de Manus (pdfkit)
+- [x] Estrategias configuradas con estado y PnL acumulado
+- [x] 38/38 tests passing, 0 errores TypeScript
