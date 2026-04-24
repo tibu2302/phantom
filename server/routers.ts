@@ -99,11 +99,17 @@ export const appRouter = router({
         await db.upsertStrategy(ctx.user.id, { symbol: "LINKUSDT", strategyType: "grid", market: "crypto", category: "spot", allocationPct: 15, enabled: true });
         await db.upsertStrategy(ctx.user.id, { symbol: "ARBUSDT", strategyType: "grid", market: "crypto", category: "spot", allocationPct: 10, enabled: true });
         await db.upsertStrategy(ctx.user.id, { symbol: "SUIUSDT", strategyType: "grid", market: "crypto", category: "spot", allocationPct: 10, enabled: true });
-        // Scalping (expanded)
-        await db.upsertStrategy(ctx.user.id, { symbol: "XAUUSDT", strategyType: "scalping", market: "tradfi", category: "linear", allocationPct: 20, enabled: true });
+        // Scalping (expanded v8.2 — XAU boosted + volatile pairs)
+        await db.upsertStrategy(ctx.user.id, { symbol: "XAUUSDT", strategyType: "scalping", market: "tradfi", category: "linear", allocationPct: 35, enabled: true }); // XAU top performer — max allocation
         await db.upsertStrategy(ctx.user.id, { symbol: "DOGEUSDT", strategyType: "scalping", market: "crypto", category: "spot", allocationPct: 15, enabled: true });
         await db.upsertStrategy(ctx.user.id, { symbol: "ADAUSDT", strategyType: "scalping", market: "crypto", category: "spot", allocationPct: 15, enabled: true });
         await db.upsertStrategy(ctx.user.id, { symbol: "LINKUSDT", strategyType: "scalping", market: "crypto", category: "spot", allocationPct: 15, enabled: true });
+        // v8.2: Volatile meme/micro-cap pairs for aggressive scalping
+        await db.upsertStrategy(ctx.user.id, { symbol: "PEPEUSDT", strategyType: "scalping", market: "crypto", category: "spot", allocationPct: 10, enabled: true });
+        await db.upsertStrategy(ctx.user.id, { symbol: "WIFUSDT", strategyType: "scalping", market: "crypto", category: "spot", allocationPct: 10, enabled: true });
+        await db.upsertStrategy(ctx.user.id, { symbol: "BONKUSDT", strategyType: "scalping", market: "crypto", category: "spot", allocationPct: 10, enabled: true });
+        await db.upsertStrategy(ctx.user.id, { symbol: "SHIBUSDT", strategyType: "scalping", market: "crypto", category: "spot", allocationPct: 10, enabled: true });
+        await db.upsertStrategy(ctx.user.id, { symbol: "FLOKIUSDT", strategyType: "scalping", market: "crypto", category: "spot", allocationPct: 10, enabled: true });
         // Futures (BTC/ETH 5x, SOL/XRP/AVAX 3x, TP 1.5%)
         await db.upsertStrategy(ctx.user.id, { symbol: "BTCUSDT", strategyType: "futures", market: "crypto", category: "linear", allocationPct: 25, enabled: true, config: { leverage: 5, takeProfitPct: 1.5 } } as any);
         await db.upsertStrategy(ctx.user.id, { symbol: "ETHUSDT", strategyType: "futures", market: "crypto", category: "linear", allocationPct: 25, enabled: true, config: { leverage: 5, takeProfitPct: 1.5 } } as any);

@@ -619,3 +619,69 @@
 - [x] Diseño premium mobile + desktop
 - [x] Tests pasando (38/38)
 - [x] Sync GitHub y deploy
+
+## Mejoras v8.2 — IA Máxima + Más Ganancias (23 Abril 2026)
+
+### Auditoría PnL
+- [x] Verificar cálculo de fees en Grid (taker vs maker) — CORRECTO: usa FEES[exchange] con spot/linear rates
+- [x] Verificar cálculo de PnL en Futures con leverage — CORRECTO: grossPnl * leverage - fees - funding
+- [x] Verificar que totalPnl acumulado no se duplica en compras — CORRECTO: BUY siempre pnl=0 en real
+- [x] Corregir cualquier error en cálculo de ganancias reales — Todo OK, fees y funding correctos
+
+### Mejora 1 — Scalping en Pares Volátiles
+- [ ] Agregar PEPE, WIF, BONK, FLOKI, SHIB como pares de scalping dedicados en Bybit
+- [ ] Configurar tradeAmount más pequeño para memecoins
+- [ ] IA selecciona automáticamente los 5 pares más volátiles del día
+
+### Mejora 2 — Scalping Nocturno Agresivo
+- [ ] Detectar horario UTC y activar modo nocturno (2am-6am UTC)
+- [ ] En modo nocturno: bajar umbral de confianza a 25% para scalping
+- [ ] En modo nocturno: aumentar frecuencia de ciclos
+- [ ] Log claro cuando está en modo nocturno
+
+### Mejora 3 — Trailing Stop Dinámico en Scalping
+- [ ] Reemplazar salida fija 0.5% por trailing stop dinámico
+- [ ] Trailing activa cuando ganancia supera 0.8%
+- [ ] Trailing sigue el precio con distancia ATR-based
+- [ ] IA ajusta la distancia del trailing según volatilidad del par
+
+### Mejora 4 — Grid más Apretado en Trending
+- [ ] Detectar régimen trending con IA
+- [ ] En trending: reducir spacing del grid a 0.3x del ATR
+- [ ] En trending: aumentar número de niveles activos
+- [ ] En ranging: mantener spacing normal
+
+### Mejora 8 — Historial con Filtros en Dashboard
+- [ ] Filtro por estrategia (Grid / Scalping / Futures / Todas)
+- [ ] Filtro por símbolo
+- [ ] Filtro por período (Hoy / 7D / 30D / Todo)
+- [ ] Filtro por resultado (Solo ganancias / Solo pérdidas / Todo)
+- [ ] Exportar CSV filtrado
+
+### Mejora 9 — Comando /stats en Telegram + Resumen Diario
+- [ ] Resumen automático diario a las 23:59 UTC
+- [ ] Incluir: PnL del día, win rate, mejor trade, peor trade, total trades
+- [ ] Incluir: balance actual, ganancia total acumulada
+- [ ] Comando manual /stats para pedir el resumen en cualquier momento
+
+### Mejora 10 — Alertas de Oportunidad en Telegram
+- [ ] Cuando score > 80: notificar ANTES de entrar con análisis completo
+- [ ] Incluir: símbolo, score, dirección, régimen, ATR, TP estimado
+- [ ] Cuando se cierra con ganancia > $5: notificación especial
+
+### Mejora 11 — Auto-Reinversión con IA
+- [ ] Calcular ganancias acumuladas no reinvertidas
+- [ ] Cuando ganancias > $50: aumentar tradeAmount automáticamente
+- [ ] IA decide qué estrategia recibe más capital según win rate
+- [ ] Límite máximo de reinversión: no superar 120% del capital inicial
+- [ ] Notificación Telegram cuando se reinvierte capital
+
+### Mejora 12 — AI Auto-Allocator (Capital Inteligente)
+- [ ] Analizar rendimiento histórico de cada estrategia+par (PnL, win rate, profit factor)
+- [ ] Identificar automáticamente qué combinación genera más ganancias (ej: Scalping XAU)
+- [ ] Reasignar allocationPct dinámicamente: más capital para lo que más rinde
+- [ ] Scalping XAU agresivo: más posiciones simultáneas, más frecuencia
+- [ ] Agregar más pares volátiles a scalping (PEPE, WIF, BONK, SHIB)
+- [ ] Rebalanceo cada 4 horas basado en performance real
+- [ ] Notificación Telegram cuando se reasigna capital
+- [ ] Límite: ninguna estrategia+par puede tener más del 40% del capital total

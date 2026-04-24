@@ -58,6 +58,12 @@ import {
   recordDailyReturn, generatePerformanceReport,
   type OptimizerSignal
 } from "./autoOptimizer";
+import {
+  analyzeStrategyPerformance, rebalanceCapital, checkAutoReinvest,
+  calculateDynamicTrailingStop, getXAUBoostMultiplier, getTrendingGridAdjustment,
+  buildOpportunityAlert, buildStatsReport, isNocturnalHours, getNocturnalMultiplier,
+  VOLATILE_SCALPING_PAIRS, type AllocatorState, type StrategyPerformance
+} from "./capitalAllocator";
 
 // ─── Fee Constants (per exchange) ───
 const FEES: Record<string, { spot: number; linear: number }> = {
@@ -88,6 +94,8 @@ interface ScalpPosition {
   exchange: string; // "bybit" | "kucoin"
   category: "spot" | "linear";
   openedAt: number;
+  highestPrice?: number; // for dynamic trailing stop
+  trailingActivated?: boolean; // trailing stop active
 }
 
 interface GridLevel {
@@ -144,8 +152,10 @@ export interface EngineState {
   priceIntervalId?: ReturnType<typeof setInterval>;
   dailySummaryId?: ReturnType<typeof setInterval>;
   telegramPollingId?: ReturnType<typeof setInterval>;
+  autoReinvestId?: ReturnType<typeof setInterval>;
   telegramPollingOffset?: number;
   lastDrawdownAlertDate?: string; // YYYY-MM-DD to avoid spam
+  lastReinvestDate?: string; // YYYY-MM-DD to avoid double reinvest
   telegramChatId?: string;
   telegramBotToken?: string;
 }
@@ -897,7 +907,7 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
   const strats = await db.getUserStrategies(engine.userId);
   const strat = strats.find(s => s.symbol === symbol);
   const config = strat?.config as any;
-  const gridLevels = config?.gridLevels ?? 10;
+  let gridLevels = config?.gridLevels ?? 10;
   const baseGridSpread = config?.gridSpreadPct ? config.gridSpreadPct / 100 : 0.005;
 
   // ─── Dynamic Grid: ATR-based spread + regime adjustment ───
@@ -910,11 +920,15 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
       // Scale spread: ATR 0.5% → base, ATR 2% → 2x base
       const volMultiplier = Math.max(1, Math.min(2.5, atrPct / 0.5));
       effectiveSpread = baseGridSpread * volMultiplier;
-      // Regime adjustment: tighter in ranging (more cycles = more USDT gains), wider in trending
-      if (marketRegime === "ranging") effectiveSpread *= 0.65; // Much tighter for rapid cycles
-      else if (marketRegime === "volatile") effectiveSpread *= 1.4;
-      else if (marketRegime === "strong_trend_up" || marketRegime === "strong_trend_down") effectiveSpread *= 1.2;
-      else if (marketRegime === "trend_up") effectiveSpread *= 0.8; // Tighter in mild uptrend
+      // v8.2: AI Trending Grid Adjustment — tighter spread + more levels in trending
+      const trendAdj = getTrendingGridAdjustment(marketRegime);
+      effectiveSpread *= trendAdj.spreadMultiplier;
+      gridLevels = Math.round(gridLevels * trendAdj.levelsMultiplier);
+      if (trendAdj.spreadMultiplier !== 1.0) {
+        console.log(`[Grid] ${symbol} TRENDING ADJ: spread×${trendAdj.spreadMultiplier} levels×${trendAdj.levelsMultiplier} regime=${marketRegime}`);
+      }
+      // Additional ranging tightening for max cycles
+      if (marketRegime === "ranging") effectiveSpread *= 0.65;
     }
   } catch { /* use base spread */ }
 
@@ -1412,7 +1426,13 @@ async function runScalpingStrategy(engine: EngineState, symbol: string, category
   const effectiveDirection = scalpMaster ? scalpMaster.direction : smartScore.direction;
   const isBlocked = scalpMaster?.blocked ?? false;
 
-  const minConfidence = 30;
+  // ─── v8.2: Nocturnal Mode — lower thresholds during 2am-6am UTC ───
+  const nocturnal = getNocturnalMultiplier();
+  const baseMinConfidence = 30;
+  const minConfidence = Math.round(baseMinConfidence * (1 - nocturnal.confidenceReduction));
+  if (nocturnal.confidenceReduction > 0) {
+    console.log(`[Scalp] ${symbol} NOCTURNAL MODE: minConfidence reduced ${baseMinConfidence} → ${minConfidence}`);
+  }
   if (!isBlocked && effectiveDirection === "buy" && effectiveConfidence >= minConfidence) {
     signal = "Buy";
   } else if (effectiveDirection === "sell" && effectiveConfidence >= minConfidence) {
@@ -1446,11 +1466,19 @@ async function runScalpingStrategy(engine: EngineState, symbol: string, category
     const allocation = strat?.allocationPct ?? 30;
     const state = await db.getOrCreateBotState(engine.userId);
     const balance = parseFloat(state?.currentBalance ?? "5000");
-    // Smart sizing: confidence-weighted + cooldown + BOOST + master signal multiplier
+    // Smart sizing: confidence-weighted + cooldown + BOOST + master signal multiplier + XAU boost + nocturnal
     const baseAmount = balance * allocation / 100 * 0.7;
     const scalpBoost = effectiveConfidence > 75 ? 1.8 : effectiveConfidence > 55 ? 1.3 : 1.0;
     const masterSizing = scalpMaster?.sizingMultiplier ?? 1.0;
-    const tradeAmount = baseAmount * smartScore.suggestedSizePct * scalpCooldown * scalpBoost * masterSizing;
+    // v8.2: XAU Boost — if XAU scalping is top performer, increase sizing
+    let xauBoost = 1.0;
+    try {
+      const perfs = await analyzeStrategyPerformance(engine.userId);
+      xauBoost = getXAUBoostMultiplier(perfs);
+      if (xauBoost > 1.0) console.log(`[Scalp] ${symbol} XAU BOOST: ${xauBoost.toFixed(2)}x (top performer)`);
+    } catch { /* silent */ }
+    const nocturnalSizing = nocturnal.sizeMultiplier;
+    const tradeAmount = baseAmount * smartScore.suggestedSizePct * scalpCooldown * scalpBoost * masterSizing * xauBoost * nocturnalSizing;
     const qty = (tradeAmount / price).toFixed(6);
 
     // ─── Position-Tracked Scalping ───
@@ -1459,6 +1487,28 @@ async function runScalpingStrategy(engine: EngineState, symbol: string, category
     const exchangeKey = engine.exchange === "both" ? (category === "spot" ? "kucoin" : "bybit") : engine.exchange;
     const myPositions = existingPositions.filter(p => p.exchange === exchangeKey && p.category === category);
 
+    // ─── v8.2: Dynamic Trailing Stop for ALL open scalp positions ───
+    for (const pos of myPositions) {
+      // Update highest price tracking
+      if (!pos.highestPrice || price > pos.highestPrice) pos.highestPrice = price;
+      const atrPctVal = smartScore.suggestedTrailingPct ?? 0.5;
+      const trailing = calculateDynamicTrailingStop(
+        pos.buyPrice, price, pos.highestPrice ?? price, atrPctVal / 100, smartScore.regime ?? "ranging"
+      );
+      pos.highestPrice = trailing.newHighest;
+      if (trailing.shouldSell) {
+        const posValue = pos.buyPrice * parseFloat(pos.qty);
+        const estGross = (price - pos.buyPrice) * parseFloat(pos.qty);
+        const estNet = calcNetPnl(estGross, posValue, category, true, engine.exchange);
+        if (estNet > 0) {
+          console.log(`[Scalp] ${symbol} DYNAMIC TRAILING: ${trailing.reason}`);
+          // Force sell via trailing
+          signal = "Sell";
+          break;
+        }
+      }
+    }
+
     if (signal === "Sell") {
       // Only sell if we have a scalp position to close
       if (myPositions.length === 0) {
@@ -1466,14 +1516,14 @@ async function runScalpingStrategy(engine: EngineState, symbol: string, category
         return;
       }
 
-      // Close the oldest position — ONLY if net profit >= 0.5%
+      // Close the oldest position — dynamic trailing or min 0.3% net profit
       const pos = myPositions[0];
       const posValue = pos.buyPrice * parseFloat(pos.qty);
       const estGross = (price - pos.buyPrice) * parseFloat(pos.qty);
       const estNet = calcNetPnl(estGross, posValue, category, true, engine.exchange);
-      const scalpMinProfit = posValue * 0.005; // 0.5% minimum net profit
+      const scalpMinProfit = posValue * 0.003; // 0.3% minimum net profit (reduced from 0.5% for faster rotation)
       if (estNet < scalpMinProfit) {
-        console.log(`[Scalp] HOLD ${symbol} — net $${estNet.toFixed(2)} < min 0.5% ($${scalpMinProfit.toFixed(2)}), waiting for better exit`);
+        console.log(`[Scalp] HOLD ${symbol} — net $${estNet.toFixed(2)} < min 0.3% ($${scalpMinProfit.toFixed(2)}), waiting for better exit`);
         return;
       }
       const sellQty = pos.qty;
@@ -1543,6 +1593,13 @@ async function runScalpingStrategy(engine: EngineState, symbol: string, category
         return;
       }
       console.log(`[Scalp] ${symbol} Buy — confidence=${smartScore.confidence}% regime=${smartScore.regime} size=${(smartScore.suggestedSizePct * scalpCooldown).toFixed(2)}x`);
+      // v8.2: Opportunity Alert — notify on high-confidence entries
+      if (effectiveConfidence >= 70) {
+        try {
+          const alertMsg = buildOpportunityAlert(symbol, effectiveConfidence, "buy", smartScore.regime ?? "unknown", smartScore.suggestedTrailingPct ?? 0, smartScore.suggestedSizePct ?? 1.0, "scalping");
+          await sendTelegramNotification(engine, alertMsg);
+        } catch { /* silent */ }
+      }
 
       const orderId = await placeOrder(engine, symbol, "Buy", qty, category);
       if (orderId) {
@@ -2475,6 +2532,37 @@ export async function startEngine(userId: number): Promise<{ success: boolean; e
     }
   }, 60_000); // Check every 60 seconds
 
+  // ─── v8.2: Auto-Reinvestment + Capital Rebalancing (every 4 hours) ───
+  engine.autoReinvestId = setInterval(async () => {
+    if (!engine.isRunning) return;
+    try {
+      // 1. Auto-reinvest accumulated gains
+      const reinvestResult = await checkAutoReinvest(engine.userId);
+      if (reinvestResult?.reinvested) {
+        console.log(`[Allocator] AUTO-REINVEST: $${reinvestResult.amount.toFixed(2)} → ${reinvestResult.target}`);
+        await sendTelegramNotification(engine,
+          `💰 <b>Auto-Reinversión</b>\nMonto: $${reinvestResult.amount.toFixed(2)}\nDestino: ${reinvestResult.target}\nNuevo capital base: $${reinvestResult.newBalance}`
+        );
+      }
+      // 2. Rebalance capital allocation based on performance
+      const allocResult = await rebalanceCapital(engine.userId);
+      if (allocResult.decisions.length > 0) {
+        console.log(`[Allocator] REBALANCE: ${allocResult.decisions.length} changes, top=${allocResult.topPerformer?.strategy} ${allocResult.topPerformer?.symbol}`);
+        let msg = `🔄 <b>Capital Rebalanceado</b>\n\n`;
+        for (const d of allocResult.decisions) {
+          msg += `${d.newAllocationPct > d.oldAllocationPct ? "⬆️" : "⬇️"} ${d.strategy} ${d.symbol}: ${d.oldAllocationPct}% → ${d.newAllocationPct}%\n`;
+        }
+        if (allocResult.topPerformer) {
+          msg += `\n🏆 Top Performer: ${allocResult.topPerformer.strategy} ${allocResult.topPerformer.symbol} (score=${allocResult.topPerformer.score})`;
+        }
+        await sendTelegramNotification(engine, msg);
+      }
+    } catch (e) {
+      console.error("[Allocator] Error:", (e as Error).message);
+    }
+  }, 4 * 60 * 60 * 1000); // Every 4 hours
+  console.log(`[Engine] Auto-reinvestment + capital rebalancing scheduled (every 4h)`);
+
   // ─── Telegram Polling for /status command ───
   if (engine.telegramBotToken && engine.telegramChatId) {
     engine.telegramPollingOffset = 0;
@@ -2493,6 +2581,51 @@ export async function startEngine(userId: number): Promise<{ success: boolean; e
           if (chatId !== engine.telegramChatId) continue;
           if (text === "/status" || text === "/estado") {
             await sendStatusReport(engine);
+          } else if (text === "/stats" || text === "/estadisticas") {
+            // v8.2: Full stats report with period PnL, top strategies, best/worst trades
+            try {
+              const report = await buildStatsReport(engine.userId);
+              await sendTelegramNotification(engine, report);
+            } catch (e) {
+              await sendTelegramNotification(engine, `❌ Error generando stats: ${(e as Error).message}`);
+            }
+          } else if (text === "/allocation" || text === "/capital") {
+            // v8.2: Show current capital allocation
+            try {
+              const perfs = await analyzeStrategyPerformance(engine.userId);
+              let msg = `📊 <b>PHANTOM — Capital Allocation</b>\n\n`;
+              for (const p of perfs.slice(0, 10)) {
+                const emoji = p.score >= 60 ? "🟢" : p.score >= 30 ? "🟡" : "🔴";
+                msg += `${emoji} ${p.strategy} ${p.symbol}: ${p.currentAllocation}% → ${p.suggestedAllocation}% (score=${p.score})\n`;
+              }
+              if (perfs.length > 0) {
+                msg += `\n🏆 Top: ${perfs[0].strategy} ${perfs[0].symbol} (score=${perfs[0].score})`;
+              }
+              await sendTelegramNotification(engine, msg);
+            } catch (e) {
+              await sendTelegramNotification(engine, `❌ Error: ${(e as Error).message}`);
+            }
+          } else if (text === "/reinvest" || text === "/reinvertir") {
+            // v8.2: Force auto-reinvestment check
+            try {
+              const result = await checkAutoReinvest(engine.userId);
+              if (result?.reinvested) {
+                await sendTelegramNotification(engine, `💰 <b>Reinversión ejecutada</b>\nMonto: $${result.amount.toFixed(2)}\nDestino: ${result.target}\nNuevo capital base: $${result.newBalance}`);
+              } else {
+                await sendTelegramNotification(engine, `ℹ️ No hay ganancias suficientes para reinvertir (mínimo $50 acumulados).`);
+              }
+            } catch (e) {
+              await sendTelegramNotification(engine, `❌ Error: ${(e as Error).message}`);
+            }
+          } else if (text === "/help" || text === "/ayuda") {
+            await sendTelegramNotification(engine,
+              `👻 <b>PHANTOM Bot — Comandos</b>\n\n` +
+              `/status — Estado actual del bot\n` +
+              `/stats — Estadísticas completas (PnL por período, top estrategias)\n` +
+              `/allocation — Distribución de capital actual\n` +
+              `/reinvest — Forzar reinversión de ganancias\n` +
+              `/help — Este mensaje`
+            );
           }
         }
       } catch (e) {
@@ -2736,6 +2869,7 @@ export async function stopEngine(userId: number): Promise<{ success: boolean }> 
   if (engine.priceIntervalId) clearInterval(engine.priceIntervalId);
   if (engine.dailySummaryId) clearInterval(engine.dailySummaryId);
   if (engine.telegramPollingId) clearInterval(engine.telegramPollingId);
+  if (engine.autoReinvestId) clearInterval(engine.autoReinvestId);
 
   // ─── Save open positions to DB before stopping (survive restarts) ───
   try {
