@@ -1885,50 +1885,74 @@ async function runFuturesStrategy(engine: EngineState, symbol: string, dailyProf
       console.log(`[Futures] ${symbol} ${isLong ? "LONG" : "SHORT"} HOLD — ${(lossPct * 100).toFixed(2)}% loss, held ${(holdTimeMs / 3600000).toFixed(1)}h, waiting for recovery`);
     }
 
-    // Minimum 0.5% net profit on ALL futures exits
-    const futMinProfit = pos.tradeAmount * 0.005; // 0.5% of position value
+    // Minimum 0.1% net profit on ALL futures exits (lowered from 0.5% to avoid missing big gains)
+    const futMinProfit = pos.tradeAmount * 0.001; // 0.1% of position value
 
-    // 2. TIME-PROFIT: Only close if held long AND net profit >= 0.5%
-    if (futuresMaxHoldHours > 0 && holdTimeMs > futuresMaxHoldHours * 3600000 && profitPct > 0.003) {
+    // 0. FORCED CLOSE: If profit >= 8%, close immediately to lock in gains
+    if (!closeReason && profitPct >= 0.08) {
+      const estGrossBig = isLong
+        ? (price - pos.entryPrice) * parseFloat(pos.qty) * pos.leverage
+        : (pos.entryPrice - price) * parseFloat(pos.qty) * pos.leverage;
+      const estNetBig = calcNetPnl(estGrossBig, pos.tradeAmount * pos.leverage, "linear", true, "bybit", holdTimeMs);
+      closeReason = `FORCED-CLOSE-BIG-GAIN (${(profitPct * 100).toFixed(2)}%, net=$${estNetBig.toFixed(2)} — locking in huge profit)`;
+      console.log(`[Futures] 🎯 ${symbol} FORCED CLOSE — ${(profitPct * 100).toFixed(2)}% gain, locking in $${estNetBig.toFixed(2)}`);
+    }
+
+    // 2. TIME-PROFIT: Only close if held long AND net profit >= 0.1%
+    if (!closeReason && futuresMaxHoldHours > 0 && holdTimeMs > futuresMaxHoldHours * 3600000 && profitPct > 0.003) {
       const estGross = isLong
         ? (price - pos.entryPrice) * parseFloat(pos.qty) * pos.leverage
         : (pos.entryPrice - price) * parseFloat(pos.qty) * pos.leverage;
       const estNet = calcNetPnl(estGross, pos.tradeAmount * pos.leverage, "linear", true, "bybit", holdTimeMs);
       if (estNet >= futMinProfit) {
-        closeReason = `TIME-PROFIT (held ${(holdTimeMs / 3600000).toFixed(1)}h, net $${estNet.toFixed(2)} >= 0.5% ${isLong ? "LONG" : "SHORT"})`;  
+        closeReason = `TIME-PROFIT (held ${(holdTimeMs / 3600000).toFixed(1)}h, net $${estNet.toFixed(2)} ${isLong ? "LONG" : "SHORT"})`;
       } else if (estNet > 0) {
-        console.log(`[Futures] ${symbol} HOLD — time-profit $${estNet.toFixed(2)} < min 0.5% ($${futMinProfit.toFixed(2)})`);
+        console.log(`[Futures] ${symbol} HOLD — time-profit $${estNet.toFixed(2)} < min ($${futMinProfit.toFixed(2)})`);
       }
     }
 
-    // 3. TRAILING STOP: Lock in profits (only if net >= 0.5%)
+    // 3. TRAILING STOP: Lock in profits
     if (!closeReason && profitPct > 0) {
       if (isLong) {
         if (!pos.highestPrice || price > pos.highestPrice) pos.highestPrice = price;
         if (pos.highestPrice && profitPct >= trailingActivationPct) {
           const dropFromHigh = (pos.highestPrice - price) / pos.highestPrice;
-          if (dropFromHigh >= trailingDistancePct) {
+          // Tighter trailing: 0.4% drop from high (was full trailingDistancePct)
+          const tightTrailing = Math.max(0.004, trailingDistancePct * 0.6);
+          if (dropFromHigh >= tightTrailing) {
             const estGross = (price - pos.entryPrice) * parseFloat(pos.qty) * pos.leverage;
             const estNet = calcNetPnl(estGross, pos.tradeAmount * pos.leverage, "linear", true, "bybit", holdTimeMs);
-            if (estNet >= futMinProfit) closeReason = `TRAILING-STOP (high=${pos.highestPrice.toFixed(2)}, net=$${estNet.toFixed(2)} >= 0.5% LONG)`;
-            else if (estNet > 0) console.log(`[Futures] ${symbol} HOLD — trailing net $${estNet.toFixed(2)} < min 0.5% ($${futMinProfit.toFixed(2)}) LONG`);
+            if (estNet >= futMinProfit) closeReason = `TRAILING-STOP (high=${pos.highestPrice.toFixed(4)}, drop=${(dropFromHigh*100).toFixed(2)}%, net=$${estNet.toFixed(2)} LONG)`;
+            else if (estNet > 0) console.log(`[Futures] ${symbol} HOLD — trailing net $${estNet.toFixed(2)} < min ($${futMinProfit.toFixed(2)}) LONG`);
           }
         }
       } else {
+        // SHORT: track lowest price, close when price rises from low
         if (!pos.lowestPrice || price < pos.lowestPrice) pos.lowestPrice = price;
         if (pos.lowestPrice && profitPct >= trailingActivationPct) {
           const riseFromLow = (price - pos.lowestPrice) / pos.lowestPrice;
-          if (riseFromLow >= trailingDistancePct) {
+          // Tighter trailing for SHORT: 0.4% rise from low
+          const tightTrailingShort = Math.max(0.004, trailingDistancePct * 0.6);
+          if (riseFromLow >= tightTrailingShort) {
             const estGross = (pos.entryPrice - price) * parseFloat(pos.qty) * pos.leverage;
             const estNet = calcNetPnl(estGross, pos.tradeAmount * pos.leverage, "linear", true, "bybit", holdTimeMs);
-            if (estNet >= futMinProfit) closeReason = `TRAILING-STOP (low=${pos.lowestPrice.toFixed(2)}, net=$${estNet.toFixed(2)} >= 0.5% SHORT)`;
-            else if (estNet > 0) console.log(`[Futures] ${symbol} HOLD — trailing net $${estNet.toFixed(2)} < min 0.5% ($${futMinProfit.toFixed(2)}) SHORT`);
+            if (estNet >= futMinProfit) closeReason = `TRAILING-STOP (low=${pos.lowestPrice.toFixed(4)}, rise=${(riseFromLow*100).toFixed(2)}%, net=$${estNet.toFixed(2)} SHORT)`;
+            else if (estNet > 0) console.log(`[Futures] ${symbol} HOLD — trailing net $${estNet.toFixed(2)} < min ($${futMinProfit.toFixed(2)}) SHORT`);
+          }
+        }
+        // Protect SHORT gains: if profit > 5% and price rises 0.2% from low, close
+        if (!closeReason && profitPct >= 0.05 && pos.lowestPrice) {
+          const riseFromLow = (price - pos.lowestPrice) / pos.lowestPrice;
+          if (riseFromLow >= 0.002) {
+            const estGross = (pos.entryPrice - price) * parseFloat(pos.qty) * pos.leverage;
+            const estNet = calcNetPnl(estGross, pos.tradeAmount * pos.leverage, "linear", true, "bybit", holdTimeMs);
+            if (estNet >= futMinProfit) closeReason = `PROTECT-PROFIT-SHORT (${(profitPct*100).toFixed(2)}% gain, rise=${(riseFromLow*100).toFixed(2)}% from low, net=$${estNet.toFixed(2)})`;
           }
         }
       }
     }
 
-    // 4. TAKE PROFIT: Dynamic TP (only if net >= 0.5%)
+    // 4. TAKE PROFIT: Dynamic TP
     const effectiveTp = pos.takeProfitPct / 100;
     if (!closeReason && profitPct >= effectiveTp) {
       const estGrossPnl = isLong
@@ -1936,12 +1960,20 @@ async function runFuturesStrategy(engine: EngineState, symbol: string, dailyProf
         : (pos.entryPrice - price) * parseFloat(pos.qty) * pos.leverage;
       const estNetPnl = calcNetPnl(estGrossPnl, pos.tradeAmount * pos.leverage, "linear", true, "bybit", holdTimeMs);
       if (estNetPnl >= futMinProfit) {
-        closeReason = `TAKE-PROFIT (${(profitPct * 100).toFixed(2)}%, net=$${estNetPnl.toFixed(2)} >= 0.5% ${isLong ? "LONG" : "SHORT"})`;
+        closeReason = `TAKE-PROFIT (${(profitPct * 100).toFixed(2)}%, net=$${estNetPnl.toFixed(2)} ${isLong ? "LONG" : "SHORT"})`;
       } else if (estNetPnl > 0) {
-        console.log(`[Futures] ${symbol} HOLD — TP net $${estNetPnl.toFixed(2)} < min 0.5% ($${futMinProfit.toFixed(2)}) after fees+funding`);
+        console.log(`[Futures] ${symbol} HOLD — TP net $${estNetPnl.toFixed(2)} < min ($${futMinProfit.toFixed(2)}) after fees+funding`);
       } else {
         console.log(`[Futures] ${symbol} HOLD — TP triggered but net $${estNetPnl.toFixed(2)} NEGATIVE after fees+funding`);
       }
+    }
+    // 5. EXTENDED TP: If profit >= 2x original TP, close to lock in double gains
+    if (!closeReason && profitPct >= effectiveTp * 2 && profitPct > 0.01) {
+      const estGrossExt = isLong
+        ? (price - pos.entryPrice) * parseFloat(pos.qty) * pos.leverage
+        : (pos.entryPrice - price) * parseFloat(pos.qty) * pos.leverage;
+      const estNetExt = calcNetPnl(estGrossExt, pos.tradeAmount * pos.leverage, "linear", true, "bybit", holdTimeMs);
+      if (estNetExt > 0) closeReason = `EXTENDED-TP (${(profitPct * 100).toFixed(2)}% = 2x TP, net=$${estNetExt.toFixed(2)} ${isLong ? "LONG" : "SHORT"})`;
     }
 
     if (closeReason) {

@@ -738,3 +738,13 @@
 - [x] Prioridad USDT en KuCoin: no acumular altcoins sin vender
 - [x] Log de liquidez: mostrar % USDT disponible en cada ciclo
 - [x] Cuando hay oportunidad grande (score>80), usar futuros USDT-settled en vez de spot
+
+## Fix Futuros — Cierre Correcto (v9.1 - 24 Abril 2026)
+- [x] Revisar por qué ARBUSDT SHORT +23% no cerró automáticamente
+- [x] Bajar umbral mínimo de ganancia para cerrar (0.5% → 0.1%)
+- [x] Agregar cierre forzado cuando ganancia >= 8% (FORCED-CLOSE-BIG-GAIN)
+- [x] Asegurar que trailing stop funcione correctamente en posiciones SHORT (tightTrailingShort 0.4%)
+- [x] Agregar PROTECT-PROFIT-SHORT: si ganancia > 5% y precio sube 0.2% desde mínimo → cerrar
+- [x] Agregar cierre automático cuando ganancia >= 2x del TP original (EXTENDED-TP)
+- [x] Reducir futMinProfit de 0.5% a 0.1% para que cierre más fácil
+- [x] 38/38 tests passing, 0 errores TypeScript
