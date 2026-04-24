@@ -427,7 +427,7 @@ export default function Home() {
                   <span className={`text-[12px] font-bold tabular-nums ${weekColor}`}>{hideBalances ? "--" : fmt(weekPnl)}</span>
                 </div>
                 <div className="bg-white/[0.03] rounded-xl p-2 text-center">
-                  <span className="text-[7px] text-muted-foreground/40 font-medium block">A\u00f1o</span>
+                  <span className="text-[7px] text-muted-foreground/40 font-medium block">Año</span>
                   <span className={`text-[12px] font-bold tabular-nums ${yearColor}`}>{hideBalances ? "--" : fmt(yearPnl)}</span>
                 </div>
               </div>
@@ -895,7 +895,7 @@ export default function Home() {
                 <div className="bg-white/[0.03] rounded-xl p-2.5 text-center"><span className="text-[9px] text-muted-foreground/50 block font-medium">Hoy</span><span className={`text-sm font-bold tabular-nums ${todayColor}`}>{hideBalances ? "--" : fmt(todayPnl)}</span></div>
                 <div className="bg-white/[0.03] rounded-xl p-2.5 text-center"><span className="text-[9px] text-muted-foreground/50 block font-medium">Ayer</span><span className={`text-sm font-bold tabular-nums ${yesterdayColor}`}>{hideBalances ? "--" : fmt(yesterdayPnl)}</span></div>
                 <div className="bg-white/[0.03] rounded-xl p-2.5 text-center"><span className="text-[9px] text-muted-foreground/50 block font-medium">Semana</span><span className={`text-sm font-bold tabular-nums ${weekColor}`}>{hideBalances ? "--" : fmt(weekPnl)}</span></div>
-                <div className="bg-white/[0.03] rounded-xl p-2.5 text-center"><span className="text-[9px] text-muted-foreground/50 block font-medium">A\u00f1o</span><span className={`text-sm font-bold tabular-nums ${yearColor}`}>{hideBalances ? "--" : fmt(yearPnl)}</span></div>
+                <div className="bg-white/[0.03] rounded-xl p-2.5 text-center"><span className="text-[9px] text-muted-foreground/50 block font-medium">Año</span><span className={`text-sm font-bold tabular-nums ${yearColor}`}>{hideBalances ? "--" : fmt(yearPnl)}</span></div>
               </div>
               <div className="grid grid-cols-3 gap-2 mt-2">
                 <div className="bg-white/[0.03] rounded-xl p-2.5 text-center"><span className="text-[9px] text-muted-foreground/50 block font-medium">Abierto ({openPosCount})</span><span className={`text-sm font-bold tabular-nums ${unrealizedPnl >= 0 ? 'text-[oklch(0.75_0.14_200)]' : 'text-[oklch(0.8_0.15_85)]'}`}>{hideBalances ? "--" : fmt(unrealizedPnl)}</span></div>

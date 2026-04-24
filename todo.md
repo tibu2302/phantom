@@ -883,9 +883,12 @@
 - [x] Push a GitHub y checkpoint — commit 4d1f1bb
 
 ## v10.8 — Alertas Telegram, Dashboard PnL histórico, $300/día, ciclo reinversión (24 Abril 2026)
-- [ ] Alertas Telegram por umbral: notificar cuando PnL diario supere $100, $200, $300
-- [ ] Dashboard: mostrar PnL de hoy, ayer, última semana y año
-- [ ] Optimizar motor para $300/día mínimo: agresividad, boost, frecuencia de trades
-- [ ] Ciclo completo: altcoins → USDT → reinvertir en BTC/ETH/XAU automáticamente
-- [ ] Verificar TypeScript y tests
-- [ ] Push a GitHub y checkpoint
+- [x] Alertas Telegram por umbral: notificar cuando PnL diario supere $100, $200, $300
+- [x] Dashboard: mostrar PnL de hoy, ayer, última semana y año
+- [x] Optimizar motor para $300/día mínimo: agresividad, boost, frecuencia de trades
+- [x] Ciclo completo: altcoins → USDT → reinvertir en BTC/ETH/XAU automáticamente
+- [x] Verificar TypeScript y tests — 38/38 passing
+- [x] Push a GitHub y checkpoint — commit 3ef38a9
+
+## Bug Fix: "Año" muestra "A\u00f1o" en dashboard (24 Abril 2026)
+- [ ] Corregir carácter ñ en label "Año" del dashboard (desktop y mobile)
