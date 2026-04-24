@@ -559,7 +559,7 @@ async function fetchKlines(_client: RestClientV5 | null, symbol: string, _interv
 // Rule: maintain minimum 60% of capital in USDT available
 // Don't buy more altcoins if USDT < threshold
 // For big opportunities → use futures (USDT-settled) instead of spot
-const USDT_MIN_RESERVE_PCT = 0.60; // 60% minimum USDT reserve
+const USDT_MIN_RESERVE_PCT = 0.0; // v10.1: NO RESERVE — deploy 100% of capital
 const USDT_CHECK_CACHE: { lastCheck: number; bybitUsdt: number; kucoinUsdt: number; totalBalance: number } = {
   lastCheck: 0, bybitUsdt: 0, kucoinUsdt: 0, totalBalance: 0
 };
@@ -615,32 +615,16 @@ async function getUsdtAvailable(engine: EngineState): Promise<{ bybitUsdt: numbe
   };
 }
 
-/** Check if we have enough USDT to place a spot buy. Returns false if USDT reserve is too low. */
+/** v10.1: USDT guard disabled — deploy 100% of capital. Always returns true. */
 async function hasUsdtLiquidity(engine: EngineState, tradeAmount: number, strategy: string): Promise<boolean> {
-  if (engine.simulationMode) return true;
-  try {
-    const liq = await getUsdtAvailable(engine);
-    // After this trade, would USDT drop below reserve?
-    const afterTrade = liq.totalUsdt - tradeAmount;
-    const afterPct = liq.totalBalance > 0 ? afterTrade / liq.totalBalance : 0;
-    if (afterPct < USDT_MIN_RESERVE_PCT) {
-      console.log(`[USDT Guard] BLOCK ${strategy} BUY $${tradeAmount.toFixed(2)} — USDT would drop to ${(afterPct * 100).toFixed(1)}% (min ${(USDT_MIN_RESERVE_PCT * 100)}%) | Available: $${liq.totalUsdt.toFixed(2)} / $${liq.totalBalance.toFixed(2)}`);
-      return false;
-    }
-    console.log(`[USDT Guard] OK ${strategy} BUY $${tradeAmount.toFixed(2)} — USDT ${(liq.usdtPct * 100).toFixed(1)}% → ${(afterPct * 100).toFixed(1)}%`);
-    return true;
-  } catch (e) {
-    console.log(`[USDT Guard] Error checking liquidity: ${(e as Error).message} — allowing trade`);
-    return true; // Don't block on error
-  }
+  // v10.1: NO RESERVE — use all capital, always allow trades
+  return true;
 }
 
-/** For big opportunities (score>80), prefer futures over spot to keep capital in USDT */
+/** v10.1: No longer redirect to futures — trade directly wherever signal appears */
 function shouldUseFuturesForOpportunity(confidence: number, category: "spot" | "linear"): boolean {
-  // If already using futures, no change needed
-  if (category === "linear") return false;
-  // Big opportunity on spot → suggest switching to futures
-  return confidence >= 80;
+  // v10.1: DISABLED — trade directly, don't redirect
+  return false;
 }
 
 async function placeOrder(engine: EngineState, symbol: string, side: "Buy" | "Sell", qty: string, category: "spot" | "linear" = "spot"): Promise<string | null> {
@@ -1079,7 +1063,7 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
   const maxHoldTimeMs = (stratConfig.maxHoldHours ?? 4) * 60 * 60 * 1000; // Default 4 hours — fast USDT rotation
   const maxOpenPositions = stratConfig.maxOpenPositions ?? 5; // Max open positions per symbol — more positions = more cycles = more USDT gains
   // Minimum 0.5% net profit on ALL sells — NEVER sell below this threshold
-  const MIN_PROFIT_PCT = 0.005; // 0.5% minimum net profit after fees
+  const MIN_PROFIT_PCT = 0.003; // 0.3% minimum net profit after fees (v10: faster cycles)
   const positionsToSell: { pos: OpenBuyPosition; reason: string }[] = [];
 
   for (let i = openPositions.length - 1; i >= 0; i--) {
@@ -1579,7 +1563,7 @@ async function runScalpingStrategy(engine: EngineState, symbol: string, category
   // ─── v8.2: Nocturnal Mode — lower thresholds during 2am-6am UTC ───
   const nocturnal = getNocturnalMultiplier();
   // v9.1.1: XAU gets lower threshold (20) to trade more frequently
-  const baseMinConfidence = symbol === "XAUUSDT" ? 20 : 30;
+  const baseMinConfidence = symbol === "XAUUSDT" ? 15 : 28; // v10: XAU trades more, others slightly easier
   const minConfidence = Math.round(baseMinConfidence * (1 - nocturnal.confidenceReduction));
   if (nocturnal.confidenceReduction > 0) {
     console.log(`[Scalp] ${symbol} NOCTURNAL MODE: minConfidence reduced ${baseMinConfidence} → ${minConfidence}`);
@@ -1618,7 +1602,7 @@ async function runScalpingStrategy(engine: EngineState, symbol: string, category
     const state = await db.getOrCreateBotState(engine.userId);
     const balance = parseFloat(state?.currentBalance ?? "5000");
     // Smart sizing: confidence-weighted + cooldown + BOOST + master signal multiplier + XAU boost + nocturnal
-    const baseAmount = balance * allocation / 100 * 0.7;
+    const baseAmount = balance * allocation / 100; // v10.1: deploy 100% of allocation
     const scalpBoost = effectiveConfidence > 75 ? 1.8 : effectiveConfidence > 55 ? 1.3 : 1.0;
     const masterSizing = scalpMaster?.sizingMultiplier ?? 1.0;
     // v9.1.1: XAU BOOST — always active for XAUUSDT, minimum 2.0x sizing
@@ -1676,7 +1660,7 @@ async function runScalpingStrategy(engine: EngineState, symbol: string, category
       const posValue = pos.buyPrice * parseFloat(pos.qty);
       const estGross = (price - pos.buyPrice) * parseFloat(pos.qty);
       const estNet = calcNetPnl(estGross, posValue, category, true, engine.exchange);
-      const scalpMinProfit = posValue * 0.003; // 0.3% minimum net profit (reduced from 0.5% for faster rotation)
+      const scalpMinProfit = posValue * (symbol === "XAUUSDT" ? 0.0015 : 0.003); // v10: XAU 0.15%, others 0.3%
       if (estNet < scalpMinProfit) {
         console.log(`[Scalp] HOLD ${symbol} — net $${estNet.toFixed(2)} < min 0.3% ($${scalpMinProfit.toFixed(2)}), waiting for better exit`);
         return;
@@ -1737,7 +1721,7 @@ async function runScalpingStrategy(engine: EngineState, symbol: string, category
       }
     } else if (signal === "Buy") {
       // XAU gets 6 scalp positions (top earner), others get 3
-      const maxScalpPositions = symbol === "XAUUSDT" ? 6 : 3;
+      const maxScalpPositions = symbol === "XAUUSDT" ? 8 : 3; // v10: XAU gets 8 scalp slots
       if (myPositions.length >= maxScalpPositions) {
         console.log(`[Scalp] SKIP ${symbol} Buy — already have ${myPositions.length}/${maxScalpPositions} scalp position(s) on ${exchangeKey}`);
         return;
@@ -1891,8 +1875,8 @@ async function runFuturesStrategy(engine: EngineState, symbol: string, dailyProf
     // Minimum 0.1% net profit on ALL futures exits (lowered from 0.5% to avoid missing big gains)
     const futMinProfit = pos.tradeAmount * 0.001; // 0.1% of position value
 
-    // 0. FORCED CLOSE: If profit >= 8%, close immediately to lock in gains
-    if (!closeReason && profitPct >= 0.08) {
+    // 0. FORCED CLOSE: If profit >= 6%, close immediately to lock in gains (v10: capture faster)
+    if (!closeReason && profitPct >= 0.06) {
       const estGrossBig = isLong
         ? (price - pos.entryPrice) * parseFloat(pos.qty) * pos.leverage
         : (pos.entryPrice - price) * parseFloat(pos.qty) * pos.leverage;
@@ -2047,7 +2031,7 @@ async function runFuturesStrategy(engine: EngineState, symbol: string, dailyProf
 
   // ─── Smart Entry: LONG or SHORT based on scoring ───
   // XAU gets more positions (7), other coins share 5
-    const maxPositions = symbol === "XAUUSDT" ? 7 : 5;
+    const maxPositions = symbol === "XAUUSDT" ? 10 : 6; // v10: more futures slots
   const longPositions = positions.filter(p => (p.direction ?? "long") === "long");
   const shortPositions = positions.filter(p => p.direction === "short");
 
@@ -2079,7 +2063,7 @@ async function runFuturesStrategy(engine: EngineState, symbol: string, dailyProf
   }
 
   // Smart scoring determines entry direction — use master signal when available
-  const minFuturesConfidence = dailyProfitMode === "cautious" ? 70 : 35;
+  const minFuturesConfidence = dailyProfitMode === "cautious" ? 65 : 25; // v10: more aggressive entries
   const futBoostedConf = futEffConf + futPMBoost;
   let entryDirection: "long" | "short" | null = null;
 
@@ -2118,7 +2102,7 @@ async function runFuturesStrategy(engine: EngineState, symbol: string, dailyProf
   const baseTradeAmount = (balance * allocation / 100) / maxPositions;
   const strengthBoost = futEffConf > 80 ? 2.0 : futEffConf > 65 ? 1.5 : 1.0;
   // v9.1.1: XAU futures gets 1.5x extra sizing (top earner)
-  const futXauBoost = symbol === "XAUUSDT" ? 1.5 : 1.0;
+  const futXauBoost = symbol === "XAUUSDT" ? 2.0 : 1.0; // v10: XAU futures 2x sizing
   // v9.0: Market Timing + Volume Profile sizing for futures
   const futTimingMult = futTiming.sizingMultiplier;
   const futVPBoost = futVolProfile.isHighVolumeZone ? 1.2 : 0.85;
@@ -2527,7 +2511,7 @@ export async function startEngine(userId: number): Promise<{ success: boolean; e
         } catch (e) { /* silent */ }
       }
       // ─── Auto-Convert accumulated coins to USDT (every 8 cycles ~2.5 min) — USDT-FIRST ───
-      if (cycleNum % 8 === 0) {
+      if (cycleNum % 4 === 0) { // v10: convert every 4 cycles for faster USDT recovery
         try {
           await autoConvertCoinsToUSDT(engine);
           console.log(`[Engine] Auto-convert check completed`);
@@ -2538,7 +2522,7 @@ export async function startEngine(userId: number): Promise<{ success: boolean; e
         try {
           const ddState = await db.getOrCreateBotState(userId);
           const ddTodayPnl = parseFloat(ddState?.todayPnl ?? "0");
-          const DRAWDOWN_THRESHOLD = -50; // Configurable: alert if daily loss exceeds $50
+          const DRAWDOWN_THRESHOLD = -100; // v10: more room to operate ($100 threshold)
           const todayStr = new Date().toISOString().slice(0, 10);
           if (ddTodayPnl <= DRAWDOWN_THRESHOLD && engine.lastDrawdownAlertDate !== todayStr) {
             engine.lastDrawdownAlertDate = todayStr;
@@ -2557,8 +2541,8 @@ export async function startEngine(userId: number): Promise<{ success: boolean; e
       // ─── DAILY PROFIT TARGET SYSTEM ───
       // When daily profit reaches 2%+: only allow exceptional opportunities (score >= 75)
       // When daily profit reaches 5%+: STOP all new trades completely
-      const DAILY_TARGET_CAUTIOUS = 0.02; // 2% = enter cautious mode
-      const DAILY_TARGET_STOP = 0.05;     // 5% = full stop
+      const DAILY_TARGET_CAUTIOUS = 0.04; // 4% = enter cautious mode (v10: higher target)
+      const DAILY_TARGET_STOP = 0.08;     // 8% = full stop (v10: $300/day needs room)
       const EXCEPTIONAL_SCORE = 75;       // Only trade with score >= 75 in cautious mode
 
       let dailyProfitMode: "normal" | "cautious" | "stopped" = "normal";
@@ -2649,42 +2633,37 @@ export async function startEngine(userId: number): Promise<{ success: boolean; e
           continue;
         }
 
-        // For other pairs: dual exchange or single
+        // v10.1: FORCE ALL to LINEAR (USDT-settled) — never buy altcoins in spot
+        // This keeps 100% of capital in USDT, only trading contracts
         if (engine.exchange === "both") {
-          if (engine.kucoinClient) {
-            const kucoinEngine: EngineState = { ...engine, exchange: "kucoin" };
-            console.log(`[Engine] Running ${strat.strategyType} for ${strat.symbol} on KuCoin`);
-            if (strat.strategyType === "grid") await runGridStrategy(kucoinEngine, strat.symbol, "spot", dailyProfitMode);
-            else if (strat.strategyType === "scalping") await runScalpingStrategy(kucoinEngine, strat.symbol, "spot", dailyProfitMode);
-          }
+          // KuCoin: skip spot entirely, only use Bybit linear
           const bybitEngine: EngineState = { ...engine, exchange: "bybit", kucoinClient: null };
-          console.log(`[Engine] Running ${strat.strategyType} for ${strat.symbol} on Bybit`);
-          if (strat.strategyType === "grid") await runGridStrategy(bybitEngine, strat.symbol, "linear", dailyProfitMode); // Force linear on Bybit to avoid locking capital in coins
-          else if (strat.strategyType === "scalping") await runScalpingStrategy(bybitEngine, strat.symbol, cat as "spot" | "linear", dailyProfitMode);
+          console.log(`[Engine] Running ${strat.strategyType} for ${strat.symbol} on Bybit LINEAR (USDT-settled)`);
+          if (strat.strategyType === "grid") await runGridStrategy(bybitEngine, strat.symbol, "linear", dailyProfitMode);
+          else if (strat.strategyType === "scalping") await runScalpingStrategy(bybitEngine, strat.symbol, "linear", dailyProfitMode);
           continue;
         }
 
-        // Single exchange mode — USDT-FIRST: force linear on Bybit for all strategies
-        const forceLinear = engine.exchange === "bybit" || engine.exchange === "both";
-        console.log(`[Engine] Running ${strat.strategyType} for ${strat.symbol} (${forceLinear ? "linear" : strat.category})`);
+        // v10.1: ALWAYS force linear — never spot, capital stays in USDT
+        console.log(`[Engine] Running ${strat.strategyType} for ${strat.symbol} LINEAR (USDT-settled)`);
         if (strat.strategyType === "grid") {
-          await runGridStrategy(engine, strat.symbol, forceLinear ? "linear" : "spot", dailyProfitMode);
+          await runGridStrategy(engine, strat.symbol, "linear", dailyProfitMode);
         } else if (strat.strategyType === "scalping") {
-          await runScalpingStrategy(engine, strat.symbol, forceLinear ? "linear" : cat as "spot" | "linear", dailyProfitMode);
+          await runScalpingStrategy(engine, strat.symbol, "linear", dailyProfitMode);
         }
       }
     } catch (e) {
       console.error("[Engine] Trading loop error:", (e as Error).message);
     }
-  }, 15_000); // 15s cycle — more frequent = more opportunities captured
+  }, 10_000); // 10s cycle (v10: faster for more opportunities) — more frequent = more opportunities captured
 
   // Opportunity scanner — every 1 minute (aggressive for daily target)
   engine.scannerIntervalId = setInterval(async () => {
     if (!engine.isRunning) return;
     await runOpportunityScanner(engine);
-  }, 60_000);
+  }, 45_000); // v10: faster scanning
 
-  setTimeout(() => runOpportunityScanner(engine), 5000);
+  setTimeout(() => runOpportunityScanner(engine), 3000);
 
   // Run first trading cycle immediately (mirrors main loop logic for proper exchange routing)
   setTimeout(async () => {
@@ -2723,24 +2702,16 @@ export async function startEngine(userId: number): Promise<{ success: boolean; e
         continue;
       }
 
-      // Regular strategies: use selected exchange
+      // v10.1: FORCE ALL to LINEAR (USDT-settled) — first cycle too
       if (engine.exchange === "both") {
-        if (engine.kucoinClient) {
-          const kucoinEngine: EngineState = { ...engine, exchange: "kucoin" };
-          console.log(`[Engine] First cycle: ${strat.strategyType} ${strat.symbol} on KuCoin`);
-          if (strat.strategyType === "grid") await runGridStrategy(kucoinEngine, strat.symbol, "spot");
-          else if (strat.strategyType === "scalping") await runScalpingStrategy(kucoinEngine, strat.symbol, "spot");
-        }
         const bybitEngine: EngineState = { ...engine, exchange: "bybit", kucoinClient: null };
-        console.log(`[Engine] First cycle: ${strat.strategyType} ${strat.symbol} on Bybit`);
-        if (strat.strategyType === "grid") await runGridStrategy(bybitEngine, strat.symbol, "linear"); // Force linear on Bybit to avoid locking capital in coins
-        else if (strat.strategyType === "scalping") await runScalpingStrategy(bybitEngine, strat.symbol, cat as "spot" | "linear");
+        console.log(`[Engine] First cycle: ${strat.strategyType} ${strat.symbol} on Bybit LINEAR`);
+        if (strat.strategyType === "grid") await runGridStrategy(bybitEngine, strat.symbol, "linear");
+        else if (strat.strategyType === "scalping") await runScalpingStrategy(bybitEngine, strat.symbol, "linear");
       } else {
-        // USDT-FIRST: force linear on Bybit for all strategies
-        const forceLinear = engine.exchange === "bybit" || engine.exchange === "both";
-        console.log(`[Engine] First cycle: ${strat.strategyType} ${strat.symbol} (${forceLinear ? "linear" : "spot"})`);
-        if (strat.strategyType === "grid") await runGridStrategy(engine, strat.symbol, forceLinear ? "linear" : "spot");
-        else if (strat.strategyType === "scalping") await runScalpingStrategy(engine, strat.symbol, forceLinear ? "linear" : cat as "spot" | "linear");
+        console.log(`[Engine] First cycle: ${strat.strategyType} ${strat.symbol} LINEAR`);
+        if (strat.strategyType === "grid") await runGridStrategy(engine, strat.symbol, "linear");
+        else if (strat.strategyType === "scalping") await runScalpingStrategy(engine, strat.symbol, "linear");
       }
     }
   }, 2000);
@@ -2785,7 +2756,7 @@ export async function startEngine(userId: number): Promise<{ success: boolean; e
       );
       for (const pos of [...allScalpPositions, ...allGridPositions]) {
         // v9.1.1: Faster USDT recovery — shorter stale timeouts
-        const staleHours = pos.strategy === "scalping" ? 1 : 4;
+        const staleHours = pos.strategy === "scalping" ? 0.75 : 3; // v10: faster stale detection
         const staleAnalysis = analyzeStalePosition(pos.buyPrice, pos.currentPrice, pos.openedAt, staleHours);
         if (staleAnalysis.isStale) {
           console.log(`[v9.0] STALE: ${pos.symbol} ${pos.strategy} — ${staleAnalysis.recommendation} (held ${staleAnalysis.holdTimeHours.toFixed(1)}h, ${staleAnalysis.priceChangePct.toFixed(2)}%)`);
@@ -2821,7 +2792,7 @@ export async function startEngine(userId: number): Promise<{ success: boolean; e
     } catch (e) {
       console.error("[v9.0 Allocator] Error:", (e as Error).message);
     }
-  }, 60 * 60 * 1000); // Every 1 hour (v9.0: aggressive compounding)
+  }, 30 * 60 * 1000); // Every 30 min (v10: ultra-aggressive compounding)
   console.log(`[Engine] v9.0 Aggressive Compounding (1h) + Rebalancing (4h) + Stale Checker active`);
 
   // ─── Telegram Polling for /status command ───

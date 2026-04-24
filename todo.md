@@ -810,4 +810,19 @@
 - [ ] UX mejorada para mobile y desktop
 
 ### Bug Fix PDF
-- [ ] Fix caracteres especiales en PDF (em-dash, acentos)
+- [x] Fix caracteres especiales en PDF (em-dash, acentos)
+
+## Capital 100% Desplegado (v10.1 - 24 Abril 2026)
+- [x] Eliminar USDT reserve guard — hasUsdtLiquidity() siempre retorna true
+- [x] Eliminar redirect spot->futures — shouldUseFuturesForOpportunity() deshabilitado
+- [x] Subir baseAmount multiplier al 100% de allocation (era 85%)
+- [x] Quitar límite MAX_REINVEST_MULTIPLIER — 999x (sin techo)
+- [x] Todas las monedas operan sin restricciones de liquidez
+
+## Forzar Linear/USDT-Settled (v10.1 - 24 Abril 2026)
+- [x] Forzar TODAS las estrategias a operar en "linear" (USDT-settled), nunca spot
+- [x] Main loop: grid y scalping siempre "linear" en ambos modos (both/single)
+- [x] First cycle: también forzado a "linear"
+- [x] KuCoin spot eliminado del loop — solo Bybit linear
+- [x] Auto-convert sigue activo para limpiar cualquier altcoin residual
+- [x] 38/38 tests passing, 0 errores TypeScript

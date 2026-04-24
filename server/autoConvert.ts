@@ -90,7 +90,7 @@ export async function autoConvertCoinsToUSDT(engine: EngineState): Promise<void>
           if (avgBuyPrice > 0) {
             // Has buy history — only sell if net profit >= 0.5% (covers fees)
             const profitPctNum = (currentPrice - avgBuyPrice) / avgBuyPrice;
-            if (profitPctNum < 0.005) {
+            if (profitPctNum < 0.002) { // v10: convert at 0.2% profit for faster USDT recovery
               const pctStr = (profitPctNum * 100).toFixed(2);
               console.log(`[AutoConvert] Bybit: HOLD ${symbol} — profit ${pctStr}% < min 0.5% (current $${currentPrice.toFixed(4)} vs avg $${avgBuyPrice.toFixed(4)})`);
               continue; // Not enough profit yet — HOLD

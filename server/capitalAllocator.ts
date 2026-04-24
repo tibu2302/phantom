@@ -49,12 +49,12 @@ export interface AllocatorState {
 }
 
 // ─── Constants ───
-const MAX_ALLOCATION_PCT = 60; // Raised from 40% to allow XAU to dominate
+const MAX_ALLOCATION_PCT = 70; // v10: XAU can take up to 70% of capital
 const MIN_ALLOCATION_PCT = 5;  // Minimum allocation to keep diversity
 const REBALANCE_INTERVAL_MS = 4 * 60 * 60 * 1000; // 4 hours
 const MIN_TRADES_FOR_SCORING = 5; // Need at least 5 trades to score
-const REINVEST_THRESHOLD = 50; // Reinvest when accumulated gains > $50
-const MAX_REINVEST_MULTIPLIER = 1.5; // Never exceed 150% of initial capital
+const REINVEST_THRESHOLD = 15; // v10: reinvest smaller amounts faster ($15)
+const MAX_REINVEST_MULTIPLIER = 999; // v10.1: NO CAP — unlimited compounding growth
 
 // ─── Volatile Scalping Pairs ───
 export const VOLATILE_SCALPING_PAIRS = [
@@ -169,8 +169,8 @@ export async function rebalanceCapital(userId: number): Promise<AllocatorState> 
     if (perf.tradeCount < MIN_TRADES_FOR_SCORING) continue;
     
     const diff = perf.suggestedAllocation - perf.currentAllocation;
-    // Only rebalance if difference is significant (> 3%)
-    if (Math.abs(diff) < 3) continue;
+    // Only rebalance if difference is significant (> 2%) (v10: more responsive)
+    if (Math.abs(diff) < 2) continue;
     
     // Find the strategy in DB and update
     const strat = strategies.find(s => s.symbol === perf.symbol && s.strategyType === perf.strategy);
@@ -230,11 +230,11 @@ export async function checkAutoReinvest(userId: number, minAmount: number = REIN
   if (performances.length === 0) return null;
   
   const best = performances[0];
-  if (best.score < 20) return null; // Don't reinvest if nothing is performing well
+  if (best.score < 10) return null; // v10: reinvest with even modest performance
   
-  // Reinvest 50% of accumulated gains into the best performer
-  const reinvestAmount = accumulatedGains * 0.5;
-  const newAllocation = Math.min(MAX_ALLOCATION_PCT, best.currentAllocation + 8);
+  // Reinvest 70% of accumulated gains into the best performer (v10: aggressive)
+  const reinvestAmount = accumulatedGains * 0.7;
+  const newAllocation = Math.min(MAX_ALLOCATION_PCT, best.currentAllocation + 12); // v10: bigger steps
   
   try {
     await db.upsertStrategy(userId, {
@@ -325,13 +325,13 @@ export function calculateDynamicTrailingStop(
 // XAU is the top money maker — ALWAYS boost aggressively
 export function getXAUBoostMultiplier(performances: StrategyPerformance[]): number {
   const xauScalp = performances.find(p => p.symbol === "XAUUSDT" && p.strategy === "scalping");
-  // Always boost XAU minimum 2.0x even without performance data
-  if (!xauScalp) return 2.0;
+  // Always boost XAU minimum 2.5x even without performance data (v10)
+  if (!xauScalp) return 2.5;
   
-  // XAU always gets boosted: 2.0x base + up to 1.5x based on score
+  // XAU always gets boosted: 2.5x base + up to 2.0x based on score (v10)
   // Top performer → up to 3.5x sizing
-  const scoreBoost = xauScalp.score / 100 * 1.5;
-  return 2.0 + scoreBoost;
+  const scoreBoost = xauScalp.score / 100 * 2.0;
+  return 2.5 + scoreBoost; // v10: up to 4.5x
 }
 
 // ─── Grid Trending Adjustment ───
