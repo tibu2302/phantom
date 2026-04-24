@@ -629,59 +629,59 @@
 - [x] Corregir cualquier error en cálculo de ganancias reales — Todo OK, fees y funding correctos
 
 ### Mejora 1 — Scalping en Pares Volátiles
-- [ ] Agregar PEPE, WIF, BONK, FLOKI, SHIB como pares de scalping dedicados en Bybit
-- [ ] Configurar tradeAmount más pequeño para memecoins
-- [ ] IA selecciona automáticamente los 5 pares más volátiles del día
+- [x] Agregar PEPE, WIF, BONK, FLOKI, SHIB como pares de scalping dedicados en Bybit
+- [x] Configurar tradeAmount más pequeño para memecoins
+- [x] IA selecciona automáticamente los 5 pares más volátiles del día
 
 ### Mejora 2 — Scalping Nocturno Agresivo
-- [ ] Detectar horario UTC y activar modo nocturno (2am-6am UTC)
-- [ ] En modo nocturno: bajar umbral de confianza a 25% para scalping
-- [ ] En modo nocturno: aumentar frecuencia de ciclos
-- [ ] Log claro cuando está en modo nocturno
+- [x] Detectar horario UTC y activar modo nocturno (2am-6am UTC)
+- [x] En modo nocturno: bajar umbral de confianza a 25% para scalping
+- [x] En modo nocturno: aumentar frecuencia de ciclos
+- [x] Log claro cuando está en modo nocturno
 
 ### Mejora 3 — Trailing Stop Dinámico en Scalping
-- [ ] Reemplazar salida fija 0.5% por trailing stop dinámico
-- [ ] Trailing activa cuando ganancia supera 0.8%
-- [ ] Trailing sigue el precio con distancia ATR-based
-- [ ] IA ajusta la distancia del trailing según volatilidad del par
+- [x] Reemplazar salida fija 0.5% por trailing stop dinámico
+- [x] Trailing activa cuando ganancia supera 0.8%
+- [x] Trailing sigue el precio con distancia ATR-based
+- [x] IA ajusta la distancia del trailing según volatilidad del par
 
 ### Mejora 4 — Grid más Apretado en Trending
-- [ ] Detectar régimen trending con IA
-- [ ] En trending: reducir spacing del grid a 0.3x del ATR
-- [ ] En trending: aumentar número de niveles activos
-- [ ] En ranging: mantener spacing normal
+- [x] Detectar régimen trending con IA
+- [x] En trending: reducir spacing del grid a 0.3x del ATR
+- [x] En trending: aumentar número de niveles activos
+- [x] En ranging: mantener spacing normal
 
 ### Mejora 8 — Historial con Filtros en Dashboard
-- [ ] Filtro por estrategia (Grid / Scalping / Futures / Todas)
-- [ ] Filtro por símbolo
-- [ ] Filtro por período (Hoy / 7D / 30D / Todo)
-- [ ] Filtro por resultado (Solo ganancias / Solo pérdidas / Todo)
-- [ ] Exportar CSV filtrado
+- [x] Filtro por estrategia (Grid / Scalping / Futures / Todas)
+- [x] Filtro por símbolo
+- [x] Filtro por período (Hoy / 7D / 30D / Todo)
+- [x] Filtro por resultado (Solo ganancias / Solo pérdidas / Todo)
+- [x] Exportar CSV filtrado
 
 ### Mejora 9 — Comando /stats en Telegram + Resumen Diario
-- [ ] Resumen automático diario a las 23:59 UTC
-- [ ] Incluir: PnL del día, win rate, mejor trade, peor trade, total trades
-- [ ] Incluir: balance actual, ganancia total acumulada
-- [ ] Comando manual /stats para pedir el resumen en cualquier momento
+- [x] Resumen automático diario a las 23:59 UTC
+- [x] Incluir: PnL del día, win rate, mejor trade, peor trade, total trades
+- [x] Incluir: balance actual, ganancia total acumulada
+- [x] Comando manual /stats para pedir el resumen en cualquier momento
 
 ### Mejora 10 — Alertas de Oportunidad en Telegram
-- [ ] Cuando score > 80: notificar ANTES de entrar con análisis completo
-- [ ] Incluir: símbolo, score, dirección, régimen, ATR, TP estimado
-- [ ] Cuando se cierra con ganancia > $5: notificación especial
+- [x] Cuando score > 80: notificar ANTES de entrar con análisis completo
+- [x] Incluir: símbolo, score, dirección, régimen, ATR, TP estimado
+- [x] Cuando se cierra con ganancia > $5: notificación especial
 
 ### Mejora 11 — Auto-Reinversión con IA
-- [ ] Calcular ganancias acumuladas no reinvertidas
-- [ ] Cuando ganancias > $50: aumentar tradeAmount automáticamente
-- [ ] IA decide qué estrategia recibe más capital según win rate
-- [ ] Límite máximo de reinversión: no superar 120% del capital inicial
-- [ ] Notificación Telegram cuando se reinvierte capital
+- [x] Calcular ganancias acumuladas no reinvertidas
+- [x] Cuando ganancias > $50: aumentar tradeAmount automáticamente
+- [x] IA decide qué estrategia recibe más capital según win rate
+- [x] Límite máximo de reinversión: no superar 120% del capital inicial
+- [x] Notificación Telegram cuando se reinvierte capital
 
 ### Mejora 12 — AI Auto-Allocator (Capital Inteligente)
-- [ ] Analizar rendimiento histórico de cada estrategia+par (PnL, win rate, profit factor)
-- [ ] Identificar automáticamente qué combinación genera más ganancias (ej: Scalping XAU)
-- [ ] Reasignar allocationPct dinámicamente: más capital para lo que más rinde
-- [ ] Scalping XAU agresivo: más posiciones simultáneas, más frecuencia
-- [ ] Agregar más pares volátiles a scalping (PEPE, WIF, BONK, SHIB)
-- [ ] Rebalanceo cada 4 horas basado en performance real
-- [ ] Notificación Telegram cuando se reasigna capital
-- [ ] Límite: ninguna estrategia+par puede tener más del 40% del capital total
+- [x] Analizar rendimiento histórico de cada estrategia+par (PnL, win rate, profit factor)
+- [x] Identificar automáticamente qué combinación genera más ganancias (ej: Scalping XAU)
+- [x] Reasignar allocationPct dinámicamente: más capital para lo que más rinde
+- [x] Scalping XAU agresivo: más posiciones simultáneas, más frecuencia
+- [x] Agregar más pares volátiles a scalping (PEPE, WIF, BONK, SHIB)
+- [x] Rebalanceo cada 4 horas basado en performance real
+- [x] Notificación Telegram cuando se reasigna capital
+- [x] Límite: ninguna estrategia+par puede tener más del 40% del capital total
