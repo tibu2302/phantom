@@ -167,6 +167,7 @@ export interface EngineState {
   lastReinvestDate?: string; // YYYY-MM-DD to avoid double reinvest
   telegramChatId?: string;
   telegramBotToken?: string;
+  pnlAlertsSentToday?: Set<string>; // v10.8.1: track which threshold alerts were sent today
 }
 
 // ─── Global State ───
@@ -2548,25 +2549,41 @@ export async function startEngine(userId: number): Promise<{ success: boolean; e
         } catch (e) { /* silent */ }
       }
 
-      // ─── v10.8: PNL THRESHOLD ALERTS ($100, $200, $300) ───
+      // ─── v10.8.1: PNL THRESHOLD ALERTS ($100, $200, $300) — real Bybit balance, no duplicates ───
       if (cycleNum % 5 === 0) {
         try {
           const alertState = await db.getOrCreateBotState(userId);
           const alertPnl = parseFloat(alertState?.todayPnl ?? "0");
           const todayStr = new Date().toISOString().slice(0, 10);
+
+          // v10.8.1: Fetch REAL Bybit balance for the alert message
+          let realCapital = parseFloat(alertState?.currentBalance ?? "0");
+          try {
+            if (engine.client) {
+              const walletRes = await withRetry(() => engine.client.getWalletBalance({ accountType: "UNIFIED" }), "Alert Bybit balance");
+              const bybitEquity = parseFloat((walletRes.result as any)?.list?.[0]?.totalEquity ?? "0");
+              if (bybitEquity > 0) realCapital = bybitEquity;
+            }
+          } catch { /* use DB balance as fallback */ }
+
           const thresholds = [300, 200, 100]; // check highest first
           for (const threshold of thresholds) {
-            const alertKey = `pnl_alert_${threshold}_${todayStr}`;
-            if (alertPnl >= threshold && !lastErrorNotif.has(alertKey)) {
+            // v10.8.1: Use date-based key so alert fires ONCE per threshold per day
+            const alertKey = `pnl_threshold_${threshold}_${todayStr}`;
+            if (alertPnl >= threshold && !engine.pnlAlertsSentToday?.has(alertKey)) {
+              // Mark as sent for this engine session
+              if (!engine.pnlAlertsSentToday) engine.pnlAlertsSentToday = new Set();
+              engine.pnlAlertsSentToday.add(alertKey);
+              // Also mark in lastErrorNotif to survive across checks
               lastErrorNotif.set(alertKey, Date.now());
               const emoji = threshold >= 300 ? "\u{1F3C6}" : threshold >= 200 ? "\u{1F525}" : "\u2705";
               await sendTelegramNotification(engine,
                 `${emoji} <b>PHANTOM \u2014 Meta $${threshold} Alcanzada!</b>\n\n` +
                 `Ganancia hoy: <b>+$${alertPnl.toFixed(2)}</b>\n` +
-                `Capital: $${parseFloat(alertState?.currentBalance ?? "0").toFixed(2)}\n\n` +
+                `Capital real (Bybit): <b>$${realCapital.toFixed(2)}</b>\n\n` +
                 `${threshold >= 300 ? "\u{1F3AF} META DIARIA CUMPLIDA! El bot sigue operando para maximizar." : "Seguimos operando hacia la meta de $300/d\u00EDa."}`
               );
-              console.log(`[Engine] PnL threshold alert: $${threshold} reached (todayPnl=$${alertPnl.toFixed(2)})`);
+              console.log(`[Engine] PnL threshold alert: $${threshold} reached (todayPnl=$${alertPnl.toFixed(2)}, realCapital=$${realCapital.toFixed(2)})`);
               break; // only send highest threshold alert
             }
           }

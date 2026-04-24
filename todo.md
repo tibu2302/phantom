@@ -891,4 +891,8 @@
 - [x] Push a GitHub y checkpoint — commit 3ef38a9
 
 ## Bug Fix: "Año" muestra "A\u00f1o" en dashboard (24 Abril 2026)
-- [ ] Corregir carácter ñ en label "Año" del dashboard (desktop y mobile)
+- [x] Corregir carácter ñ en label "Año" del dashboard (desktop y mobile) — commit b1517cf
+
+## v10.8.1 — Fix alertas Telegram (24 Abril 2026)
+- [ ] Alerta Telegram: mostrar balance real de Bybit (API) en vez del balance interno del bot
+- [ ] Alerta Telegram: no repetir misma alerta por umbral en el mismo día (una vez por $100/$200/$300)
