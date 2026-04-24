@@ -784,3 +784,30 @@
 - [x] Funciona en VPS sin dependencias de Manus (pdfkit)
 - [x] Estrategias configuradas con estado y PnL acumulado
 - [x] 38/38 tests passing, 0 errores TypeScript
+
+## Bug Fix: Error generando el reporte PDF (v9.1.2.1 - 24 Abril 2026)
+- [ ] Diagnosticar error 500 en /api/report/daily en VPS
+- [ ] Corregir el bug y verificar que funcione
+
+## Optimización Integral PHANTOM v10.0 (24 Abril 2026)
+
+### Motor de Trading
+- [ ] Estudio completo del tradingEngine.ts - analizar cada estrategia
+- [ ] 50% del capital dedicado a XAU scalping
+- [ ] Ciclos más rápidos de compra-venta para maximizar rotación
+- [ ] Siempre cerrar en USDT - mantener liquidez máxima
+- [ ] Optimizar timing de entrada/salida en scalping
+- [ ] Mejorar trailing stop para capturar más ganancia
+- [ ] Reducir pérdidas con stop-loss más inteligente
+- [ ] Optimizar parámetros de grid trading
+- [ ] Optimizar parámetros de futures
+- [ ] Mejorar AI Capital Allocator para redistribuir capital dinámicamente
+
+### Dashboard Moderno
+- [ ] Rediseño visual más moderno y profesional
+- [ ] Mejor interconexión de datos en tiempo real
+- [ ] Indicadores más inteligentes y útiles
+- [ ] UX mejorada para mobile y desktop
+
+### Bug Fix PDF
+- [ ] Fix caracteres especiales en PDF (em-dash, acentos)

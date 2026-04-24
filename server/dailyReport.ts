@@ -146,7 +146,7 @@ async function generateDailyReportPDF(userId: number, dateStr: string): Promise<
     doc.rect(0, 0, doc.page.width, 80).fill("#0a0a0a");
     doc.fill("#00ff88").fontSize(28).font("Helvetica-Bold").text("PHANTOM", leftMargin, 20);
     doc.fill("#888888").fontSize(10).font("Helvetica").text("Trading Intelligence", leftMargin, 52);
-    doc.fill("#ffffff").fontSize(12).font("Helvetica-Bold").text(`Reporte Diario — ${dateStr}`, doc.page.width - 240, 30);
+    doc.fill("#ffffff").fontSize(12).font("Helvetica-Bold").text(`Reporte Diario - ${dateStr}`, doc.page.width - 240, 30);
     doc.fill("#888888").fontSize(9).font("Helvetica").text(`Generado: ${fmtTime(new Date())}`, doc.page.width - 240, 50);
 
     doc.moveDown(3);
@@ -180,7 +180,7 @@ async function generateDailyReportPDF(userId: number, dateStr: string): Promise<
     // ═══════════════════════════════════════════
     // ESTADÍSTICAS DEL DÍA
     // ═══════════════════════════════════════════
-    doc.fill("#00ff88").fontSize(14).font("Helvetica-Bold").text("ESTADÍSTICAS DEL DÍA", leftMargin, y);
+    doc.fill("#00ff88").fontSize(14).font("Helvetica-Bold").text("ESTADISTICAS DEL DIA", leftMargin, y);
     y += 25;
 
     doc.rect(leftMargin, y, pageW, 50).lineWidth(0.5).stroke("#333333");
@@ -222,7 +222,7 @@ async function generateDailyReportPDF(userId: number, dateStr: string): Promise<
     for (const [name, data] of stratEntries) {
       if (y > 750) { doc.addPage(); y = 40; }
       sx = leftMargin;
-      const wr = data.trades > 0 ? (data.wins / data.trades * 100).toFixed(1) + "%" : "—";
+      const wr = data.trades > 0 ? (data.wins / data.trades * 100).toFixed(1) + "%" : "-";
       const rowData = [name.toUpperCase(), `${data.trades}`, `${data.wins}`, wr, fmtMoney(data.pnl)];
       for (let i = 0; i < rowData.length; i++) {
         const color = i === 4 ? (data.pnl >= 0 ? "#00ff88" : "#ff4444") : "#ffffff";
@@ -232,7 +232,7 @@ async function generateDailyReportPDF(userId: number, dateStr: string): Promise<
       y += 16;
     }
     if (stratEntries.length === 0) {
-      doc.fill("#666666").fontSize(9).font("Helvetica").text("Sin trades cerrados en este día", leftMargin + 5, y + 3);
+      doc.fill("#666666").fontSize(9).font("Helvetica").text("Sin trades cerrados en este dia", leftMargin + 5, y + 3);
       y += 16;
     }
     y += 15;
@@ -257,7 +257,7 @@ async function generateDailyReportPDF(userId: number, dateStr: string): Promise<
     for (const [symbol, data] of coinEntries) {
       if (y > 750) { doc.addPage(); y = 40; }
       sx = leftMargin;
-      const wr = data.trades > 0 ? (data.wins / data.trades * 100).toFixed(1) + "%" : "—";
+      const wr = data.trades > 0 ? (data.wins / data.trades * 100).toFixed(1) + "%" : "-";
       const rowData = [symbol, `${data.trades}`, `${data.wins}`, wr, fmtMoney(data.pnl)];
       for (let i = 0; i < rowData.length; i++) {
         const color = i === 4 ? (data.pnl >= 0 ? "#00ff88" : "#ff4444") : "#ffffff";
@@ -267,7 +267,7 @@ async function generateDailyReportPDF(userId: number, dateStr: string): Promise<
       y += 16;
     }
     if (coinEntries.length === 0) {
-      doc.fill("#666666").fontSize(9).font("Helvetica").text("Sin trades cerrados en este día", leftMargin + 5, y + 3);
+      doc.fill("#666666").fontSize(9).font("Helvetica").text("Sin trades cerrados en este dia", leftMargin + 5, y + 3);
       y += 16;
     }
     y += 15;
@@ -276,7 +276,7 @@ async function generateDailyReportPDF(userId: number, dateStr: string): Promise<
     // EVOLUCIÓN DE CAPITAL (últimos 14 días)
     // ═══════════════════════════════════════════
     if (y > 580) { doc.addPage(); y = 40; }
-    doc.fill("#00ff88").fontSize(14).font("Helvetica-Bold").text("EVOLUCIÓN DE CAPITAL (últimos 14 días)", leftMargin, y);
+    doc.fill("#00ff88").fontSize(14).font("Helvetica-Bold").text("EVOLUCION DE CAPITAL (ultimos 14 dias)", leftMargin, y);
     y += 22;
 
     if (pnlHistoryData.length > 1) {
@@ -321,7 +321,7 @@ async function generateDailyReportPDF(userId: number, dateStr: string): Promise<
       }
       y += chartH + 25;
     } else {
-      doc.fill("#666666").fontSize(9).font("Helvetica").text("Datos insuficientes para gráfico (necesita al menos 2 días)", leftMargin + 5, y + 3);
+      doc.fill("#666666").fontSize(9).font("Helvetica").text("Datos insuficientes para grafico (necesita al menos 2 dias)", leftMargin + 5, y + 3);
       y += 20;
     }
     y += 10;
@@ -371,7 +371,7 @@ async function generateDailyReportPDF(userId: number, dateStr: string): Promise<
     // DETALLE DE TRADES
     // ═══════════════════════════════════════════
     if (y > 600) { doc.addPage(); y = 40; }
-    doc.fill("#00ff88").fontSize(14).font("Helvetica-Bold").text(`DETALLE DE TRADES (${allTrades.length} operaciones)`, leftMargin, y);
+    doc.fill("#00ff88").fontSize(14).font("Helvetica-Bold").text(`DETALLE DE TRADES (${allTrades.length} ops)`, leftMargin, y);
     y += 22;
 
     if (allTrades.length > 0) {
@@ -389,16 +389,16 @@ async function generateDailyReportPDF(userId: number, dateStr: string): Promise<
         if (y > 750) { doc.addPage(); y = 40; }
         sx = leftMargin;
         const pnlVal = parseFloat(t.pnl ?? "0");
-        const time = t.createdAt ? new Date(t.createdAt).toISOString().slice(11, 19) : "—";
+        const time = t.createdAt ? new Date(t.createdAt).toISOString().slice(11, 19) : "-";
         const sideLabel = t.side === "buy" ? "COMPRA" : "VENTA";
         const rowData = [
           time,
           t.symbol,
           sideLabel,
-          (t.strategy ?? "—").toUpperCase(),
+          (t.strategy ?? "-").toUpperCase(),
           `$${parseFloat(t.price).toFixed(4)}`,
           parseFloat(t.qty).toFixed(6),
-          t.side === "sell" ? fmtMoney(pnlVal) : "—"
+          t.side === "sell" ? fmtMoney(pnlVal) : "-"
         ];
         // Alternate row bg
         if (allTrades.indexOf(t) % 2 === 0) {
@@ -414,7 +414,7 @@ async function generateDailyReportPDF(userId: number, dateStr: string): Promise<
         y += 13;
       }
     } else {
-      doc.fill("#666666").fontSize(9).font("Helvetica").text("Sin trades en este día", leftMargin + 5, y + 3);
+      doc.fill("#666666").fontSize(9).font("Helvetica").text("Sin trades en este dia", leftMargin + 5, y + 3);
       y += 16;
     }
 
@@ -427,7 +427,7 @@ async function generateDailyReportPDF(userId: number, dateStr: string): Promise<
     y += 22;
 
     if (userStrategies.length > 0) {
-      const sHeaders = ["Par", "Tipo", "Mercado", "Asignación", "PnL Total", "Trades", "Estado"];
+      const sHeaders = ["Par", "Tipo", "Mercado", "Asignacion", "PnL Total", "Trades", "Estado"];
       const sColW = [pageW * 0.15, pageW * 0.12, pageW * 0.12, pageW * 0.13, pageW * 0.17, pageW * 0.13, pageW * 0.18];
       doc.rect(leftMargin, y, pageW, 18).fill("#1a1a1a");
       sx = leftMargin;
@@ -466,7 +466,7 @@ async function generateDailyReportPDF(userId: number, dateStr: string): Promise<
     for (let i = 0; i < pageCount; i++) {
       doc.switchToPage(i);
       doc.fill("#444444").fontSize(7).font("Helvetica")
-        .text(`PHANTOM Trading Intelligence — Reporte Diario — Página ${i + 1}/${pageCount}`, leftMargin, doc.page.height - 30, { width: pageW, align: "center" });
+        .text(`PHANTOM Trading Intelligence - Reporte Diario - Pagina ${i + 1}/${pageCount}`, leftMargin, doc.page.height - 30, { width: pageW, align: "center" });
     }
 
     doc.end();
@@ -513,7 +513,7 @@ export function registerReportRoutes(app: Express) {
       res.setHeader("Content-Length", pdfBuffer.length);
       res.send(pdfBuffer);
     } catch (error) {
-      console.error("[Report] Error generating PDF:", error);
+      console.error("[Report] Error generating PDF:", error instanceof Error ? error.stack : error);
       res.status(500).json({ error: "Error generando el reporte" });
     }
   });
