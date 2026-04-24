@@ -833,20 +833,20 @@
 - [x] 38/38 tests passing, 0 errores TypeScript
 
 ## Sin Stop Loss — Solo Take Profit (v10.2 - 24 Abril 2026)
-- [ ] Eliminar stop loss en scalping — solo cerrar en ganancia (take profit)
-- [ ] Eliminar stop loss en grid — esperar recuperación, nunca cortar en pérdida
-- [ ] Eliminar stop loss en futures — solo TP, nunca SL
-- [ ] Mantener trailing stop solo cuando ya está en ganancia (para proteger ganancias, no cortar pérdidas)
-- [ ] DCA automático: si posición baja mucho, comprar más para bajar precio promedio
-- [ ] Verificar TypeScript y tests
+- [x] Eliminar stop loss en scalping — solo cerrar en ganancia (take profit) — implementado: stopLossPct ignorado, solo TP
+- [x] Eliminar stop loss en grid — esperar recuperación, nunca cortar en pérdida — implementado
+- [x] Eliminar stop loss en futures — solo TP, nunca SL — implementado: futuresStopLossPct comentado
+- [x] Mantener trailing stop solo cuando ya está en ganancia (para proteger ganancias, no cortar pérdidas) — implementado
+- [x] DCA automático: si posición baja mucho, comprar más para bajar precio promedio — implementado en scalping
+- [x] Verificar TypeScript y tests — 38/38 passing
 
 ## Cerrar Spot en Ganancia → USDT → XAU Scalping (v10.3 - 24 Abril 2026)
-- [ ] Agregar función closeSpotProfitPositions() que detecta posiciones spot en ganancia
-- [ ] Vender automáticamente posiciones spot con PnL > 0 (DOGE, LINK, etc.)
-- [ ] Dejar aguantar las posiciones en pérdida (XRP, SUI) hasta recuperar
-- [ ] Ejecutar closeSpotProfitPositions() al inicio del ciclo principal
-- [ ] Notificar por Telegram cuando cierra una posición spot en ganancia
-- [ ] Verificar TypeScript y tests
+- [x] Agregar función closeSpotProfitPositions() — superseded por autoConvert FORCE SELL en v10.4
+- [x] Vender automáticamente posiciones spot con PnL > 0 — autoConvert FORCE SELL todas las altcoins
+- [x] Dejar aguantar las posiciones en pérdida — superseded: v10.4 vende TODO sin umbral de ganancia
+- [x] Ejecutar closeSpotProfitPositions() al inicio del ciclo principal — autoConvert cada 2 ciclos
+- [x] Notificar por Telegram cuando cierra una posición spot en ganancia — autoConvert notifica
+- [x] Verificar TypeScript y tests — 38/38 passing
 
 ## Liberar Capital + Estrategia $300-500/día (v10.4 - 24 Abril 2026)
 - [x] autoConvert: FORCE SELL todas las altcoins (sin umbral de ganancia, incluso en pérdida)
@@ -867,8 +867,17 @@
 - [x] 38/38 tests passing, 0 errores TypeScript
 
 ## Auto-Start + Flujo Completo de Operación (v10.6 - 24 Abril 2026)
-- [ ] Verificar que auto-start funcione después de docker compose up -d
-- [ ] Verificar que el bot conecte a Bybit API automáticamente
-- [ ] Verificar que abra posiciones reales sin intervención manual
-- [ ] Verificar que cierre posiciones en ganancia automáticamente
-- [ ] Corregir cualquier bug en el flujo completo
+- [x] Verificar que auto-start funcione después de docker compose up -d
+- [x] Verificar que el bot conecte a Bybit API automáticamente
+- [x] Verificar que abra posiciones reales sin intervención manual
+- [x] Verificar que cierre posiciones en ganancia automáticamente
+- [x] Corregir cualquier bug en el flujo completo — server fuerza simulationMode=false cuando API keys existen
+
+## Concentrar en XAU/BTC/ETH — Cerrar resto a USDT (v10.7 - 24 Abril 2026)
+- [ ] Reducir estrategias default a solo XAU, BTC, ETH (eliminar SOL, XRP, DOGE, ADA, AVAX, LINK, ARB, SUI, SP500)
+- [ ] Desactivar monedas no principales en el seed de routers.ts
+- [ ] autoConvert: cerrar posiciones abiertas de monedas eliminadas y convertir a USDT
+- [ ] Scanner: reducir a solo XAU, BTC, ETH
+- [ ] Redistribuir allocation: XAU 50%+ scalping/futures, BTC 25%, ETH 25%
+- [ ] Verificar TypeScript y tests
+- [ ] Push a GitHub y checkpoint

@@ -57,13 +57,8 @@ const REINVEST_THRESHOLD = 15; // v10: reinvest smaller amounts faster ($15)
 const MAX_REINVEST_MULTIPLIER = 999; // v10.1: NO CAP — unlimited compounding growth
 
 // ─── Volatile Scalping Pairs ───
-export const VOLATILE_SCALPING_PAIRS = [
-  { symbol: "PEPEUSDT", market: "crypto", category: "spot", minVolatility: 2.0 },
-  { symbol: "WIFUSDT", market: "crypto", category: "spot", minVolatility: 2.5 },
-  { symbol: "BONKUSDT", market: "crypto", category: "spot", minVolatility: 2.0 },
-  { symbol: "SHIBUSDT", market: "crypto", category: "spot", minVolatility: 1.5 },
-  { symbol: "FLOKIUSDT", market: "crypto", category: "spot", minVolatility: 2.0 },
-];
+// v10.7: CONCENTRATED — no volatile pairs, only XAU/BTC/ETH
+export const VOLATILE_SCALPING_PAIRS: Array<{ symbol: string; market: string; category: string; minVolatility: number }> = [];
 
 // ─── Nocturnal Mode ───
 // 2am-6am UTC: less volume but more predictable moves

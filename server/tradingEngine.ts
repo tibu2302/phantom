@@ -221,9 +221,9 @@ export function getEngineCycles(userId: number): number {
 }
 
 // Coins to scan for opportunities
+// v10.7: CONCENTRATED — only scan XAU, BTC, ETH
 const SCANNER_COINS = [
-  "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "DOGEUSDT",
-  "ADAUSDT", "AVAXUSDT", "LINKUSDT", "ARBUSDT", "SUIUSDT",
+  "XAUUSDT", "BTCUSDT", "ETHUSDT",
 ];
 
 // ─── Trading Hours Filter ───
@@ -443,7 +443,8 @@ const YAHOO_TICKERS: Record<string, string> = {
 };
 
 // Bybit klines API as fallback for linear symbols
-const BYBIT_KLINE_SYMBOLS = new Set(["XAUUSDT", "SPXUSDT", "SP500USDT", "BTCUSDT", "ETHUSDT", "SOLUSDT"]);
+// v10.7: CONCENTRATED — only XAU, BTC, ETH
+const BYBIT_KLINE_SYMBOLS = new Set(["XAUUSDT", "BTCUSDT", "ETHUSDT"]);
 
 async function fetchKlines(_client: RestClientV5 | null, symbol: string, _interval: any = "15", limit: number = 50, _category: "spot" | "linear" = "spot"): Promise<KlineData> {
   // Check cache first
@@ -3202,16 +3203,12 @@ let wsReconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let wsKucoinReconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let wsInitialized = false;
 
+// v10.7: CONCENTRATED — only BTC/ETH spot feed (XAU is on linear)
 const SPOT_SYMBOLS = [
-  "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "DOGEUSDT",
-  "ADAUSDT", "AVAXUSDT", "DOTUSDT", "LINKUSDT", "MATICUSDT",
-  "SHIBUSDT", "LTCUSDT", "UNIUSDT", "ATOMUSDT", "NEARUSDT",
-  "APTUSDT", "ARBUSDT", "OPUSDT", "SUIUSDT", "SEIUSDT",
-  "TIAUSDT", "INJUSDT", "FETUSDT", "RENDERUSDT", "WIFUSDT",
-  "PEPEUSDT", "FLOKIUSDT", "BONKUSDT", "JUPUSDT", "AAVEUSDT",
-  "MKRUSDT", "FILUSDT",
+  "BTCUSDT", "ETHUSDT",
 ];
-const LINEAR_SYMBOLS = ["XAUUSDT", "SPXUSDT", "SP500USDT", "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "AVAXUSDT"];
+// v10.7: CONCENTRATED — only XAU, BTC, ETH on linear
+const LINEAR_SYMBOLS = ["XAUUSDT", "BTCUSDT", "ETHUSDT"];
 
 function parseWsTickerMsg(data: Buffer | string): void {
   try {

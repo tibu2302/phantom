@@ -101,6 +101,32 @@ setTimeout(async () => {
           console.log(`[AutoStart] Forced LIVE mode (API keys found for owner ${owner.id})`);
         }
 
+        // v10.7: Seed concentrated strategies (XAU+BTC+ETH only) before starting
+        const { getUserStrategies, upsertStrategy } = await import("../db");
+        const existingStrats = await getUserStrategies(owner.id);
+        const concentratedStrats = [
+          { symbol: "BTCUSDT", strategyType: "grid", market: "crypto", category: "linear", allocationPct: 50, enabled: true },
+          { symbol: "ETHUSDT", strategyType: "grid", market: "crypto", category: "linear", allocationPct: 50, enabled: true },
+          { symbol: "XAUUSDT", strategyType: "scalping", market: "tradfi", category: "linear", allocationPct: 50, enabled: true },
+          { symbol: "BTCUSDT", strategyType: "scalping", market: "crypto", category: "linear", allocationPct: 25, enabled: true },
+          { symbol: "ETHUSDT", strategyType: "scalping", market: "crypto", category: "linear", allocationPct: 25, enabled: true },
+          { symbol: "XAUUSDT", strategyType: "futures", market: "tradfi", category: "linear", allocationPct: 30, enabled: true, config: { leverage: 5, takeProfitPct: 1.5 } },
+          { symbol: "BTCUSDT", strategyType: "futures", market: "crypto", category: "linear", allocationPct: 25, enabled: true, config: { leverage: 5, takeProfitPct: 1.5 } },
+          { symbol: "ETHUSDT", strategyType: "futures", market: "crypto", category: "linear", allocationPct: 25, enabled: true, config: { leverage: 5, takeProfitPct: 1.5 } },
+        ];
+        const allowedKeys = new Set(concentratedStrats.map(s => `${s.symbol}_${s.strategyType}`));
+        for (const existing of existingStrats) {
+          const key = `${existing.symbol}_${existing.strategyType}`;
+          if (!allowedKeys.has(key) && existing.enabled) {
+            await upsertStrategy(owner.id, { ...existing, enabled: false } as any);
+            console.log(`[AutoStart] v10.7: DISABLED ${existing.strategyType} ${existing.symbol}`);
+          }
+        }
+        for (const strat of concentratedStrats) {
+          await upsertStrategy(owner.id, strat as any);
+        }
+        console.log(`[AutoStart] v10.7: Synced ${concentratedStrats.length} concentrated strategies (XAU+BTC+ETH)`);
+
         console.log(`[AutoStart] Starting engine for owner (id=${owner.id})...`);
         const result = await startEngine(owner.id);
         console.log(`[AutoStart] ${result.success ? 'Engine started successfully in LIVE mode' : 'Failed: ' + result.error}`);
