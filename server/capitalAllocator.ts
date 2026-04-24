@@ -206,7 +206,7 @@ export async function rebalanceCapital(userId: number): Promise<AllocatorState> 
 }
 
 // ─── Auto-Reinvestment ───
-export async function checkAutoReinvest(userId: number): Promise<{
+export async function checkAutoReinvest(userId: number, minAmount: number = REINVEST_THRESHOLD): Promise<{
   reinvested: boolean;
   amount: number;
   target: string;
@@ -220,7 +220,7 @@ export async function checkAutoReinvest(userId: number): Promise<{
   const accumulatedGains = currentBalance - initialBalance;
   
   // Only reinvest if gains exceed threshold
-  if (accumulatedGains < REINVEST_THRESHOLD) return null;
+  if (accumulatedGains < minAmount) return null;
   
   // Don't exceed max reinvest multiplier
   if (currentBalance >= initialBalance * MAX_REINVEST_MULTIPLIER) return null;

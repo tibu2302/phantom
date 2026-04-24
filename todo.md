@@ -685,3 +685,56 @@
 - [x] Rebalanceo cada 4 horas basado en performance real
 - [x] Notificación Telegram cuando se reasigna capital
 - [x] Límite: ninguna estrategia+par puede tener más del 40% del capital total
+
+## v9.0 — Profit Maximizer + Dashboard Moderno (24 Abril 2026)
+
+### Nuevos Módulos de Profit
+- [ ] Multi-Timeframe Scalping Agresivo (1m + 5m + 15m, sizing 3x si coinciden)
+- [ ] Breakout Hunter (detecta consolidaciones + entrada en ruptura con volumen)
+- [ ] Mean Reversion Sniper (oversold extremo → compra rebote 1-3%)
+- [ ] Funding Rate Arbitrage (SHORT futuros + LONG spot cuando funding > 0.05%)
+- [ ] Liquidation Sniper (posicionarse antes de cascadas de liquidación)
+- [ ] Volume Profile Smart Entry (entrar solo en POC zones de alto volumen)
+- [ ] Correlation Arbitrage Multi-Exchange (latencia entre exchanges)
+- [ ] Compounding Agresivo (reinvertir cada hora con $20 mínimo)
+- [ ] Grid Hedging (SHORT futuros cuando grid tiene posiciones en pérdida)
+- [ ] AI Market Timing (horas más rentables del día/semana)
+
+### Integración en Motor
+- [ ] Integrar profitMaximizer.ts en tradingEngine.ts
+- [ ] Integrar marketTiming.ts en tradingEngine.ts
+- [ ] Grid Hedging en ciclo de grid
+- [ ] Compounding agresivo cada hora
+
+### Dashboard Moderno
+- [ ] Rediseño completo Home.tsx con diseño ultra-moderno
+- [ ] Animaciones y transiciones suaves
+- [ ] Gráficos más visuales con gradientes
+- [ ] Cards con glassmorphism mejorado
+- [ ] Pull-to-refresh en móvil
+- [ ] Indicadores de módulos activos en tiempo real
+
+### Prioridad USDT + IA Máxima
+- [ ] Priorizar operaciones que mantengan liquidez en USDT
+- [ ] No quedarse atrapado en altcoins — salir rápido si no rinde
+- [ ] IA decide cuánto tiempo mantener cada posición (time-based exit inteligente)
+- [ ] Stale Position Killer: si una posición lleva >2h sin moverse, cerrar y liberar USDT
+- [ ] USDT Yield: cuando no hay señales, poner USDT a trabajar en funding arbitrage
+
+### Reglas Fundamentales v9.0
+- [ ] NUNCA vender en pérdida — esperar recuperación o breakeven mínimo
+- [ ] Si posición está en negativo, mantener y esperar (o DCA para bajar promedio)
+- [ ] Memoria persistente: guardar estado completo del bot en DB (posiciones, grid levels, scalp positions)
+- [ ] Al reiniciar el bot, restaurar todas las posiciones abiertas desde DB
+- [ ] Guardar historial de decisiones de IA para aprendizaje continuo
+
+### USDT Liquidity Management (CRÍTICO)
+- [ ] Regla: mantener mínimo 60% del capital en USDT disponible
+- [ ] No comprar más altcoins si USDT disponible < 60% del balance
+- [ ] Ciclo completo obligatorio: cada compra spot DEBE tener venta programada con TP
+- [ ] Oportunidades grandes → usar FUTUROS (USDT-settled), no spot
+- [ ] Grid/Scalping spot → ciclo rápido compra-venta, no acumular altcoins
+- [ ] Stale position killer: si posición spot > 4h sin TP, vender al breakeven o mejor
+- [ ] Prioridad USDT en KuCoin: no acumular altcoins sin vender
+- [ ] Log de liquidez: mostrar % USDT disponible en cada ciclo
+- [ ] Cuando hay oportunidad grande (score>80), usar futuros USDT-settled en vez de spot

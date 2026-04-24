@@ -1,10 +1,11 @@
-import { trpc } from "@/lib/trpc";
 import {
   Bell, Play, Square, AlertTriangle, TrendingUp, TrendingDown,
   Wallet, Target, Trophy, Activity, BarChart3, Shield, Wifi, WifiOff,
   Clock, Zap, ArrowUpRight, ArrowDownRight, RefreshCw, Eye, EyeOff,
   ChevronRight, Flame, Pencil, DollarSign, Percent, Award, Scale,
-  Calendar, PieChart, Layers, ArrowUp, ArrowDown, Minus
+  Calendar, PieChart, Layers, ArrowUp, ArrowDown, Minus, Brain,
+  Cpu, Gauge, CircleDollarSign, TrendingUp as Trending, LayoutGrid,
+  Crosshair, Bot, Sparkles, LineChart
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -18,6 +19,7 @@ import {
 import { toast } from "sonner";
 import { useState, useMemo, useEffect, useCallback } from "react";
 import { useIsMobile } from "@/hooks/useMobile";
+import { trpc } from "@/lib/trpc";
 
 // ─── Formatters ───
 const fmt = (n: number) => {
@@ -31,101 +33,33 @@ const fmtPrice = (n: number) => {
   if (n >= 1) return n.toFixed(4);
   return n.toFixed(6);
 };
-const fmtCompact = (n: number) => {
-  if (Math.abs(n) >= 1000) return (n / 1000).toFixed(1) + "K";
-  return n.toFixed(2);
-};
 
 // ─── Period labels ───
 type Period = "today" | "7d" | "30d" | "year" | "all";
-const periodLabels: Record<Period, string> = {
-  today: "Hoy",
-  "7d": "7D",
-  "30d": "30D",
-  year: "Año",
-  all: "Todo",
-};
+const periodLabels: Record<Period, string> = { today: "Hoy", "7d": "7D", "30d": "30D", year: "Año", all: "Todo" };
 
-// ─── Strategy colors ───
+// ─── Strategy config ───
 const strategyColors: Record<string, string> = {
-  grid: "oklch(0.72 0.19 160)",
-  scalping: "oklch(0.75 0.14 200)",
-  futures: "oklch(0.65 0.2 300)",
-  unknown: "oklch(0.6 0.01 260)",
+  grid: "oklch(0.72 0.19 160)", scalping: "oklch(0.75 0.14 200)",
+  futures: "oklch(0.65 0.2 300)", unknown: "oklch(0.6 0.01 260)",
 };
-const strategyLabels: Record<string, string> = {
-  grid: "Grid",
-  scalping: "Scalping",
-  futures: "Futures",
-};
+const strategyLabels: Record<string, string> = { grid: "Grid", scalping: "Scalping", futures: "Futures" };
 
-// ─── Stat Mini Card ───
-function StatMini({ icon: Icon, label, value, sub, color, hideBalances }: {
-  icon: any; label: string; value: string; sub?: string; color: string; hideBalances?: boolean;
-}) {
-  return (
-    <div className="glass-card p-3.5 flex items-center gap-3 interactive-card">
-      <div className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0" style={{ background: `color-mix(in oklch, ${color} 10%, transparent)` }}>
-        <Icon className="h-4 w-4" style={{ color }} />
-      </div>
-      <div className="flex-1 min-w-0">
-        <p className="text-[9px] font-semibold tracking-wider text-muted-foreground/60 uppercase truncate">{label}</p>
-        <p className="text-[15px] font-bold tabular-nums mt-0.5">{hideBalances ? "••••" : value}</p>
-        {sub && <p className="text-[9px] text-muted-foreground/40 truncate">{sub}</p>}
-      </div>
-    </div>
-  );
-}
-
-// ─── Strategy Breakdown Row ───
-function StrategyRow({ name, pnl, trades, wins, losses, hideBalances }: {
-  name: string; pnl: number; trades: number; wins: number; losses: number; hideBalances?: boolean;
-}) {
-  const color = strategyColors[name] || strategyColors.unknown;
-  const label = strategyLabels[name] || name;
-  const winRate = (wins + losses) > 0 ? ((wins / (wins + losses)) * 100).toFixed(0) : "—";
-  return (
-    <div className="flex items-center justify-between py-2.5 border-b border-border/10 last:border-0">
-      <div className="flex items-center gap-2.5">
-        <div className="w-2 h-8 rounded-full" style={{ background: color }} />
-        <div>
-          <span className="text-sm font-bold">{label}</span>
-          <div className="flex items-center gap-2 mt-0.5">
-            <span className="text-[9px] text-muted-foreground/50 tabular-nums">{trades} ops</span>
-            <span className="text-[9px] text-muted-foreground/50 tabular-nums">{winRate}% WR</span>
-          </div>
-        </div>
-      </div>
-      <div className="text-right">
-        <span className={`text-sm font-bold tabular-nums ${pnl >= 0 ? "text-[oklch(0.72_0.19_160)]" : "text-[oklch(0.63_0.24_25)]"}`}>
-          {hideBalances ? "••" : fmt(pnl)}
-        </span>
-        <div className="flex items-center gap-1.5 justify-end mt-0.5">
-          <span className="text-[9px] text-[oklch(0.72_0.19_160)] tabular-nums">{wins}W</span>
-          <span className="text-[9px] text-muted-foreground/30">/</span>
-          <span className="text-[9px] text-[oklch(0.63_0.24_25)] tabular-nums">{losses}L</span>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ─── Top Symbol Row ───
-function SymbolRow({ symbol, pnl, trades, hideBalances }: {
-  symbol: string; pnl: number; trades: number; hideBalances?: boolean;
-}) {
-  return (
-    <div className="flex items-center justify-between py-2 border-b border-border/10 last:border-0">
-      <div className="flex items-center gap-2">
-        <span className="text-sm font-bold">{symbol.replace("USDT", "")}</span>
-        <span className="text-[9px] text-muted-foreground/40 tabular-nums">{trades} ops</span>
-      </div>
-      <span className={`text-sm font-bold tabular-nums ${pnl >= 0 ? "text-[oklch(0.72_0.19_160)]" : "text-[oklch(0.63_0.24_25)]"}`}>
-        {hideBalances ? "••" : fmt(pnl)}
-      </span>
-    </div>
-  );
-}
+// ─── AI Modules list ───
+const aiModules = [
+  { name: "Smart Analysis", icon: Brain, status: "active" },
+  { name: "Master Signal", icon: Crosshair, status: "active" },
+  { name: "Sentiment AI", icon: Sparkles, status: "active" },
+  { name: "Pattern Recognition", icon: LineChart, status: "active" },
+  { name: "Anomaly Detection", icon: Shield, status: "active" },
+  { name: "Reinforcement Learning", icon: Cpu, status: "active" },
+  { name: "Auto-Optimizer", icon: Gauge, status: "active" },
+  { name: "Capital Allocator", icon: Scale, status: "active" },
+  { name: "Profit Maximizer", icon: TrendingUp, status: "active" },
+  { name: "Market Timing", icon: Clock, status: "active" },
+  { name: "Breakout Hunter", icon: Zap, status: "active" },
+  { name: "USDT Liquidity Guard", icon: CircleDollarSign, status: "active" },
+];
 
 export default function Home() {
   const isMobile = useIsMobile();
@@ -137,27 +71,16 @@ export default function Home() {
   const exchangeBalances = trpc.bot.exchangeBalances.useQuery(undefined, { refetchInterval: 30_000, retry: false });
   const utils = trpc.useUtils();
 
-  // ── Period state for advanced PnL ──
   const [selectedPeriod, setSelectedPeriod] = useState<Period>("today");
   const advancedStats = trpc.pnl.advancedStats.useQuery({ period: selectedPeriod }, { retry: false, staleTime: 30_000 });
 
   const startBot = trpc.bot.start.useMutation({
-    onSuccess: (res: any) => {
-      utils.bot.status.invalidate();
-      if (res.success) toast.success("Motor PHANTOM iniciado");
-      else toast.error(res.error || "Error al iniciar");
-    },
+    onSuccess: (res: any) => { utils.bot.status.invalidate(); if (res.success) toast.success("Motor PHANTOM iniciado"); else toast.error(res.error || "Error al iniciar"); },
     onError: () => toast.error("Error al iniciar el motor"),
   });
-  const stopBot = trpc.bot.stop.useMutation({
-    onSuccess: () => { utils.bot.status.invalidate(); toast.success("Motor detenido"); }
-  });
-  const emergencyStop = trpc.bot.emergencyStop.useMutation({
-    onSuccess: () => { utils.bot.status.invalidate(); toast.error("PARADA DE EMERGENCIA ejecutada"); }
-  });
-  const markRead = trpc.bot.markNotificationsRead.useMutation({
-    onSuccess: () => utils.bot.status.invalidate()
-  });
+  const stopBot = trpc.bot.stop.useMutation({ onSuccess: () => { utils.bot.status.invalidate(); toast.success("Motor detenido"); } });
+  const emergencyStop = trpc.bot.emergencyStop.useMutation({ onSuccess: () => { utils.bot.status.invalidate(); toast.error("PARADA DE EMERGENCIA ejecutada"); } });
+  const markRead = trpc.bot.markNotificationsRead.useMutation({ onSuccess: () => utils.bot.status.invalidate() });
 
   const [bellOpen, setBellOpen] = useState(false);
   const [currentTime, setCurrentTime] = useState(new Date());
@@ -165,21 +88,14 @@ export default function Home() {
   const [hideBalances, setHideBalances] = useState(false);
   const [editDepositOpen, setEditDepositOpen] = useState(false);
   const [editDepositValue, setEditDepositValue] = useState("");
+  const [showAiModules, setShowAiModules] = useState(false);
 
-  useEffect(() => {
-    const timer = setInterval(() => setCurrentTime(new Date()), 1000);
-    return () => clearInterval(timer);
-  }, []);
+  useEffect(() => { const t = setInterval(() => setCurrentTime(new Date()), 1000); return () => clearInterval(t); }, []);
 
   const handleRefresh = useCallback(async () => {
     if (typeof navigator !== "undefined" && "vibrate" in navigator) navigator.vibrate(30);
     setIsRefreshing(true);
-    await Promise.all([
-      utils.bot.status.invalidate(),
-      utils.prices.live.invalidate(),
-      utils.pnl.advancedStats.invalidate(),
-      utils.bot.exchangeBalances.invalidate(),
-    ]);
+    await Promise.all([utils.bot.status.invalidate(), utils.prices.live.invalidate(), utils.pnl.advancedStats.invalidate(), utils.bot.exchangeBalances.invalidate()]);
     setTimeout(() => setIsRefreshing(false), 800);
   }, [utils]);
 
@@ -193,7 +109,6 @@ export default function Home() {
   const openPositions = (data as any)?.openPositions ?? { grid: [], futures: [] };
   const totalOpenPositions = (openPositions.grid?.length ?? 0) + (openPositions.futures?.length ?? 0);
 
-  // ── REAL exchange data from API ──
   const eb = exchangeBalances.data;
   const bybitBal = parseFloat(eb?.bybit?.balance ?? "0");
   const bybitAvail = parseFloat(eb?.bybit?.available ?? "0");
@@ -210,6 +125,11 @@ export default function Home() {
   const winRate = parseFloat(eb?.winRate ?? "0");
   const unrealizedPnl = parseFloat(eb?.openPositions?.unrealizedPnl ?? "0");
   const openPosCount = eb?.openPositions?.count ?? totalOpenPositions;
+
+  // USDT liquidity calculation
+  const totalUsdt = bybitAvail + kucoinAvail;
+  const usdtPct = totalBalance > 0 ? (totalUsdt / totalBalance) * 100 : 0;
+  const usdtHealthy = usdtPct >= 40;
 
   const updateSettings = trpc.bot.updateSettings.useMutation({
     onSuccess: () => { utils.bot.status.invalidate(); utils.bot.exchangeBalances.invalidate(); },
@@ -229,19 +149,13 @@ export default function Home() {
     toast.success(`Exchange: ${exchangeLabel(exchange)}`);
   };
 
-  const livePrices = (data?.livePrices && Object.keys(data.livePrices).length > 0)
-    ? data.livePrices
-    : (publicPrices.data ?? {});
+  const livePrices = (data?.livePrices && Object.keys(data.livePrices).length > 0) ? data.livePrices : (publicPrices.data ?? {});
 
   const uptime = useMemo(() => {
     if (!state?.startedAt || !isRunning) return null;
     const diff = Date.now() - new Date(state.startedAt).getTime();
-    const d = Math.floor(diff / 86400000);
-    const h = Math.floor((diff % 86400000) / 3600000);
-    const m = Math.floor((diff % 3600000) / 60000);
-    if (d > 0) return `${d}d ${h}h`;
-    if (h > 0) return `${h}h ${m}m`;
-    return `${m}m`;
+    const d = Math.floor(diff / 86400000); const h = Math.floor((diff % 86400000) / 3600000); const m = Math.floor((diff % 3600000) / 60000);
+    if (d > 0) return `${d}d ${h}h`; if (h > 0) return `${h}h ${m}m`; return `${m}m`;
   }, [state?.startedAt, isRunning, currentTime]);
 
   const pnlColor = realProfit >= 0 ? "text-[oklch(0.72_0.19_160)]" : "text-[oklch(0.63_0.24_25)]";
@@ -250,25 +164,24 @@ export default function Home() {
   const tickerPairs = [
     { symbol: "BTCUSDT", label: "BTC", icon: "₿", color: "oklch(0.8 0.15 85)" },
     { symbol: "ETHUSDT", label: "ETH", icon: "Ξ", color: "oklch(0.75 0.14 200)" },
-    { symbol: "XAUUSDT", label: "Oro", icon: "Au", color: "oklch(0.8 0.15 85)" },
+    { symbol: "XAUUSDT", label: "XAU", icon: "Au", color: "oklch(0.8 0.15 85)" },
     { symbol: "SP500", label: "S&P", icon: "SP", color: "oklch(0.65 0.2 300)" },
   ];
 
-  // ── Advanced stats data ──
   const as = advancedStats.data;
   const stratBreakdown = as?.strategyBreakdown ?? {};
   const topSymbols = as?.topSymbols ?? [];
   const pnlChartData = as?.pnlChart ?? [];
 
-  // ── Pie chart data for strategy breakdown ──
   const pieData = Object.entries(stratBreakdown)
     .filter(([_, v]) => v.trades > 0)
-    .map(([key, v]) => ({
-      name: strategyLabels[key] || key,
-      value: Math.abs(v.pnl),
-      pnl: v.pnl,
-      color: strategyColors[key] || strategyColors.unknown,
-    }));
+    .map(([key, v]) => ({ name: strategyLabels[key] || key, value: Math.abs(v.pnl), pnl: v.pnl, color: strategyColors[key] || strategyColors.unknown }));
+
+  // Bar chart data
+  const strategies = strategiesQuery.data ?? [];
+  const barData = strategies.length > 0
+    ? strategies.map((s: any) => ({ pair: s.symbol.replace("USDT", ""), pnl: parseFloat(String(s.pnl ?? "0")) })).filter((d: any) => d.pnl !== 0)
+    : [];
 
   if (isLoading && publicPrices.isLoading) {
     return (
@@ -280,27 +193,16 @@ export default function Home() {
     );
   }
 
+  // ─── Shared Components ───
   const depositDialog = (
     <Dialog open={editDepositOpen} onOpenChange={setEditDepositOpen}>
       <DialogContent className="sm:max-w-[340px]" style={{ background: 'oklch(0.14 0.005 260)', border: '1px solid oklch(1 0 0 / 10%)' }}>
-        <DialogHeader>
-          <DialogTitle className="text-foreground">Capital Invertido</DialogTitle>
-        </DialogHeader>
+        <DialogHeader><DialogTitle className="text-foreground">Capital Invertido</DialogTitle></DialogHeader>
         <div className="space-y-4 pt-2">
-          <p className="text-xs text-muted-foreground">Ingresá el monto total que depositaste en los exchanges (Bybit + KuCoin).</p>
+          <p className="text-xs text-muted-foreground">Ingresá el monto total que depositaste en los exchanges.</p>
           <div className="flex items-center gap-2">
             <span className="text-muted-foreground font-bold">$</span>
-            <Input
-              type="number"
-              step="0.01"
-              min="0"
-              value={editDepositValue}
-              onChange={(e) => setEditDepositValue(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && handleSaveDeposit()}
-              className="text-lg font-bold tabular-nums"
-              placeholder="2500.00"
-              autoFocus
-            />
+            <Input type="number" step="0.01" min="0" value={editDepositValue} onChange={(e) => setEditDepositValue(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleSaveDeposit()} className="text-lg font-bold tabular-nums" placeholder="2500.00" autoFocus />
           </div>
           <div className="flex gap-2">
             <Button variant="outline" className="flex-1" onClick={() => setEditDepositOpen(false)}>Cancelar</Button>
@@ -311,249 +213,43 @@ export default function Home() {
     </Dialog>
   );
 
-  // ─── Period Selector Pills ───
+  // ─── Period Pills ───
   const periodPills = (
-    <div className="flex gap-1 bg-[oklch(0.13_0.005_260)] rounded-xl p-1 border border-border/20">
+    <div className="flex gap-0.5 bg-[oklch(0.11_0.005_260)] rounded-xl p-0.5 border border-border/10">
       {(Object.keys(periodLabels) as Period[]).map(p => (
-        <button
-          key={p}
-          onClick={() => setSelectedPeriod(p)}
-          className={`px-3 py-1.5 rounded-lg text-[11px] font-bold tracking-wide transition-all duration-200 ${
-            selectedPeriod === p
-              ? "bg-primary/20 text-primary shadow-sm shadow-primary/10 border border-primary/20"
-              : "text-muted-foreground/60 hover:text-foreground hover:bg-accent/20"
-          }`}
-        >
-          {periodLabels[p]}
-        </button>
+        <button key={p} onClick={() => setSelectedPeriod(p)}
+          className={`flex-1 px-2.5 py-1.5 rounded-lg text-[10px] font-bold tracking-wide transition-all duration-200 ${
+            selectedPeriod === p ? "bg-[oklch(0.18_0.01_260)] text-primary shadow-sm border border-primary/15" : "text-muted-foreground/50 hover:text-foreground/70"
+          }`}>{periodLabels[p]}</button>
       ))}
     </div>
   );
 
-  // ─── Advanced PnL Summary Card ───
-  const advancedPnlCard = (
-    <div className="glass-card overflow-hidden">
-      <div className="px-4 py-3 border-b border-border/15 flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <div className="w-7 h-7 rounded-lg bg-primary/10 flex items-center justify-center">
-            <BarChart3 className="h-3.5 w-3.5 text-primary" />
-          </div>
-          <h3 className="font-bold text-xs">Rendimiento Detallado</h3>
-        </div>
-        {advancedStats.isFetching && <RefreshCw className="h-3 w-3 text-muted-foreground/40 animate-spin" />}
-      </div>
-      <div className="p-4 space-y-4">
-        {/* Period Pills */}
-        {periodPills}
-
-        {/* Main PnL numbers */}
-        <div className="grid grid-cols-3 gap-3">
-          <div className="text-center p-3 rounded-xl" style={{ background: 'oklch(0.72 0.19 160 / 6%)' }}>
-            <ArrowUp className="h-3.5 w-3.5 text-[oklch(0.72_0.19_160)] mx-auto mb-1" />
-            <p className="text-[9px] text-muted-foreground/60 font-medium">Ganancias</p>
-            <p className="text-sm font-bold tabular-nums text-[oklch(0.72_0.19_160)]">
-              {hideBalances ? "••" : `+$${(as?.totalGains ?? 0).toFixed(2)}`}
-            </p>
-          </div>
-          <div className="text-center p-3 rounded-xl" style={{ background: 'oklch(0.63 0.24 25 / 6%)' }}>
-            <ArrowDown className="h-3.5 w-3.5 text-[oklch(0.63_0.24_25)] mx-auto mb-1" />
-            <p className="text-[9px] text-muted-foreground/60 font-medium">Pérdidas</p>
-            <p className="text-sm font-bold tabular-nums text-[oklch(0.63_0.24_25)]">
-              {hideBalances ? "••" : `-$${(as?.totalLosses ?? 0).toFixed(2)}`}
-            </p>
-          </div>
-          <div className="text-center p-3 rounded-xl" style={{ background: (as?.netProfit ?? 0) >= 0 ? 'oklch(0.72 0.19 160 / 8%)' : 'oklch(0.63 0.24 25 / 8%)', border: `1px solid ${(as?.netProfit ?? 0) >= 0 ? 'oklch(0.72 0.19 160 / 15%)' : 'oklch(0.63 0.24 25 / 15%)'}` }}>
-            <DollarSign className={`h-3.5 w-3.5 mx-auto mb-1 ${(as?.netProfit ?? 0) >= 0 ? 'text-[oklch(0.72_0.19_160)]' : 'text-[oklch(0.63_0.24_25)]'}`} />
-            <p className="text-[9px] text-muted-foreground/60 font-medium">Neto Real</p>
-            <p className={`text-sm font-black tabular-nums ${(as?.netProfit ?? 0) >= 0 ? 'text-[oklch(0.72_0.19_160)]' : 'text-[oklch(0.63_0.24_25)]'}`}>
-              {hideBalances ? "••" : fmt(as?.netProfit ?? 0)}
-            </p>
-          </div>
-        </div>
-
-        {/* Win/Loss Stats Row */}
-        <div className="grid grid-cols-4 gap-2">
-          <div className="text-center">
-            <p className="text-[9px] text-muted-foreground/50 font-medium">Trades</p>
-            <p className="text-sm font-bold tabular-nums">{as?.totalTrades ?? 0}</p>
-          </div>
-          <div className="text-center">
-            <p className="text-[9px] text-muted-foreground/50 font-medium">Win Rate</p>
-            <p className="text-sm font-bold tabular-nums text-[oklch(0.72_0.19_160)]">{(as?.winRate ?? 0).toFixed(1)}%</p>
-          </div>
-          <div className="text-center">
-            <p className="text-[9px] text-muted-foreground/50 font-medium">Ganados</p>
-            <p className="text-sm font-bold tabular-nums text-[oklch(0.72_0.19_160)]">{as?.winTrades ?? 0}</p>
-          </div>
-          <div className="text-center">
-            <p className="text-[9px] text-muted-foreground/50 font-medium">Perdidos</p>
-            <p className="text-sm font-bold tabular-nums text-[oklch(0.63_0.24_25)]">{as?.loseTrades ?? 0}</p>
-          </div>
-        </div>
-
-        {/* Advanced Metrics */}
-        <div className="grid grid-cols-2 gap-2">
-          {[
-            { label: "Profit Factor", value: (as?.profitFactor ?? 0) > 100 ? "∞" : (as?.profitFactor ?? 0).toFixed(2), color: (as?.profitFactor ?? 0) >= 1.5 ? "oklch(0.72 0.19 160)" : "oklch(0.8 0.15 85)" },
-            { label: "Avg Win", value: hideBalances ? "••" : `+$${(as?.avgWin ?? 0).toFixed(2)}`, color: "oklch(0.72 0.19 160)" },
-            { label: "Avg Loss", value: hideBalances ? "••" : `-$${(as?.avgLoss ?? 0).toFixed(2)}`, color: "oklch(0.63 0.24 25)" },
-            { label: "Mejor Trade", value: hideBalances ? "••" : fmt(as?.bestTrade ?? 0), color: "oklch(0.72 0.19 160)" },
-            { label: "Peor Trade", value: hideBalances ? "••" : fmt(as?.worstTrade ?? 0), color: "oklch(0.63 0.24 25)" },
-            { label: "Prom. Diario", value: hideBalances ? "••" : fmt(as?.avgDaily ?? 0), color: (as?.avgDaily ?? 0) >= 0 ? "oklch(0.72 0.19 160)" : "oklch(0.63 0.24 25)" },
-          ].map(m => (
-            <div key={m.label} className="flex items-center justify-between py-1.5 px-2 rounded-lg bg-[oklch(0.13_0.005_260)]">
-              <span className="text-[10px] text-muted-foreground/60 font-medium">{m.label}</span>
-              <span className="text-[11px] font-bold tabular-nums" style={{ color: m.color }}>{m.value}</span>
+  // ─── Notification Popover ───
+  const notifPopover = (
+    <Popover open={bellOpen} onOpenChange={(open) => { setBellOpen(open); if (open && unread > 0) markRead.mutate(); }}>
+      <PopoverTrigger asChild>
+        <button className="relative h-9 w-9 flex items-center justify-center rounded-xl hover:bg-accent/50 transition-all active:scale-95">
+          <Bell className="h-4 w-4 text-muted-foreground" />
+          {unread > 0 && <span className="absolute top-0.5 right-0.5 h-4 min-w-4 px-1 rounded-full bg-destructive text-[9px] font-bold flex items-center justify-center text-white animate-pulse">{unread > 9 ? "9+" : unread}</span>}
+        </button>
+      </PopoverTrigger>
+      <PopoverContent className="w-80 p-0 glass-card-elevated" align="end">
+        <div className="p-3 border-b border-border/30"><h4 className="font-semibold text-sm">Notificaciones</h4></div>
+        <div className="max-h-64 overflow-y-auto">
+          {notifications.length === 0 ? <p className="text-sm text-muted-foreground p-4 text-center">Sin notificaciones</p> : notifications.map((n: any) => (
+            <div key={n.id} className="p-3 border-b border-border/20 last:border-0 hover:bg-accent/20 transition-colors">
+              <div className="flex items-center justify-between">
+                <span className="font-medium text-sm">{n.symbol}</span>
+                <Badge variant={String(n.signal).includes("BUY") ? "default" : "destructive"} className="text-[10px]">{String(n.signal).includes("BUY") ? "COMPRA" : "VENTA"}</Badge>
+              </div>
+              <p className="text-xs text-muted-foreground mt-1">Confianza: {n.confidence}%</p>
             </div>
           ))}
         </div>
-
-        {/* Best/Worst Day */}
-        <div className="grid grid-cols-2 gap-2">
-          <div className="flex items-center justify-between py-1.5 px-2 rounded-lg bg-[oklch(0.13_0.005_260)]">
-            <span className="text-[10px] text-muted-foreground/60 font-medium">Mejor Día</span>
-            <span className="text-[11px] font-bold tabular-nums text-[oklch(0.72_0.19_160)]">{hideBalances ? "••" : fmt(as?.bestDay ?? 0)}</span>
-          </div>
-          <div className="flex items-center justify-between py-1.5 px-2 rounded-lg bg-[oklch(0.13_0.005_260)]">
-            <span className="text-[10px] text-muted-foreground/60 font-medium">Peor Día</span>
-            <span className="text-[11px] font-bold tabular-nums text-[oklch(0.63_0.24_25)]">{hideBalances ? "••" : fmt(as?.worstDay ?? 0)}</span>
-          </div>
-        </div>
-      </div>
-    </div>
+      </PopoverContent>
+    </Popover>
   );
-
-  // ─── Strategy Breakdown Card ───
-  const strategyCard = Object.keys(stratBreakdown).length > 0 ? (
-    <div className="glass-card overflow-hidden">
-      <div className="px-4 py-3 border-b border-border/15 flex items-center gap-2">
-        <div className="w-7 h-7 rounded-lg bg-[oklch(0.65_0.2_300)]/10 flex items-center justify-center">
-          <Layers className="h-3.5 w-3.5 text-[oklch(0.65_0.2_300)]" />
-        </div>
-        <h3 className="font-bold text-xs">PnL por Estrategia</h3>
-      </div>
-      <div className="p-4">
-        {/* Mini Pie Chart + Legend */}
-        {pieData.length > 0 && (
-          <div className="flex items-center gap-4 mb-3">
-            <div className="w-20 h-20 shrink-0">
-              <ResponsiveContainer width="100%" height="100%">
-                <RPieChart>
-                  <Pie data={pieData} dataKey="value" cx="50%" cy="50%" innerRadius={22} outerRadius={36} paddingAngle={3} strokeWidth={0}>
-                    {pieData.map((entry, idx) => (
-                      <Cell key={idx} fill={entry.color} />
-                    ))}
-                  </Pie>
-                </RPieChart>
-              </ResponsiveContainer>
-            </div>
-            <div className="flex-1 space-y-1.5">
-              {pieData.map(d => (
-                <div key={d.name} className="flex items-center justify-between">
-                  <div className="flex items-center gap-1.5">
-                    <div className="w-2 h-2 rounded-full" style={{ background: d.color }} />
-                    <span className="text-[10px] font-medium text-muted-foreground/70">{d.name}</span>
-                  </div>
-                  <span className={`text-[10px] font-bold tabular-nums ${d.pnl >= 0 ? "text-[oklch(0.72_0.19_160)]" : "text-[oklch(0.63_0.24_25)]"}`}>
-                    {hideBalances ? "••" : fmt(d.pnl)}
-                  </span>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-        {/* Strategy Rows */}
-        {Object.entries(stratBreakdown).map(([key, v]) => (
-          <StrategyRow key={key} name={key} pnl={v.pnl} trades={v.trades} wins={v.wins} losses={v.losses} hideBalances={hideBalances} />
-        ))}
-      </div>
-    </div>
-  ) : null;
-
-  // ─── Top Symbols Card ───
-  const topSymbolsCard = topSymbols.length > 0 ? (
-    <div className="glass-card overflow-hidden">
-      <div className="px-4 py-3 border-b border-border/15 flex items-center gap-2">
-        <div className="w-7 h-7 rounded-lg bg-[oklch(0.8_0.15_85)]/10 flex items-center justify-center">
-          <Award className="h-3.5 w-3.5 text-[oklch(0.8_0.15_85)]" />
-        </div>
-        <h3 className="font-bold text-xs">Top Pares ({periodLabels[selectedPeriod]})</h3>
-      </div>
-      <div className="px-4 py-2">
-        {topSymbols.slice(0, 6).map((s: any) => (
-          <SymbolRow key={s.symbol} symbol={s.symbol} pnl={s.pnl} trades={s.trades} hideBalances={hideBalances} />
-        ))}
-      </div>
-    </div>
-  ) : null;
-
-  // ─── PnL Chart Card (period-based) ───
-  const pnlChartCard = pnlChartData.length > 0 ? (
-    <div className="glass-card p-4">
-      <div className="flex items-center justify-between mb-3">
-        <div className="flex items-center gap-2">
-          <div className="w-7 h-7 rounded-lg bg-primary/10 flex items-center justify-center">
-            <TrendingUp className="h-3.5 w-3.5 text-primary" />
-          </div>
-          <h3 className="font-bold text-xs">Curva PnL ({periodLabels[selectedPeriod]})</h3>
-        </div>
-      </div>
-      <ResponsiveContainer width="100%" height={isMobile ? 130 : 180}>
-        <AreaChart data={pnlChartData} margin={{ top: 4, right: 4, left: isMobile ? -24 : -10, bottom: 0 }}>
-          <defs>
-            <linearGradient id="pnlGradPeriod" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="5%" stopColor="oklch(0.72 0.19 160)" stopOpacity={0.35} />
-              <stop offset="95%" stopColor="oklch(0.72 0.19 160)" stopOpacity={0} />
-            </linearGradient>
-          </defs>
-          <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.03)" />
-          <XAxis dataKey="date" tick={{ fontSize: isMobile ? 9 : 10, fill: 'rgba(255,255,255,0.25)' }} tickFormatter={(v) => v?.slice(5)} axisLine={false} tickLine={false} />
-          <YAxis tick={{ fontSize: isMobile ? 9 : 10, fill: 'rgba(255,255,255,0.25)' }} axisLine={false} tickLine={false} />
-          <Tooltip
-            contentStyle={{ background: 'oklch(0.14 0.005 260)', border: '1px solid oklch(1 0 0 / 10%)', borderRadius: 12, fontSize: 11, padding: '8px 12px' }}
-            formatter={(v: any) => [fmt(parseFloat(v)), 'PnL']}
-          />
-          <Area type="monotone" dataKey="pnl" stroke="oklch(0.72 0.19 160)" fill="url(#pnlGradPeriod)" strokeWidth={2} dot={false} />
-        </AreaChart>
-      </ResponsiveContainer>
-    </div>
-  ) : null;
-
-  // ─── PnL Bar Chart by Symbol ───
-  const strategies = strategiesQuery.data ?? [];
-  const barData = strategies.length > 0
-    ? strategies.map((s: any) => ({
-        pair: s.symbol.replace("USDT", ""),
-        pnl: parseFloat(String(s.pnl ?? "0")),
-      })).filter((d: any) => d.pnl !== 0)
-    : [];
-
-  const barChartCard = barData.length > 0 ? (
-    <div className="glass-card p-4">
-      <div className="flex items-center gap-2 mb-3">
-        <div className="w-7 h-7 rounded-lg bg-primary/10 flex items-center justify-center">
-          <BarChart3 className="h-3.5 w-3.5 text-primary" />
-        </div>
-        <h3 className="font-bold text-xs">PnL por Par (Acumulado)</h3>
-      </div>
-      <ResponsiveContainer width="100%" height={isMobile ? 140 : 200}>
-        <BarChart data={barData} margin={{ top: 4, right: 4, left: isMobile ? -24 : -10, bottom: 0 }}>
-          <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" />
-          <XAxis dataKey="pair" tick={{ fontSize: isMobile ? 9 : 10, fill: 'rgba(255,255,255,0.4)' }} axisLine={false} />
-          <YAxis tick={{ fontSize: isMobile ? 9 : 10, fill: 'rgba(255,255,255,0.4)' }} axisLine={false} />
-          <Tooltip
-            contentStyle={{ background: 'oklch(0.14 0.005 260)', border: '1px solid oklch(1 0 0 / 10%)', borderRadius: 12, fontSize: 12 }}
-            formatter={(v: any) => [fmt(parseFloat(v)), 'PnL']}
-          />
-          <Bar dataKey="pnl" radius={[6, 6, 0, 0]}>
-            {barData.map((entry: any, idx: number) => (
-              <Cell key={idx} fill={entry.pnl >= 0 ? "oklch(0.72 0.19 160)" : "oklch(0.63 0.24 25)"} />
-            ))}
-          </Bar>
-        </BarChart>
-      </ResponsiveContainer>
-    </div>
-  ) : null;
 
   // ════════════════════════════════════════════════════════════════
   // ─── MOBILE LAYOUT ───
@@ -562,21 +258,14 @@ export default function Home() {
     return (
       <>{depositDialog}
       <div className="space-y-3 pb-2">
-        {/* ── Header: Exchange + Status + Actions ── */}
+        {/* ── Header ── */}
         <div className="flex items-center justify-between">
-          <div className="flex gap-1 bg-[oklch(0.15_0.005_260)] rounded-xl p-1 border border-border/30">
+          <div className="flex gap-0.5 bg-[oklch(0.13_0.005_260)] rounded-xl p-0.5 border border-border/20">
             {["bybit", "kucoin", "both"].map(ex => (
-              <button
-                key={ex}
-                onClick={() => handleExchangeChange(ex)}
-                className={`px-3 py-1.5 rounded-lg text-[11px] font-bold tracking-wide transition-all duration-300 ${
-                  selectedExchange === ex
-                    ? "bg-primary text-primary-foreground shadow-md shadow-primary/25"
-                    : "text-muted-foreground hover:text-foreground hover:bg-accent/30"
-                }`}
-              >
-                {exchangeLabel(ex)}
-              </button>
+              <button key={ex} onClick={() => handleExchangeChange(ex)}
+                className={`px-3 py-1.5 rounded-lg text-[10px] font-bold tracking-wide transition-all duration-300 ${
+                  selectedExchange === ex ? "bg-primary text-primary-foreground shadow-md shadow-primary/25" : "text-muted-foreground/60 hover:text-foreground"
+                }`}>{exchangeLabel(ex)}</button>
             ))}
           </div>
           <div className="flex items-center gap-0.5">
@@ -586,40 +275,11 @@ export default function Home() {
             <button onClick={handleRefresh} className="h-9 w-9 flex items-center justify-center rounded-xl hover:bg-accent/50 transition-all active:scale-95">
               <RefreshCw className={`h-4 w-4 text-muted-foreground ${isRefreshing ? "animate-spin" : ""}`} />
             </button>
-            <Popover open={bellOpen} onOpenChange={(open) => { setBellOpen(open); if (open && unread > 0) markRead.mutate(); }}>
-              <PopoverTrigger asChild>
-                <button className="relative h-9 w-9 flex items-center justify-center rounded-xl hover:bg-accent/50 transition-all active:scale-95">
-                  <Bell className="h-4 w-4 text-muted-foreground" />
-                  {unread > 0 && (
-                    <span className="absolute top-0.5 right-0.5 h-4 min-w-4 px-1 rounded-full bg-destructive text-[9px] font-bold flex items-center justify-center text-white animate-pulse">
-                      {unread > 9 ? "9+" : unread}
-                    </span>
-                  )}
-                </button>
-              </PopoverTrigger>
-              <PopoverContent className="w-80 p-0 glass-card-elevated" align="end">
-                <div className="p-3 border-b border-border/30"><h4 className="font-semibold text-sm">Notificaciones</h4></div>
-                <div className="max-h-64 overflow-y-auto">
-                  {notifications.length === 0 ? (
-                    <p className="text-sm text-muted-foreground p-4 text-center">Sin notificaciones</p>
-                  ) : notifications.map((n: any) => (
-                    <div key={n.id} className="p-3 border-b border-border/20 last:border-0 hover:bg-accent/20 transition-colors">
-                      <div className="flex items-center justify-between">
-                        <span className="font-medium text-sm">{n.symbol}</span>
-                        <Badge variant={String(n.signal).includes("BUY") ? "default" : "destructive"} className="text-[10px]">
-                          {String(n.signal).includes("BUY") ? "COMPRA" : "VENTA"}
-                        </Badge>
-                      </div>
-                      <p className="text-xs text-muted-foreground mt-1">Confianza: {n.confidence}%</p>
-                    </div>
-                  ))}
-                </div>
-              </PopoverContent>
-            </Popover>
+            {notifPopover}
           </div>
         </div>
 
-        {/* ── Status + Bot Controls ── */}
+        {/* ── Status Bar ── */}
         <div className="flex items-center gap-2">
           <Badge variant={isRunning ? "default" : "secondary"} className={`text-[10px] px-2.5 py-1 ${isRunning ? "bg-primary/15 text-primary border border-primary/30" : "border border-border/50"}`}>
             {isRunning ? <><span className="w-1.5 h-1.5 rounded-full bg-primary pulse-live mr-1.5 inline-block" />EN VIVO</> : <><WifiOff className="h-3 w-3 mr-1" />OFFLINE</>}
@@ -639,69 +299,56 @@ export default function Home() {
           )}
         </div>
 
-        {/* ── Price Ticker Strip ── */}
+        {/* ── Price Ticker ── */}
         <div className="overflow-x-auto -mx-4 px-4 scrollbar-none">
           <div className="flex gap-2" style={{ width: "max-content" }}>
             {tickerPairs.map(({ symbol, label, icon, color }) => {
-              const p = (livePrices as any)[symbol];
-              const price = p?.lastPrice ?? 0;
-              const change = p?.price24hPcnt ? p.price24hPcnt * 100 : 0;
-              const isUp = change >= 0;
+              const p = (livePrices as any)[symbol]; const price = p?.lastPrice ?? 0; const change = p?.price24hPcnt ? p.price24hPcnt * 100 : 0; const isUp = change >= 0;
               return (
-                <div key={symbol} className="flex items-center gap-2.5 glass-card px-3 py-2.5 interactive-card">
-                  <div className="w-8 h-8 rounded-lg flex items-center justify-center text-[11px] font-black" style={{ background: `color-mix(in oklch, ${color} 12%, transparent)`, color }}>{icon}</div>
-                  <div className="flex flex-col">
-                    <span className="text-[10px] text-muted-foreground/70 font-medium">{label}</span>
-                    <span className="text-[13px] font-bold tabular-nums">{price > 0 ? "$" + fmtPrice(price) : "—"}</span>
+                <div key={symbol} className="flex items-center gap-2.5 glass-card px-3 py-2 interactive-card">
+                  <div className="w-7 h-7 rounded-lg flex items-center justify-center text-[10px] font-black" style={{ background: `color-mix(in oklch, ${color} 12%, transparent)`, color }}>{icon}</div>
+                  <div>
+                    <span className="text-[10px] text-muted-foreground/60 font-medium">{label}</span>
+                    <span className="text-[12px] font-bold tabular-nums block">{price > 0 ? "$" + fmtPrice(price) : "—"}</span>
                   </div>
-                  {price > 0 && (
-                    <span className={`text-[10px] font-bold ml-0.5 px-1.5 py-0.5 rounded-md ${isUp ? "text-[oklch(0.72_0.19_160)] bg-[oklch(0.72_0.19_160)]/8" : "text-[oklch(0.63_0.24_25)] bg-[oklch(0.63_0.24_25)]/8"}`}>
-                      {isUp ? "+" : ""}{change.toFixed(1)}%
-                    </span>
-                  )}
+                  {price > 0 && <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-md ${isUp ? "text-[oklch(0.72_0.19_160)] bg-[oklch(0.72_0.19_160)]/8" : "text-[oklch(0.63_0.24_25)] bg-[oklch(0.63_0.24_25)]/8"}`}>{isUp ? "+" : ""}{change.toFixed(1)}%</span>}
                 </div>
               );
             })}
           </div>
         </div>
 
-        {/* ── Balance Total Hero Card ── */}
-        <div className="relative overflow-hidden rounded-2xl shimmer-bg" style={{ background: 'linear-gradient(145deg, oklch(0.17 0.025 160) 0%, oklch(0.14 0.012 180) 40%, oklch(0.13 0.006 240) 100%)', border: '1px solid oklch(0.72 0.19 160 / 12%)' }}>
-          <div className="absolute top-0 right-0 w-48 h-48 bg-primary/6 rounded-full blur-[80px] -translate-y-12 translate-x-12" />
-          <div className="absolute bottom-0 left-0 w-32 h-32 bg-[oklch(0.75_0.14_200)]/4 rounded-full blur-[50px] translate-y-8 -translate-x-8" />
+        {/* ── Balance Hero Card ── */}
+        <div className="relative overflow-hidden rounded-2xl" style={{ background: 'linear-gradient(145deg, oklch(0.16 0.03 160) 0%, oklch(0.13 0.015 200) 50%, oklch(0.12 0.008 260) 100%)', border: '1px solid oklch(0.72 0.19 160 / 10%)' }}>
+          <div className="absolute top-0 right-0 w-40 h-40 bg-primary/5 rounded-full blur-[60px] -translate-y-10 translate-x-10" />
           <div className="relative p-5">
             <div className="flex items-center justify-between mb-1">
-              <span className="text-[10px] font-bold tracking-[0.2em] text-muted-foreground/70 uppercase">Balance Total</span>
-              <span className={`text-[11px] font-bold px-2.5 py-1 rounded-lg backdrop-blur-sm ${realProfitPct >= 0 ? 'bg-primary/15 text-primary border border-primary/20' : 'bg-destructive/15 text-destructive border border-destructive/20'}`}>
-                {fmtPct(realProfitPct)}
-              </span>
+              <span className="text-[9px] font-bold tracking-[0.2em] text-muted-foreground/60 uppercase">Balance Total</span>
+              <span className={`text-[10px] font-bold px-2 py-0.5 rounded-lg ${realProfitPct >= 0 ? 'bg-primary/15 text-primary border border-primary/20' : 'bg-destructive/15 text-destructive border border-destructive/20'}`}>{fmtPct(realProfitPct)}</span>
             </div>
-            <p className="text-[42px] font-black tracking-tight tabular-nums leading-none text-foreground">
-              {hideBalances ? "••••••" : fmtUsd(totalBalance)}
-            </p>
+            <p className="text-[38px] font-black tracking-tight tabular-nums leading-none">{hideBalances ? "••••••" : fmtUsd(totalBalance)}</p>
             <div className="flex items-center gap-1.5 mt-1">
-              <p className="text-[10px] text-muted-foreground/50 tabular-nums">Invertido: {hideBalances ? "•••" : fmtUsd(initialDeposit)}</p>
-              <button onClick={() => { setEditDepositValue(initialDeposit.toFixed(2)); setEditDepositOpen(true); }} className="text-muted-foreground/40 hover:text-primary transition-colors"><Pencil className="h-2.5 w-2.5" /></button>
+              <p className="text-[9px] text-muted-foreground/40 tabular-nums">Invertido: {hideBalances ? "•••" : fmtUsd(initialDeposit)}</p>
+              <button onClick={() => { setEditDepositValue(initialDeposit.toFixed(2)); setEditDepositOpen(true); }} className="text-muted-foreground/30 hover:text-primary transition-colors"><Pencil className="h-2.5 w-2.5" /></button>
             </div>
-            <div className="mt-4 pt-3 border-t border-white/[0.06]">
+
+            {/* PnL Summary Row */}
+            <div className="mt-4 pt-3 border-t border-white/[0.05]">
               <div className="flex items-center justify-between mb-3">
-                <span className="text-[9px] font-bold tracking-[0.15em] text-muted-foreground/60 uppercase">Ganancia Real</span>
+                <span className="text-[8px] font-bold tracking-[0.15em] text-muted-foreground/50 uppercase">Ganancia Real</span>
                 <span className={`text-lg font-black tabular-nums ${pnlColor}`}>{hideBalances ? "••••" : fmt(realProfit)}</span>
               </div>
-              <div className="grid grid-cols-3 gap-3">
-                <div>
-                  <div className={`w-1.5 h-1.5 rounded-full mb-1 ${todayPnl >= 0 ? 'bg-[oklch(0.72_0.19_160)]' : 'bg-[oklch(0.63_0.24_25)]'} pulse-live`} />
-                  <span className="text-[9px] text-muted-foreground/50 font-medium block">Hoy ({todayTrades})</span>
+              <div className="grid grid-cols-3 gap-2">
+                <div className="bg-white/[0.03] rounded-xl p-2.5 text-center">
+                  <span className="text-[8px] text-muted-foreground/40 font-medium block">Hoy ({todayTrades})</span>
                   <span className={`text-[13px] font-bold tabular-nums ${todayColor}`}>{hideBalances ? "••" : fmt(todayPnl)}</span>
                 </div>
-                <div>
-                  <div className={`w-1.5 h-1.5 rounded-full mb-1 ${unrealizedPnl >= 0 ? 'bg-[oklch(0.75_0.14_200)]' : 'bg-[oklch(0.8_0.15_85)]'}`} />
-                  <span className="text-[9px] text-muted-foreground/50 font-medium block">Abierto ({openPosCount})</span>
+                <div className="bg-white/[0.03] rounded-xl p-2.5 text-center">
+                  <span className="text-[8px] text-muted-foreground/40 font-medium block">Abierto ({openPosCount})</span>
                   <span className={`text-[13px] font-bold tabular-nums ${unrealizedPnl >= 0 ? 'text-[oklch(0.75_0.14_200)]' : 'text-[oklch(0.8_0.15_85)]'}`}>{hideBalances ? "••" : fmt(unrealizedPnl)}</span>
                 </div>
-                <div>
-                  <div className="w-1.5 h-1.5 rounded-full mb-1 bg-[oklch(0.65_0.2_300)]" />
-                  <span className="text-[9px] text-muted-foreground/50 font-medium block">Futuros</span>
+                <div className="bg-white/[0.03] rounded-xl p-2.5 text-center">
+                  <span className="text-[8px] text-muted-foreground/40 font-medium block">Futuros</span>
                   <span className={`text-[13px] font-bold tabular-nums ${bybitUnrealized >= 0 ? 'text-[oklch(0.72_0.19_160)]' : 'text-[oklch(0.63_0.24_25)]'}`}>{hideBalances ? "••" : fmt(bybitUnrealized)}</span>
                 </div>
               </div>
@@ -709,176 +356,346 @@ export default function Home() {
           </div>
         </div>
 
-        {/* ── Exchange Balances ── */}
-        <div className="grid grid-cols-2 gap-2.5">
-          <div className="glass-card p-4 interactive-card">
+        {/* ── USDT Liquidity + AI Status Row ── */}
+        <div className="grid grid-cols-2 gap-2">
+          <div className="glass-card p-3 interactive-card">
             <div className="flex items-center gap-2 mb-2">
-              <div className="w-8 h-8 rounded-lg flex items-center justify-center" style={{ background: 'color-mix(in oklch, oklch(0.8 0.18 80) 10%, transparent)' }}>
-                <Wallet className="h-4 w-4" style={{ color: 'oklch(0.8 0.18 80)' }} />
+              <div className={`w-7 h-7 rounded-lg flex items-center justify-center ${usdtHealthy ? 'bg-[oklch(0.72_0.19_160)]/10' : 'bg-[oklch(0.8_0.15_85)]/10'}`}>
+                <CircleDollarSign className={`h-3.5 w-3.5 ${usdtHealthy ? 'text-[oklch(0.72_0.19_160)]' : 'text-[oklch(0.8_0.15_85)]'}`} />
               </div>
-              <span className="text-[10px] font-bold tracking-wider text-muted-foreground/60 uppercase">Bybit</span>
+              <span className="text-[9px] font-bold tracking-wider text-muted-foreground/50 uppercase">USDT Libre</span>
             </div>
-            <p className="text-[17px] font-black tabular-nums">{hideBalances ? "••••" : fmtUsd(bybitBal)}</p>
-            <p className="text-[9px] text-muted-foreground/40 tabular-nums mt-0.5">Disponible: {hideBalances ? "••" : fmtUsd(bybitAvail)}</p>
+            <p className="text-[16px] font-black tabular-nums">{hideBalances ? "••••" : fmtUsd(totalUsdt)}</p>
+            <div className="flex items-center gap-1.5 mt-1">
+              <div className="flex-1 h-1.5 bg-[oklch(0.12_0.005_260)] rounded-full overflow-hidden">
+                <div className={`h-full rounded-full transition-all duration-700 ${usdtHealthy ? 'bg-[oklch(0.72_0.19_160)]' : 'bg-[oklch(0.8_0.15_85)]'}`} style={{ width: `${Math.min(usdtPct, 100)}%` }} />
+              </div>
+              <span className={`text-[9px] font-bold tabular-nums ${usdtHealthy ? 'text-[oklch(0.72_0.19_160)]' : 'text-[oklch(0.8_0.15_85)]'}`}>{usdtPct.toFixed(0)}%</span>
+            </div>
           </div>
-          <div className="glass-card p-4 interactive-card">
+          <button onClick={() => setShowAiModules(!showAiModules)} className="glass-card p-3 interactive-card text-left">
             <div className="flex items-center gap-2 mb-2">
-              <div className="w-8 h-8 rounded-lg flex items-center justify-center" style={{ background: 'color-mix(in oklch, oklch(0.75 0.14 170) 10%, transparent)' }}>
-                <Wallet className="h-4 w-4" style={{ color: 'oklch(0.75 0.14 170)' }} />
+              <div className="w-7 h-7 rounded-lg bg-[oklch(0.65_0.2_300)]/10 flex items-center justify-center">
+                <Brain className="h-3.5 w-3.5 text-[oklch(0.65_0.2_300)]" />
               </div>
-              <span className="text-[10px] font-bold tracking-wider text-muted-foreground/60 uppercase">KuCoin</span>
+              <span className="text-[9px] font-bold tracking-wider text-muted-foreground/50 uppercase">IA Activa</span>
             </div>
-            <p className="text-[17px] font-black tabular-nums">{hideBalances ? "••••" : fmtUsd(kucoinBal)}</p>
-            <p className="text-[9px] text-muted-foreground/40 tabular-nums mt-0.5">Disponible: {hideBalances ? "••" : fmtUsd(kucoinAvail)}</p>
+            <div className="flex items-center justify-between">
+              <p className="text-[16px] font-black tabular-nums">55+</p>
+              <div className="flex items-center gap-1">
+                <span className="w-1.5 h-1.5 rounded-full bg-[oklch(0.72_0.19_160)] pulse-live" />
+                <span className="text-[9px] text-[oklch(0.72_0.19_160)] font-bold">ONLINE</span>
+              </div>
+            </div>
+            <p className="text-[8px] text-muted-foreground/30 mt-0.5">Toca para ver módulos</p>
+          </button>
+        </div>
+
+        {/* ── AI Modules Expandable ── */}
+        {showAiModules && (
+          <div className="glass-card p-3 animate-in slide-in-from-top-2 duration-300">
+            <div className="grid grid-cols-2 gap-1.5">
+              {aiModules.map(m => (
+                <div key={m.name} className="flex items-center gap-2 py-1.5 px-2 rounded-lg bg-[oklch(0.12_0.005_260)]">
+                  <m.icon className="h-3 w-3 text-primary/70 shrink-0" />
+                  <span className="text-[9px] font-medium text-muted-foreground/70 truncate">{m.name}</span>
+                  <span className="w-1.5 h-1.5 rounded-full bg-[oklch(0.72_0.19_160)] ml-auto shrink-0" />
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* ── Exchange Balances ── */}
+        <div className="grid grid-cols-2 gap-2">
+          <div className="glass-card p-3.5 interactive-card">
+            <div className="flex items-center gap-2 mb-1.5">
+              <div className="w-6 h-6 rounded-lg flex items-center justify-center" style={{ background: 'color-mix(in oklch, oklch(0.8 0.18 80) 10%, transparent)' }}>
+                <Wallet className="h-3 w-3" style={{ color: 'oklch(0.8 0.18 80)' }} />
+              </div>
+              <span className="text-[9px] font-bold tracking-wider text-muted-foreground/50 uppercase">Bybit</span>
+            </div>
+            <p className="text-[15px] font-black tabular-nums">{hideBalances ? "••••" : fmtUsd(bybitBal)}</p>
+            <p className="text-[8px] text-muted-foreground/30 tabular-nums mt-0.5">Libre: {hideBalances ? "••" : fmtUsd(bybitAvail)}</p>
+          </div>
+          <div className="glass-card p-3.5 interactive-card">
+            <div className="flex items-center gap-2 mb-1.5">
+              <div className="w-6 h-6 rounded-lg flex items-center justify-center" style={{ background: 'color-mix(in oklch, oklch(0.75 0.14 170) 10%, transparent)' }}>
+                <Wallet className="h-3 w-3" style={{ color: 'oklch(0.75 0.14 170)' }} />
+              </div>
+              <span className="text-[9px] font-bold tracking-wider text-muted-foreground/50 uppercase">KuCoin</span>
+            </div>
+            <p className="text-[15px] font-black tabular-nums">{hideBalances ? "••••" : fmtUsd(kucoinBal)}</p>
+            <p className="text-[8px] text-muted-foreground/30 tabular-nums mt-0.5">Libre: {hideBalances ? "••" : fmtUsd(kucoinAvail)}</p>
           </div>
         </div>
 
-        {/* ── Stats Grid: Win Rate + Trades ── */}
-        <div className="grid grid-cols-2 gap-2.5">
-          <StatMini icon={Trophy} label="Win Rate" value={winRate.toFixed(1) + "%"} sub={`${totalTrades} trades`} color="oklch(0.8 0.15 85)" hideBalances={false} />
-          <StatMini icon={Activity} label="Total Trades" value={String(totalTrades)} sub={`${todayTrades} hoy`} color="oklch(0.65 0.2 300)" hideBalances={false} />
+        {/* ── Stats Row ── */}
+        <div className="grid grid-cols-3 gap-2">
+          <div className="glass-card p-3 text-center interactive-card">
+            <Trophy className="h-4 w-4 mx-auto mb-1 text-[oklch(0.8_0.15_85)]" />
+            <p className="text-[8px] text-muted-foreground/40 font-medium">Win Rate</p>
+            <p className="text-[14px] font-black tabular-nums">{winRate.toFixed(1)}%</p>
+          </div>
+          <div className="glass-card p-3 text-center interactive-card">
+            <Activity className="h-4 w-4 mx-auto mb-1 text-[oklch(0.65_0.2_300)]" />
+            <p className="text-[8px] text-muted-foreground/40 font-medium">Trades</p>
+            <p className="text-[14px] font-black tabular-nums">{totalTrades}</p>
+          </div>
+          <div className="glass-card p-3 text-center interactive-card">
+            <Zap className="h-4 w-4 mx-auto mb-1 text-primary" />
+            <p className="text-[8px] text-muted-foreground/40 font-medium">Hoy</p>
+            <p className="text-[14px] font-black tabular-nums">{todayTrades}</p>
+          </div>
         </div>
 
         {/* ── Open Positions ── */}
         {totalOpenPositions > 0 && (
           <div className="glass-card overflow-hidden">
-            <div className="flex items-center justify-between px-4 py-3 border-b border-border/20">
+            <div className="flex items-center justify-between px-4 py-2.5 border-b border-border/15">
               <div className="flex items-center gap-2">
-                <div className="w-7 h-7 rounded-lg bg-[oklch(0.8_0.15_85)]/10 flex items-center justify-center">
-                  <Flame className="h-3.5 w-3.5 text-[oklch(0.8_0.15_85)]" />
-                </div>
-                <span className="text-xs font-bold">Posiciones Abiertas</span>
+                <Flame className="h-3.5 w-3.5 text-[oklch(0.8_0.15_85)]" />
+                <span className="text-[11px] font-bold">Posiciones Abiertas</span>
               </div>
-              <Badge variant="outline" className="text-[9px] font-bold border-border/40">{totalOpenPositions}</Badge>
+              <Badge variant="outline" className="text-[9px] font-bold border-border/30 h-5">{totalOpenPositions}</Badge>
             </div>
-            <div className="divide-y divide-border/10">
+            <div className="divide-y divide-border/8">
               {[...openPositions.grid, ...openPositions.futures].slice(0, 5).map((p: any, i: number) => (
-                <div key={i} className="flex items-center justify-between px-4 py-3 hover:bg-accent/10 transition-colors active:bg-accent/5">
-                  <div className="flex items-center gap-2.5">
-                    <span className="text-sm font-bold">{p.symbol?.replace('USDT', '')}</span>
-                    <span className="text-[10px] text-muted-foreground/60 tabular-nums">@ ${fmtPrice(p.buyPrice)}</span>
+                <div key={i} className="flex items-center justify-between px-4 py-2.5">
+                  <div className="flex items-center gap-2">
+                    <span className="text-[12px] font-bold">{p.symbol?.replace('USDT', '')}</span>
+                    <span className="text-[9px] text-muted-foreground/40 tabular-nums">@ ${fmtPrice(p.buyPrice)}</span>
                   </div>
-                  <span className={`text-sm font-bold tabular-nums ${p.unrealizedPnl >= 0 ? 'text-[oklch(0.72_0.19_160)]' : 'text-[oklch(0.63_0.24_25)]'}`}>
-                    {hideBalances ? "••" : fmt(p.unrealizedPnl)}
-                  </span>
+                  <span className={`text-[12px] font-bold tabular-nums ${p.unrealizedPnl >= 0 ? 'text-[oklch(0.72_0.19_160)]' : 'text-[oklch(0.63_0.24_25)]'}`}>{hideBalances ? "••" : fmt(p.unrealizedPnl)}</span>
                 </div>
               ))}
-              {totalOpenPositions > 5 && (
-                <div className="px-4 py-2.5 text-center">
-                  <span className="text-[10px] text-muted-foreground/50">+{totalOpenPositions - 5} más</span>
-                </div>
-              )}
+              {totalOpenPositions > 5 && <div className="px-4 py-2 text-center"><span className="text-[9px] text-muted-foreground/30">+{totalOpenPositions - 5} más</span></div>}
             </div>
           </div>
         )}
 
-        {/* ── Advanced PnL Card ── */}
-        {advancedPnlCard}
+        {/* ── Rendimiento Detallado ── */}
+        <div className="glass-card overflow-hidden">
+          <div className="px-4 py-2.5 border-b border-border/15 flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <BarChart3 className="h-3.5 w-3.5 text-primary" />
+              <h3 className="font-bold text-[11px]">Rendimiento</h3>
+            </div>
+            {advancedStats.isFetching && <RefreshCw className="h-3 w-3 text-muted-foreground/30 animate-spin" />}
+          </div>
+          <div className="p-4 space-y-3">
+            {periodPills}
+            {/* Gains / Losses / Net */}
+            <div className="grid grid-cols-3 gap-2">
+              <div className="text-center p-2.5 rounded-xl bg-[oklch(0.72_0.19_160)]/5">
+                <ArrowUp className="h-3 w-3 text-[oklch(0.72_0.19_160)] mx-auto mb-0.5" />
+                <p className="text-[8px] text-muted-foreground/50">Ganancias</p>
+                <p className="text-[12px] font-bold tabular-nums text-[oklch(0.72_0.19_160)]">{hideBalances ? "••" : `+$${(as?.totalGains ?? 0).toFixed(2)}`}</p>
+              </div>
+              <div className="text-center p-2.5 rounded-xl bg-[oklch(0.63_0.24_25)]/5">
+                <ArrowDown className="h-3 w-3 text-[oklch(0.63_0.24_25)] mx-auto mb-0.5" />
+                <p className="text-[8px] text-muted-foreground/50">Pérdidas</p>
+                <p className="text-[12px] font-bold tabular-nums text-[oklch(0.63_0.24_25)]">{hideBalances ? "••" : `-$${(as?.totalLosses ?? 0).toFixed(2)}`}</p>
+              </div>
+              <div className="text-center p-2.5 rounded-xl" style={{ background: (as?.netProfit ?? 0) >= 0 ? 'oklch(0.72 0.19 160 / 8%)' : 'oklch(0.63 0.24 25 / 8%)', border: `1px solid ${(as?.netProfit ?? 0) >= 0 ? 'oklch(0.72 0.19 160 / 12%)' : 'oklch(0.63 0.24 25 / 12%)'}` }}>
+                <DollarSign className={`h-3 w-3 mx-auto mb-0.5 ${(as?.netProfit ?? 0) >= 0 ? 'text-[oklch(0.72_0.19_160)]' : 'text-[oklch(0.63_0.24_25)]'}`} />
+                <p className="text-[8px] text-muted-foreground/50">Neto Real</p>
+                <p className={`text-[12px] font-black tabular-nums ${(as?.netProfit ?? 0) >= 0 ? 'text-[oklch(0.72_0.19_160)]' : 'text-[oklch(0.63_0.24_25)]'}`}>{hideBalances ? "••" : fmt(as?.netProfit ?? 0)}</p>
+              </div>
+            </div>
+            {/* Stats Grid */}
+            <div className="grid grid-cols-4 gap-1.5">
+              {[
+                { label: "Trades", value: String(as?.totalTrades ?? 0) },
+                { label: "Win Rate", value: `${(as?.winRate ?? 0).toFixed(1)}%`, color: "oklch(0.72 0.19 160)" },
+                { label: "Ganados", value: String(as?.winTrades ?? 0), color: "oklch(0.72 0.19 160)" },
+                { label: "Perdidos", value: String(as?.loseTrades ?? 0), color: "oklch(0.63 0.24 25)" },
+              ].map(s => (
+                <div key={s.label} className="text-center py-1.5 px-1 rounded-lg bg-[oklch(0.11_0.005_260)]">
+                  <p className="text-[8px] text-muted-foreground/40">{s.label}</p>
+                  <p className="text-[11px] font-bold tabular-nums" style={s.color ? { color: s.color } : undefined}>{s.value}</p>
+                </div>
+              ))}
+            </div>
+            {/* Advanced Metrics */}
+            <div className="grid grid-cols-3 gap-1.5">
+              {[
+                { label: "Profit Factor", value: (as?.profitFactor ?? 0) > 100 ? "∞" : (as?.profitFactor ?? 0).toFixed(2), color: (as?.profitFactor ?? 0) >= 1.5 ? "oklch(0.72 0.19 160)" : "oklch(0.8 0.15 85)" },
+                { label: "Avg Win", value: hideBalances ? "••" : `+$${(as?.avgWin ?? 0).toFixed(2)}`, color: "oklch(0.72 0.19 160)" },
+                { label: "Avg Loss", value: hideBalances ? "••" : `-$${(as?.avgLoss ?? 0).toFixed(2)}`, color: "oklch(0.63 0.24 25)" },
+                { label: "Mejor Trade", value: hideBalances ? "••" : fmt(as?.bestTrade ?? 0), color: "oklch(0.72 0.19 160)" },
+                { label: "Peor Trade", value: hideBalances ? "••" : fmt(as?.worstTrade ?? 0), color: "oklch(0.63 0.24 25)" },
+                { label: "Prom. Diario", value: hideBalances ? "••" : fmt(as?.avgDaily ?? 0), color: (as?.avgDaily ?? 0) >= 0 ? "oklch(0.72 0.19 160)" : "oklch(0.63 0.24 25)" },
+              ].map(m => (
+                <div key={m.label} className="flex items-center justify-between py-1.5 px-2 rounded-lg bg-[oklch(0.11_0.005_260)]">
+                  <span className="text-[8px] text-muted-foreground/40 font-medium">{m.label}</span>
+                  <span className="text-[10px] font-bold tabular-nums" style={{ color: m.color }}>{m.value}</span>
+                </div>
+              ))}
+            </div>
+            {/* Best/Worst Day */}
+            <div className="grid grid-cols-2 gap-1.5">
+              <div className="flex items-center justify-between py-1.5 px-2 rounded-lg bg-[oklch(0.11_0.005_260)]">
+                <span className="text-[9px] text-muted-foreground/40">Mejor Día</span>
+                <span className="text-[10px] font-bold tabular-nums text-[oklch(0.72_0.19_160)]">{hideBalances ? "••" : fmt(as?.bestDay ?? 0)}</span>
+              </div>
+              <div className="flex items-center justify-between py-1.5 px-2 rounded-lg bg-[oklch(0.11_0.005_260)]">
+                <span className="text-[9px] text-muted-foreground/40">Peor Día</span>
+                <span className="text-[10px] font-bold tabular-nums text-[oklch(0.63_0.24_25)]">{hideBalances ? "••" : fmt(as?.worstDay ?? 0)}</span>
+              </div>
+            </div>
+          </div>
+        </div>
 
         {/* ── Strategy Breakdown ── */}
-        {strategyCard}
+        {Object.keys(stratBreakdown).length > 0 && (
+          <div className="glass-card overflow-hidden">
+            <div className="px-4 py-2.5 border-b border-border/15 flex items-center gap-2">
+              <Layers className="h-3.5 w-3.5 text-[oklch(0.65_0.2_300)]" />
+              <h3 className="font-bold text-[11px]">PnL por Estrategia</h3>
+            </div>
+            <div className="p-4">
+              {pieData.length > 0 && (
+                <div className="flex items-center gap-4 mb-3">
+                  <div className="w-20 h-20 shrink-0">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <RPieChart><Pie data={pieData} dataKey="value" cx="50%" cy="50%" innerRadius={22} outerRadius={36} paddingAngle={3} strokeWidth={0}>{pieData.map((entry, idx) => <Cell key={idx} fill={entry.color} />)}</Pie></RPieChart>
+                    </ResponsiveContainer>
+                  </div>
+                  <div className="flex-1 space-y-1.5">
+                    {pieData.map(d => (
+                      <div key={d.name} className="flex items-center justify-between">
+                        <div className="flex items-center gap-1.5"><div className="w-2 h-2 rounded-full" style={{ background: d.color }} /><span className="text-[10px] font-medium text-muted-foreground/60">{d.name}</span></div>
+                        <span className={`text-[10px] font-bold tabular-nums ${d.pnl >= 0 ? "text-[oklch(0.72_0.19_160)]" : "text-[oklch(0.63_0.24_25)]"}`}>{hideBalances ? "••" : fmt(d.pnl)}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {Object.entries(stratBreakdown).map(([key, v]) => {
+                const color = strategyColors[key] || strategyColors.unknown;
+                const label = strategyLabels[key] || key;
+                const wr = (v.wins + v.losses) > 0 ? ((v.wins / (v.wins + v.losses)) * 100).toFixed(0) : "—";
+                return (
+                  <div key={key} className="flex items-center justify-between py-2 border-b border-border/8 last:border-0">
+                    <div className="flex items-center gap-2"><div className="w-1.5 h-7 rounded-full" style={{ background: color }} /><div><span className="text-[11px] font-bold">{label}</span><div className="flex gap-2 mt-0.5"><span className="text-[8px] text-muted-foreground/40">{v.trades} ops</span><span className="text-[8px] text-muted-foreground/40">{wr}% WR</span></div></div></div>
+                    <div className="text-right"><span className={`text-[11px] font-bold tabular-nums ${v.pnl >= 0 ? "text-[oklch(0.72_0.19_160)]" : "text-[oklch(0.63_0.24_25)]"}`}>{hideBalances ? "••" : fmt(v.pnl)}</span><div className="flex gap-1 justify-end mt-0.5"><span className="text-[8px] text-[oklch(0.72_0.19_160)]">{v.wins}W</span><span className="text-[8px] text-muted-foreground/20">/</span><span className="text-[8px] text-[oklch(0.63_0.24_25)]">{v.losses}L</span></div></div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
 
-        {/* ── PnL Chart (period) ── */}
-        {pnlChartCard}
+        {/* ── PnL Curve Chart ── */}
+        {pnlChartData.length > 0 && (
+          <div className="glass-card p-4">
+            <div className="flex items-center gap-2 mb-3">
+              <TrendingUp className="h-3.5 w-3.5 text-primary" />
+              <h3 className="font-bold text-[11px]">Curva PnL ({periodLabels[selectedPeriod]})</h3>
+            </div>
+            <ResponsiveContainer width="100%" height={130}>
+              <AreaChart data={pnlChartData} margin={{ top: 4, right: 4, left: -24, bottom: 0 }}>
+                <defs><linearGradient id="pnlGM" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="oklch(0.72 0.19 160)" stopOpacity={0.3} /><stop offset="95%" stopColor="oklch(0.72 0.19 160)" stopOpacity={0} /></linearGradient></defs>
+                <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.03)" />
+                <XAxis dataKey="date" tick={{ fontSize: 8, fill: 'rgba(255,255,255,0.2)' }} tickFormatter={(v) => v?.slice(5)} axisLine={false} tickLine={false} />
+                <YAxis tick={{ fontSize: 8, fill: 'rgba(255,255,255,0.2)' }} axisLine={false} tickLine={false} />
+                <Tooltip contentStyle={{ background: 'oklch(0.14 0.005 260)', border: '1px solid oklch(1 0 0 / 10%)', borderRadius: 12, fontSize: 10, padding: '6px 10px' }} formatter={(v: any) => [fmt(parseFloat(v)), 'PnL']} />
+                <Area type="monotone" dataKey="pnl" stroke="oklch(0.72 0.19 160)" fill="url(#pnlGM)" strokeWidth={2} dot={false} />
+              </AreaChart>
+            </ResponsiveContainer>
+          </div>
+        )}
 
         {/* ── Bar Chart by Symbol ── */}
-        {barChartCard}
+        {barData.length > 0 && (
+          <div className="glass-card p-4">
+            <div className="flex items-center gap-2 mb-3">
+              <BarChart3 className="h-3.5 w-3.5 text-primary" />
+              <h3 className="font-bold text-[11px]">PnL por Par</h3>
+            </div>
+            <ResponsiveContainer width="100%" height={130}>
+              <BarChart data={barData} margin={{ top: 4, right: 4, left: -24, bottom: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.03)" />
+                <XAxis dataKey="pair" tick={{ fontSize: 8, fill: 'rgba(255,255,255,0.3)' }} axisLine={false} />
+                <YAxis tick={{ fontSize: 8, fill: 'rgba(255,255,255,0.3)' }} axisLine={false} />
+                <Tooltip contentStyle={{ background: 'oklch(0.14 0.005 260)', border: '1px solid oklch(1 0 0 / 10%)', borderRadius: 12, fontSize: 10 }} formatter={(v: any) => [fmt(parseFloat(v)), 'PnL']} />
+                <Bar dataKey="pnl" radius={[4, 4, 0, 0]}>{barData.map((entry: any, idx: number) => <Cell key={idx} fill={entry.pnl >= 0 ? "oklch(0.72 0.19 160)" : "oklch(0.63 0.24 25)"} />)}</Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        )}
 
         {/* ── Top Symbols ── */}
-        {topSymbolsCard}
+        {topSymbols.length > 0 && (
+          <div className="glass-card overflow-hidden">
+            <div className="px-4 py-2.5 border-b border-border/15 flex items-center gap-2">
+              <Award className="h-3.5 w-3.5 text-[oklch(0.8_0.15_85)]" />
+              <h3 className="font-bold text-[11px]">Top Pares ({periodLabels[selectedPeriod]})</h3>
+            </div>
+            <div className="px-4 py-1">
+              {topSymbols.slice(0, 6).map((s: any) => (
+                <div key={s.symbol} className="flex items-center justify-between py-2 border-b border-border/8 last:border-0">
+                  <div className="flex items-center gap-2"><span className="text-[11px] font-bold">{s.symbol.replace("USDT", "")}</span><span className="text-[8px] text-muted-foreground/30">{s.trades} ops</span></div>
+                  <span className={`text-[11px] font-bold tabular-nums ${s.pnl >= 0 ? "text-[oklch(0.72_0.19_160)]" : "text-[oklch(0.63_0.24_25)]"}`}>{hideBalances ? "••" : fmt(s.pnl)}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* ── Recent Trades ── */}
         <div className="glass-card overflow-hidden">
-          <div className="flex items-center justify-between px-4 py-3 border-b border-border/20">
-            <div className="flex items-center gap-2">
-              <div className="w-7 h-7 rounded-lg bg-primary/10 flex items-center justify-center">
-                <Zap className="h-3.5 w-3.5 text-primary" />
-              </div>
-              <h3 className="font-bold text-xs">Últimas Operaciones</h3>
-            </div>
-            {tradesQuery.data && tradesQuery.data.length > 0 && (
-              <span className="text-[10px] text-muted-foreground/40 tabular-nums font-medium">{tradesQuery.data.length} ops</span>
-            )}
+          <div className="flex items-center justify-between px-4 py-2.5 border-b border-border/15">
+            <div className="flex items-center gap-2"><Zap className="h-3.5 w-3.5 text-primary" /><h3 className="font-bold text-[11px]">Últimas Operaciones</h3></div>
+            {tradesQuery.data && tradesQuery.data.length > 0 && <span className="text-[9px] text-muted-foreground/30 tabular-nums">{tradesQuery.data.length} ops</span>}
           </div>
-          <div className="divide-y divide-border/10">
+          <div className="divide-y divide-border/8">
             {(!tradesQuery.data || tradesQuery.data.length === 0) ? (
-              <div className="flex flex-col items-center justify-center py-10 text-muted-foreground">
-                <Activity className="h-10 w-10 opacity-10 mb-3" />
-                <span className="text-xs font-medium">Sin operaciones aún</span>
-                <span className="text-[10px] text-muted-foreground/50 mt-1">Las operaciones aparecerán aquí</span>
-              </div>
-            ) : (
-              tradesQuery.data.slice(0, 8).map((t: any) => {
-                const pnl = parseFloat(String(t.pnl ?? "0"));
-                const date = t.createdAt ? new Date(t.createdAt) : null;
-                return (
-                  <div key={t.id} className="flex items-center justify-between px-4 py-3 hover:bg-accent/10 transition-colors">
-                    <div className="flex items-center gap-3">
-                      <div className={`w-1 h-8 rounded-full ${t.side === "buy" ? "bg-primary" : pnl >= 0 ? "bg-[oklch(0.72_0.19_160)]" : "bg-[oklch(0.63_0.24_25)]"}`} />
-                      <div>
-                        <div className="flex items-center gap-2">
-                          <span className="text-sm font-bold">{t.symbol?.replace("USDT", "")}</span>
-                          <Badge variant={t.side === "buy" ? "default" : "destructive"} className="text-[8px] px-1.5 py-0 h-4 font-bold">{t.side === "buy" ? "C" : "V"}</Badge>
-                          {t.strategy && <span className="text-[8px] text-muted-foreground/50 capitalize font-medium">{t.strategy}</span>}
-                        </div>
-                        <div className="flex items-center gap-2 mt-0.5">
-                          <span className="text-[10px] text-muted-foreground/60 tabular-nums">${fmtPrice(parseFloat(String(t.price ?? "0")))}</span>
-                          {date && <span className="text-[9px] text-muted-foreground/40">{date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>}
-                        </div>
-                      </div>
+              <div className="flex flex-col items-center justify-center py-8 text-muted-foreground"><Activity className="h-8 w-8 opacity-10 mb-2" /><span className="text-[10px]">Sin operaciones aún</span></div>
+            ) : tradesQuery.data.slice(0, 8).map((t: any) => {
+              const pnl = parseFloat(String(t.pnl ?? "0")); const date = t.createdAt ? new Date(t.createdAt) : null;
+              return (
+                <div key={t.id} className="flex items-center justify-between px-4 py-2.5">
+                  <div className="flex items-center gap-2.5">
+                    <div className={`w-1 h-7 rounded-full ${t.side === "buy" ? "bg-primary" : pnl >= 0 ? "bg-[oklch(0.72_0.19_160)]" : "bg-[oklch(0.63_0.24_25)]"}`} />
+                    <div>
+                      <div className="flex items-center gap-1.5"><span className="text-[11px] font-bold">{t.symbol?.replace("USDT", "")}</span><Badge variant={t.side === "buy" ? "default" : "destructive"} className="text-[7px] px-1 py-0 h-3.5 font-bold">{t.side === "buy" ? "C" : "V"}</Badge>{t.strategy && <span className="text-[7px] text-muted-foreground/30 capitalize">{t.strategy}</span>}</div>
+                      <div className="flex items-center gap-1.5 mt-0.5"><span className="text-[9px] text-muted-foreground/40 tabular-nums">${fmtPrice(parseFloat(String(t.price ?? "0")))}</span>{date && <span className="text-[8px] text-muted-foreground/25">{date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>}</div>
                     </div>
-                    <span className={`text-sm font-bold tabular-nums ${pnl > 0 ? "text-[oklch(0.72_0.19_160)]" : pnl < 0 ? "text-[oklch(0.63_0.24_25)]" : "text-muted-foreground/50"}`}>
-                      {hideBalances ? "••" : fmt(pnl)}
-                    </span>
                   </div>
-                );
-              })
-            )}
+                  <span className={`text-[11px] font-bold tabular-nums ${pnl > 0 ? "text-[oklch(0.72_0.19_160)]" : pnl < 0 ? "text-[oklch(0.63_0.24_25)]" : "text-muted-foreground/30"}`}>{hideBalances ? "••" : fmt(pnl)}</span>
+                </div>
+              );
+            })}
           </div>
         </div>
 
         {/* ── Risk Management ── */}
         <div className="glass-card p-4">
-          <div className="flex items-center justify-between mb-4">
-            <div className="flex items-center gap-2">
-              <div className="w-7 h-7 rounded-lg bg-[oklch(0.8_0.15_85)]/10 flex items-center justify-center">
-                <Shield className="h-3.5 w-3.5 text-[oklch(0.8_0.15_85)]" />
-              </div>
-              <h3 className="font-bold text-xs">Gestión de Riesgo</h3>
-            </div>
-            <Badge variant="outline" className={`text-[9px] font-bold ${dailyLoss > 200 ? "border-destructive/40 text-destructive bg-destructive/5" : "border-primary/20 text-primary bg-primary/5"}`}>
-              {dailyLoss > 200 ? "ALTO" : "OK"}
-            </Badge>
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-2"><Shield className="h-3.5 w-3.5 text-[oklch(0.8_0.15_85)]" /><h3 className="font-bold text-[11px]">Gestión de Riesgo</h3></div>
+            <Badge variant="outline" className={`text-[8px] font-bold ${dailyLoss > 200 ? "border-destructive/40 text-destructive bg-destructive/5" : "border-primary/20 text-primary bg-primary/5"}`}>{dailyLoss > 200 ? "ALTO" : "OK"}</Badge>
           </div>
-          <div className="space-y-4">
+          <div className="space-y-3">
             <div>
-              <div className="flex justify-between text-[10px] mb-2">
-                <span className="text-muted-foreground/70 font-medium">Max Drawdown</span>
-                <span className="tabular-nums font-bold">{hideBalances ? "••" : `${(maxDrawdown * 100).toFixed(2)}%`} / 10%</span>
-              </div>
-              <div className="h-2 bg-[oklch(0.14_0.005_260)] rounded-full overflow-hidden">
-                <div className="h-full bg-gradient-to-r from-primary to-[oklch(0.75_0.14_200)] rounded-full transition-all duration-700" style={{ width: `${Math.min((maxDrawdown * 100) / 10 * 100, 100)}%` }} />
-              </div>
+              <div className="flex justify-between text-[9px] mb-1.5"><span className="text-muted-foreground/50">Max Drawdown</span><span className="tabular-nums font-bold">{hideBalances ? "••" : `${(maxDrawdown * 100).toFixed(2)}%`} / 10%</span></div>
+              <div className="h-1.5 bg-[oklch(0.11_0.005_260)] rounded-full overflow-hidden"><div className="h-full bg-gradient-to-r from-primary to-[oklch(0.75_0.14_200)] rounded-full transition-all duration-700" style={{ width: `${Math.min((maxDrawdown * 100) / 10 * 100, 100)}%` }} /></div>
             </div>
             <div>
-              <div className="flex justify-between text-[10px] mb-2">
-                <span className="text-muted-foreground/70 font-medium">Pérdida Diaria</span>
-                <span className="tabular-nums font-bold">{hideBalances ? "••" : fmtUsd(Math.abs(dailyLoss))} / $250</span>
-              </div>
-              <div className="h-2 bg-[oklch(0.14_0.005_260)] rounded-full overflow-hidden">
-                <div className="h-full bg-gradient-to-r from-[oklch(0.8_0.15_85)] to-destructive rounded-full transition-all duration-700" style={{ width: `${Math.min((Math.abs(dailyLoss) / 250) * 100, 100)}%` }} />
-              </div>
+              <div className="flex justify-between text-[9px] mb-1.5"><span className="text-muted-foreground/50">Pérdida Diaria</span><span className="tabular-nums font-bold">{hideBalances ? "••" : fmtUsd(Math.abs(dailyLoss))} / $250</span></div>
+              <div className="h-1.5 bg-[oklch(0.11_0.005_260)] rounded-full overflow-hidden"><div className="h-full bg-gradient-to-r from-[oklch(0.8_0.15_85)] to-destructive rounded-full transition-all duration-700" style={{ width: `${Math.min((Math.abs(dailyLoss) / 250) * 100, 100)}%` }} /></div>
             </div>
           </div>
         </div>
 
         {/* ── Footer ── */}
-        <div className="rounded-xl px-4 py-2.5" style={{ background: 'oklch(0.13 0.004 260 / 60%)' }}>
-          <div className="flex items-center justify-center gap-3 text-[10px] text-muted-foreground/40">
-            <span className="flex items-center gap-1.5">{isRunning ? <span className="w-1.5 h-1.5 rounded-full bg-primary pulse-live" /> : <WifiOff className="h-3 w-3" />} {isRunning ? "Conectado" : "Desconectado"}</span>
-            <span className="text-border/20">·</span>
+        <div className="rounded-xl px-3 py-2" style={{ background: 'oklch(0.11 0.004 260 / 50%)' }}>
+          <div className="flex items-center justify-center gap-2.5 text-[9px] text-muted-foreground/30">
+            <span className="flex items-center gap-1">{isRunning ? <span className="w-1.5 h-1.5 rounded-full bg-primary pulse-live" /> : <WifiOff className="h-2.5 w-2.5" />} {isRunning ? "Conectado" : "Desconectado"}</span>
+            <span className="text-border/15">·</span>
             <span className="tabular-nums">Ciclos: {data?.cycles ?? 0}</span>
-            <span className="text-border/20">·</span>
+            <span className="text-border/15">·</span>
             <span className="tabular-nums">{currentTime.toLocaleTimeString()}</span>
           </div>
         </div>
@@ -898,19 +715,10 @@ export default function Home() {
         <div>
           <div className="flex items-center gap-4">
             <h1 className="text-2xl font-extrabold tracking-tight">Panel</h1>
-            <div className="flex gap-1 bg-[oklch(0.15_0.005_260)] rounded-xl p-1 border border-border/30">
+            <div className="flex gap-0.5 bg-[oklch(0.13_0.005_260)] rounded-xl p-0.5 border border-border/20">
               {["bybit", "kucoin", "both"].map(ex => (
-                <button
-                  key={ex}
-                  onClick={() => handleExchangeChange(ex)}
-                  className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all duration-300 ${
-                    selectedExchange === ex
-                      ? "bg-primary/20 text-primary shadow-sm shadow-primary/10"
-                      : "text-muted-foreground hover:text-foreground hover:bg-accent/30"
-                  }`}
-                >
-                  {exchangeLabel(ex)}
-                </button>
+                <button key={ex} onClick={() => handleExchangeChange(ex)}
+                  className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all duration-300 ${selectedExchange === ex ? "bg-primary/20 text-primary shadow-sm" : "text-muted-foreground/60 hover:text-foreground"}`}>{exchangeLabel(ex)}</button>
               ))}
             </div>
           </div>
@@ -923,313 +731,179 @@ export default function Home() {
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <button onClick={() => setHideBalances(!hideBalances)} className="h-9 w-9 flex items-center justify-center rounded-xl hover:bg-accent/50 transition-all">
-            {hideBalances ? <EyeOff className="h-4 w-4 text-muted-foreground" /> : <Eye className="h-4 w-4 text-muted-foreground" />}
-          </button>
-          <button onClick={handleRefresh} className="h-9 w-9 flex items-center justify-center rounded-xl hover:bg-accent/50 transition-all">
-            <RefreshCw className={`h-4 w-4 text-muted-foreground ${isRefreshing ? "animate-spin" : ""}`} />
-          </button>
-          <Popover open={bellOpen} onOpenChange={(open) => { setBellOpen(open); if (open && unread > 0) markRead.mutate(); }}>
-            <PopoverTrigger asChild>
-              <Button variant="ghost" size="icon" className="relative">
-                <Bell className="h-5 w-5" />
-                {unread > 0 && (
-                  <span className="absolute -top-1 -right-1 h-5 min-w-5 px-1 rounded-full bg-destructive text-[10px] font-bold flex items-center justify-center text-white">{unread > 9 ? "9+" : unread}</span>
-                )}
-              </Button>
-            </PopoverTrigger>
-            <PopoverContent className="w-80 p-0 glass-card-elevated" align="end">
-              <div className="p-3 border-b border-border/30"><h4 className="font-semibold text-sm">Notificaciones</h4></div>
-              <div className="max-h-64 overflow-y-auto">
-                {notifications.length === 0 ? (
-                  <p className="text-sm text-muted-foreground p-4 text-center">Sin notificaciones</p>
-                ) : notifications.map((n: any) => (
-                  <div key={n.id} className="p-3 border-b border-border/20 last:border-0 hover:bg-accent/20 transition-colors">
-                    <div className="flex items-center justify-between">
-                      <span className="font-medium text-sm">{n.symbol}</span>
-                      <Badge variant={String(n.signal).includes("BUY") ? "default" : "destructive"} className="text-[10px]">{String(n.signal).includes("BUY") ? "COMPRA" : "VENTA"}</Badge>
-                    </div>
-                    <p className="text-xs text-muted-foreground mt-1">Confianza: {n.confidence}%</p>
-                  </div>
-                ))}
-              </div>
-            </PopoverContent>
-          </Popover>
+          <button onClick={() => setHideBalances(!hideBalances)} className="h-9 w-9 flex items-center justify-center rounded-xl hover:bg-accent/50 transition-all">{hideBalances ? <EyeOff className="h-4 w-4 text-muted-foreground" /> : <Eye className="h-4 w-4 text-muted-foreground" />}</button>
+          <button onClick={handleRefresh} className="h-9 w-9 flex items-center justify-center rounded-xl hover:bg-accent/50 transition-all"><RefreshCw className={`h-4 w-4 text-muted-foreground ${isRefreshing ? "animate-spin" : ""}`} /></button>
+          {notifPopover}
           {!isRunning ? (
-            <Button onClick={() => startBot.mutate()} className="gap-2 font-bold shadow-lg shadow-primary/15" disabled={startBot.isPending}>
-              <Play className="h-4 w-4" /> Iniciar
-            </Button>
+            <Button onClick={() => startBot.mutate()} className="gap-2 font-bold shadow-lg shadow-primary/15" disabled={startBot.isPending}><Play className="h-4 w-4" /> Iniciar</Button>
           ) : (
-            <>
-              <Button onClick={() => stopBot.mutate()} variant="secondary" className="gap-2 font-semibold" disabled={stopBot.isPending}><Square className="h-4 w-4" /> Detener</Button>
-              <Button onClick={() => emergencyStop.mutate()} variant="destructive" className="gap-2 font-semibold" disabled={emergencyStop.isPending}><AlertTriangle className="h-4 w-4" /> Emergencia</Button>
-            </>
+            <><Button onClick={() => stopBot.mutate()} variant="secondary" className="gap-2 font-semibold" disabled={stopBot.isPending}><Square className="h-4 w-4" /> Detener</Button>
+            <Button onClick={() => emergencyStop.mutate()} variant="destructive" className="gap-2 font-semibold" disabled={emergencyStop.isPending}><AlertTriangle className="h-4 w-4" /> Emergencia</Button></>
           )}
         </div>
       </div>
 
-      {/* Desktop Price Ticker */}
+      {/* Price Ticker */}
       <div className="grid grid-cols-4 gap-3">
         {tickerPairs.map(({ symbol, label, icon, color }) => {
-          const p = (livePrices as any)[symbol];
-          const price = p?.lastPrice ?? 0;
-          const change = p?.price24hPcnt ? p.price24hPcnt * 100 : 0;
-          const isUp = change >= 0;
+          const p = (livePrices as any)[symbol]; const price = p?.lastPrice ?? 0; const change = p?.price24hPcnt ? p.price24hPcnt * 100 : 0; const isUp = change >= 0;
           return (
-            <div key={symbol} className="glass-card p-4 flex items-center justify-between group hover:border-primary/15 transition-all interactive-card">
-              <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-xl flex items-center justify-center text-sm font-black" style={{ background: `color-mix(in oklch, ${color} 12%, transparent)`, color }}>{icon}</div>
-                <div>
-                  <p className="text-xs text-muted-foreground font-medium">{label}/USDT</p>
-                  <p className="text-lg font-bold tabular-nums">{price > 0 ? "$" + fmtPrice(price) : "—"}</p>
-                </div>
-              </div>
-              {price > 0 && (
-                <span className={`text-sm font-bold flex items-center gap-0.5 px-2 py-1 rounded-lg ${isUp ? "text-[oklch(0.72_0.19_160)] bg-[oklch(0.72_0.19_160)]/10" : "text-[oklch(0.63_0.24_25)] bg-[oklch(0.63_0.24_25)]/10"}`}>
-                  {isUp ? <ArrowUpRight className="h-4 w-4" /> : <ArrowDownRight className="h-4 w-4" />}{fmtPct(change)}
-                </span>
-              )}
+            <div key={symbol} className="glass-card p-4 flex items-center justify-between interactive-card">
+              <div className="flex items-center gap-3"><div className="w-10 h-10 rounded-xl flex items-center justify-center text-sm font-black" style={{ background: `color-mix(in oklch, ${color} 12%, transparent)`, color }}>{icon}</div><div><p className="text-xs text-muted-foreground/60 font-medium">{label}/USDT</p><p className="text-lg font-bold tabular-nums">{price > 0 ? "$" + fmtPrice(price) : "—"}</p></div></div>
+              {price > 0 && <span className={`text-sm font-bold flex items-center gap-0.5 px-2 py-1 rounded-lg ${isUp ? "text-[oklch(0.72_0.19_160)] bg-[oklch(0.72_0.19_160)]/10" : "text-[oklch(0.63_0.24_25)] bg-[oklch(0.63_0.24_25)]/10"}`}>{isUp ? <ArrowUpRight className="h-4 w-4" /> : <ArrowDownRight className="h-4 w-4" />}{fmtPct(change)}</span>}
             </div>
           );
         })}
       </div>
 
-      {/* Desktop Main Content — Balance + Stats */}
+      {/* Balance + Stats + USDT/AI */}
       <div className="grid grid-cols-3 gap-4">
-        {/* Balance Card */}
-        <div className="col-span-2 relative overflow-hidden rounded-2xl shimmer-bg" style={{ background: 'linear-gradient(145deg, oklch(0.17 0.025 160) 0%, oklch(0.14 0.012 180) 40%, oklch(0.13 0.006 240) 100%)', border: '1px solid oklch(0.72 0.19 160 / 12%)' }}>
-          <div className="absolute top-0 right-0 w-56 h-56 bg-primary/6 rounded-full blur-[80px] -translate-y-16 translate-x-16" />
-          <div className="absolute bottom-0 left-0 w-32 h-32 bg-[oklch(0.75_0.14_200)]/5 rounded-full blur-[50px] translate-y-8 -translate-x-8" />
+        <div className="col-span-2 relative overflow-hidden rounded-2xl" style={{ background: 'linear-gradient(145deg, oklch(0.16 0.03 160) 0%, oklch(0.13 0.015 200) 50%, oklch(0.12 0.008 260) 100%)', border: '1px solid oklch(0.72 0.19 160 / 10%)' }}>
+          <div className="absolute top-0 right-0 w-56 h-56 bg-primary/5 rounded-full blur-[80px] -translate-y-16 translate-x-16" />
           <div className="relative p-7">
-            <div className="flex items-center justify-between mb-2">
-              <p className="text-[10px] font-bold tracking-[0.2em] text-muted-foreground/70 uppercase">Balance Total</p>
-              <span className={`text-[11px] font-bold px-2.5 py-1 rounded-lg ${realProfitPct >= 0 ? 'bg-primary/15 text-primary border border-primary/20' : 'bg-destructive/15 text-destructive border border-destructive/20'}`}>{fmtPct(realProfitPct)}</span>
-            </div>
-            <p className="text-5xl font-black tracking-tight tabular-nums leading-none text-foreground">{hideBalances ? "••••••••" : fmtUsd(totalBalance)}</p>
-            <div className="flex items-center gap-2 mt-1.5">
-              <p className="text-xs text-muted-foreground/50 tabular-nums">Invertido: {hideBalances ? "•••" : fmtUsd(initialDeposit)}</p>
-              <button onClick={() => { setEditDepositValue(initialDeposit.toFixed(2)); setEditDepositOpen(true); }} className="text-muted-foreground/40 hover:text-primary transition-colors"><Pencil className="h-3 w-3" /></button>
-            </div>
-            <div className="mt-5 pt-4 border-t border-white/[0.06]">
-              <div className="flex items-center justify-between mb-4">
-                <span className="text-[10px] font-bold tracking-[0.15em] text-muted-foreground/60 uppercase">Ganancia Real</span>
-                <span className={`text-xl font-black tabular-nums ${pnlColor}`}>{hideBalances ? "••••" : fmt(realProfit)}</span>
-              </div>
+            <div className="flex items-center justify-between mb-2"><p className="text-[10px] font-bold tracking-[0.2em] text-muted-foreground/60 uppercase">Balance Total</p><span className={`text-[11px] font-bold px-2.5 py-1 rounded-lg ${realProfitPct >= 0 ? 'bg-primary/15 text-primary border border-primary/20' : 'bg-destructive/15 text-destructive border border-destructive/20'}`}>{fmtPct(realProfitPct)}</span></div>
+            <p className="text-5xl font-black tracking-tight tabular-nums leading-none">{hideBalances ? "••••••••" : fmtUsd(totalBalance)}</p>
+            <div className="flex items-center gap-2 mt-1.5"><p className="text-xs text-muted-foreground/40 tabular-nums">Invertido: {hideBalances ? "•••" : fmtUsd(initialDeposit)}</p><button onClick={() => { setEditDepositValue(initialDeposit.toFixed(2)); setEditDepositOpen(true); }} className="text-muted-foreground/30 hover:text-primary transition-colors"><Pencil className="h-3 w-3" /></button></div>
+            <div className="mt-5 pt-4 border-t border-white/[0.05]">
+              <div className="flex items-center justify-between mb-4"><span className="text-[10px] font-bold tracking-[0.15em] text-muted-foreground/50 uppercase">Ganancia Real</span><span className={`text-xl font-black tabular-nums ${pnlColor}`}>{hideBalances ? "••••" : fmt(realProfit)}</span></div>
               <div className="grid grid-cols-3 gap-4">
-                <div>
-                  <span className="text-[10px] text-muted-foreground/60 block font-medium">Hoy ({todayTrades})</span>
-                  <span className={`text-base font-bold tabular-nums ${todayColor}`}>{hideBalances ? "••••" : fmt(todayPnl)}</span>
-                </div>
-                <div>
-                  <span className="text-[10px] text-muted-foreground/60 block font-medium">Abierto ({openPosCount})</span>
-                  <span className={`text-base font-bold tabular-nums ${unrealizedPnl >= 0 ? 'text-[oklch(0.75_0.14_200)]' : 'text-[oklch(0.8_0.15_85)]'}`}>{hideBalances ? "••••" : fmt(unrealizedPnl)}</span>
-                </div>
-                <div>
-                  <span className="text-[10px] text-muted-foreground/60 block font-medium">Futuros PnL</span>
-                  <span className={`text-base font-bold tabular-nums ${bybitUnrealized >= 0 ? 'text-[oklch(0.72_0.19_160)]' : 'text-[oklch(0.63_0.24_25)]'}`}>{hideBalances ? "••••" : fmt(bybitUnrealized)}</span>
-                </div>
+                <div className="bg-white/[0.03] rounded-xl p-3"><span className="text-[10px] text-muted-foreground/50 block font-medium">Hoy ({todayTrades})</span><span className={`text-base font-bold tabular-nums ${todayColor}`}>{hideBalances ? "••••" : fmt(todayPnl)}</span></div>
+                <div className="bg-white/[0.03] rounded-xl p-3"><span className="text-[10px] text-muted-foreground/50 block font-medium">Abierto ({openPosCount})</span><span className={`text-base font-bold tabular-nums ${unrealizedPnl >= 0 ? 'text-[oklch(0.75_0.14_200)]' : 'text-[oklch(0.8_0.15_85)]'}`}>{hideBalances ? "••••" : fmt(unrealizedPnl)}</span></div>
+                <div className="bg-white/[0.03] rounded-xl p-3"><span className="text-[10px] text-muted-foreground/50 block font-medium">Futuros PnL</span><span className={`text-base font-bold tabular-nums ${bybitUnrealized >= 0 ? 'text-[oklch(0.72_0.19_160)]' : 'text-[oklch(0.63_0.24_25)]'}`}>{hideBalances ? "••••" : fmt(bybitUnrealized)}</span></div>
               </div>
             </div>
           </div>
         </div>
 
-        {/* Stats Column */}
+        {/* Right Column: Exchanges + USDT + AI */}
         <div className="space-y-3">
-          <div className="glass-card p-3.5 hover:border-primary/15 transition-all interactive-card">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0" style={{ background: 'color-mix(in oklch, oklch(0.8 0.18 80) 10%, transparent)' }}>
-                <Wallet className="h-4.5 w-4.5" style={{ color: 'oklch(0.8 0.18 80)' }} />
-              </div>
-              <div className="flex-1">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs text-muted-foreground/60 font-medium">Bybit</span>
-                  <span className="text-sm font-bold tabular-nums">{hideBalances ? "••••" : fmtUsd(bybitBal)}</span>
-                </div>
-                <div className="flex items-center justify-between mt-0.5">
-                  <span className="text-[9px] text-muted-foreground/40">Disponible</span>
-                  <span className="text-[10px] text-muted-foreground/50 tabular-nums">{hideBalances ? "••" : fmtUsd(bybitAvail)}</span>
-                </div>
-              </div>
-            </div>
+          <div className="glass-card p-3.5 interactive-card">
+            <div className="flex items-center gap-3"><div className="w-9 h-9 rounded-xl flex items-center justify-center" style={{ background: 'color-mix(in oklch, oklch(0.8 0.18 80) 10%, transparent)' }}><Wallet className="h-4 w-4" style={{ color: 'oklch(0.8 0.18 80)' }} /></div><div className="flex-1"><div className="flex items-center justify-between"><span className="text-xs text-muted-foreground/50">Bybit</span><span className="text-sm font-bold tabular-nums">{hideBalances ? "••••" : fmtUsd(bybitBal)}</span></div><div className="flex items-center justify-between mt-0.5"><span className="text-[9px] text-muted-foreground/30">Libre</span><span className="text-[10px] text-muted-foreground/40 tabular-nums">{hideBalances ? "••" : fmtUsd(bybitAvail)}</span></div></div></div>
           </div>
-          <div className="glass-card p-3.5 hover:border-primary/15 transition-all interactive-card">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0" style={{ background: 'color-mix(in oklch, oklch(0.75 0.14 170) 10%, transparent)' }}>
-                <Wallet className="h-4.5 w-4.5" style={{ color: 'oklch(0.75 0.14 170)' }} />
-              </div>
-              <div className="flex-1">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs text-muted-foreground/60 font-medium">KuCoin</span>
-                  <span className="text-sm font-bold tabular-nums">{hideBalances ? "••••" : fmtUsd(kucoinBal)}</span>
-                </div>
-                <div className="flex items-center justify-between mt-0.5">
-                  <span className="text-[9px] text-muted-foreground/40">Disponible</span>
-                  <span className="text-[10px] text-muted-foreground/50 tabular-nums">{hideBalances ? "••" : fmtUsd(kucoinAvail)}</span>
-                </div>
-              </div>
-            </div>
+          <div className="glass-card p-3.5 interactive-card">
+            <div className="flex items-center gap-3"><div className="w-9 h-9 rounded-xl flex items-center justify-center" style={{ background: 'color-mix(in oklch, oklch(0.75 0.14 170) 10%, transparent)' }}><Wallet className="h-4 w-4" style={{ color: 'oklch(0.75 0.14 170)' }} /></div><div className="flex-1"><div className="flex items-center justify-between"><span className="text-xs text-muted-foreground/50">KuCoin</span><span className="text-sm font-bold tabular-nums">{hideBalances ? "••••" : fmtUsd(kucoinBal)}</span></div><div className="flex items-center justify-between mt-0.5"><span className="text-[9px] text-muted-foreground/30">Libre</span><span className="text-[10px] text-muted-foreground/40 tabular-nums">{hideBalances ? "••" : fmtUsd(kucoinAvail)}</span></div></div></div>
           </div>
-          <div className="glass-card p-3.5 hover:border-primary/15 transition-all interactive-card">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0" style={{ background: 'color-mix(in oklch, oklch(0.8 0.15 85) 10%, transparent)' }}>
-                <Trophy className="h-4.5 w-4.5" style={{ color: 'oklch(0.8 0.15 85)' }} />
-              </div>
-              <div className="flex items-center justify-between flex-1">
-                <span className="text-xs text-muted-foreground/60 font-medium">Win Rate</span>
-                <span className="text-sm font-bold tabular-nums">{winRate.toFixed(1)}%</span>
-              </div>
-            </div>
+          {/* USDT Liquidity */}
+          <div className={`glass-card p-3.5 interactive-card border ${usdtHealthy ? 'border-[oklch(0.72_0.19_160)]/10' : 'border-[oklch(0.8_0.15_85)]/15'}`}>
+            <div className="flex items-center gap-3"><div className={`w-9 h-9 rounded-xl flex items-center justify-center ${usdtHealthy ? 'bg-[oklch(0.72_0.19_160)]/10' : 'bg-[oklch(0.8_0.15_85)]/10'}`}><CircleDollarSign className={`h-4 w-4 ${usdtHealthy ? 'text-[oklch(0.72_0.19_160)]' : 'text-[oklch(0.8_0.15_85)]'}`} /></div><div className="flex-1"><div className="flex items-center justify-between"><span className="text-xs text-muted-foreground/50">USDT Libre</span><span className="text-sm font-bold tabular-nums">{hideBalances ? "••••" : fmtUsd(totalUsdt)}</span></div><div className="flex items-center gap-1.5 mt-1"><div className="flex-1 h-1.5 bg-[oklch(0.11_0.005_260)] rounded-full overflow-hidden"><div className={`h-full rounded-full transition-all duration-700 ${usdtHealthy ? 'bg-[oklch(0.72_0.19_160)]' : 'bg-[oklch(0.8_0.15_85)]'}`} style={{ width: `${Math.min(usdtPct, 100)}%` }} /></div><span className={`text-[9px] font-bold tabular-nums ${usdtHealthy ? 'text-[oklch(0.72_0.19_160)]' : 'text-[oklch(0.8_0.15_85)]'}`}>{usdtPct.toFixed(0)}%</span></div></div></div>
           </div>
-          <div className="glass-card p-3.5 hover:border-primary/15 transition-all interactive-card">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0" style={{ background: 'color-mix(in oklch, oklch(0.65 0.2 300) 10%, transparent)' }}>
-                <Activity className="h-4.5 w-4.5" style={{ color: 'oklch(0.65 0.2 300)' }} />
-              </div>
-              <div className="flex items-center justify-between flex-1">
-                <span className="text-xs text-muted-foreground/60 font-medium">Trades</span>
-                <div className="text-right">
-                  <span className="text-sm font-bold tabular-nums">{totalTrades}</span>
-                  <span className="text-[9px] text-muted-foreground/40 block">{todayTrades} hoy</span>
-                </div>
-              </div>
-            </div>
-          </div>
+          {/* AI Status */}
+          <button onClick={() => setShowAiModules(!showAiModules)} className="glass-card p-3.5 interactive-card w-full text-left border border-[oklch(0.65_0.2_300)]/10">
+            <div className="flex items-center gap-3"><div className="w-9 h-9 rounded-xl bg-[oklch(0.65_0.2_300)]/10 flex items-center justify-center"><Brain className="h-4 w-4 text-[oklch(0.65_0.2_300)]" /></div><div className="flex-1"><div className="flex items-center justify-between"><span className="text-xs text-muted-foreground/50">IA Activa</span><div className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-[oklch(0.72_0.19_160)] pulse-live" /><span className="text-[10px] text-[oklch(0.72_0.19_160)] font-bold">55+ módulos</span></div></div></div></div>
+          </button>
         </div>
       </div>
 
-      {/* Desktop — Advanced PnL + Strategy Breakdown */}
+      {/* AI Modules Expandable */}
+      {showAiModules && (
+        <div className="glass-card p-4 animate-in slide-in-from-top-2 duration-300">
+          <div className="grid grid-cols-4 gap-2">
+            {aiModules.map(m => (
+              <div key={m.name} className="flex items-center gap-2 py-2 px-3 rounded-lg bg-[oklch(0.12_0.005_260)]">
+                <m.icon className="h-3.5 w-3.5 text-primary/70 shrink-0" /><span className="text-[10px] font-medium text-muted-foreground/60 truncate">{m.name}</span><span className="w-1.5 h-1.5 rounded-full bg-[oklch(0.72_0.19_160)] ml-auto shrink-0" />
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Desktop Stats Row */}
+      <div className="grid grid-cols-4 gap-3">
+        <div className="glass-card p-4 interactive-card text-center"><Trophy className="h-5 w-5 mx-auto mb-1.5 text-[oklch(0.8_0.15_85)]" /><p className="text-[10px] text-muted-foreground/40">Win Rate</p><p className="text-xl font-black tabular-nums">{winRate.toFixed(1)}%</p></div>
+        <div className="glass-card p-4 interactive-card text-center"><Activity className="h-5 w-5 mx-auto mb-1.5 text-[oklch(0.65_0.2_300)]" /><p className="text-[10px] text-muted-foreground/40">Total Trades</p><p className="text-xl font-black tabular-nums">{totalTrades}</p></div>
+        <div className="glass-card p-4 interactive-card text-center"><Zap className="h-5 w-5 mx-auto mb-1.5 text-primary" /><p className="text-[10px] text-muted-foreground/40">Hoy</p><p className="text-xl font-black tabular-nums">{todayTrades}</p></div>
+        <div className="glass-card p-4 interactive-card text-center"><Flame className="h-5 w-5 mx-auto mb-1.5 text-[oklch(0.8_0.15_85)]" /><p className="text-[10px] text-muted-foreground/40">Posiciones</p><p className="text-xl font-black tabular-nums">{totalOpenPositions}</p></div>
+      </div>
+
+      {/* Advanced PnL + Strategy */}
       <div className="grid grid-cols-2 gap-4">
-        {advancedPnlCard}
+        {/* Advanced PnL */}
+        <div className="glass-card overflow-hidden">
+          <div className="px-5 py-3 border-b border-border/15 flex items-center justify-between"><div className="flex items-center gap-2"><BarChart3 className="h-4 w-4 text-primary" /><h3 className="font-bold text-sm">Rendimiento</h3></div>{advancedStats.isFetching && <RefreshCw className="h-3 w-3 text-muted-foreground/30 animate-spin" />}</div>
+          <div className="p-5 space-y-4">
+            {periodPills}
+            <div className="grid grid-cols-3 gap-3">
+              <div className="text-center p-3 rounded-xl bg-[oklch(0.72_0.19_160)]/5"><ArrowUp className="h-4 w-4 text-[oklch(0.72_0.19_160)] mx-auto mb-1" /><p className="text-[9px] text-muted-foreground/50">Ganancias</p><p className="text-sm font-bold tabular-nums text-[oklch(0.72_0.19_160)]">{hideBalances ? "••" : `+$${(as?.totalGains ?? 0).toFixed(2)}`}</p></div>
+              <div className="text-center p-3 rounded-xl bg-[oklch(0.63_0.24_25)]/5"><ArrowDown className="h-4 w-4 text-[oklch(0.63_0.24_25)] mx-auto mb-1" /><p className="text-[9px] text-muted-foreground/50">Pérdidas</p><p className="text-sm font-bold tabular-nums text-[oklch(0.63_0.24_25)]">{hideBalances ? "••" : `-$${(as?.totalLosses ?? 0).toFixed(2)}`}</p></div>
+              <div className="text-center p-3 rounded-xl" style={{ background: (as?.netProfit ?? 0) >= 0 ? 'oklch(0.72 0.19 160 / 8%)' : 'oklch(0.63 0.24 25 / 8%)', border: `1px solid ${(as?.netProfit ?? 0) >= 0 ? 'oklch(0.72 0.19 160 / 12%)' : 'oklch(0.63 0.24 25 / 12%)'}` }}><DollarSign className={`h-4 w-4 mx-auto mb-1 ${(as?.netProfit ?? 0) >= 0 ? 'text-[oklch(0.72_0.19_160)]' : 'text-[oklch(0.63_0.24_25)]'}`} /><p className="text-[9px] text-muted-foreground/50">Neto Real</p><p className={`text-sm font-black tabular-nums ${(as?.netProfit ?? 0) >= 0 ? 'text-[oklch(0.72_0.19_160)]' : 'text-[oklch(0.63_0.24_25)]'}`}>{hideBalances ? "••" : fmt(as?.netProfit ?? 0)}</p></div>
+            </div>
+            <div className="grid grid-cols-4 gap-2">
+              {[{ label: "Trades", value: String(as?.totalTrades ?? 0) }, { label: "Win Rate", value: `${(as?.winRate ?? 0).toFixed(1)}%`, color: "oklch(0.72 0.19 160)" }, { label: "Ganados", value: String(as?.winTrades ?? 0), color: "oklch(0.72 0.19 160)" }, { label: "Perdidos", value: String(as?.loseTrades ?? 0), color: "oklch(0.63 0.24 25)" }].map(s => (
+                <div key={s.label} className="text-center py-2 rounded-lg bg-[oklch(0.11_0.005_260)]"><p className="text-[9px] text-muted-foreground/40">{s.label}</p><p className="text-sm font-bold tabular-nums" style={s.color ? { color: s.color } : undefined}>{s.value}</p></div>
+              ))}
+            </div>
+            <div className="grid grid-cols-3 gap-2">
+              {[{ label: "Profit Factor", value: (as?.profitFactor ?? 0) > 100 ? "∞" : (as?.profitFactor ?? 0).toFixed(2), color: (as?.profitFactor ?? 0) >= 1.5 ? "oklch(0.72 0.19 160)" : "oklch(0.8 0.15 85)" }, { label: "Avg Win", value: hideBalances ? "••" : `+$${(as?.avgWin ?? 0).toFixed(2)}`, color: "oklch(0.72 0.19 160)" }, { label: "Avg Loss", value: hideBalances ? "••" : `-$${(as?.avgLoss ?? 0).toFixed(2)}`, color: "oklch(0.63 0.24 25)" }, { label: "Mejor Trade", value: hideBalances ? "••" : fmt(as?.bestTrade ?? 0), color: "oklch(0.72 0.19 160)" }, { label: "Peor Trade", value: hideBalances ? "••" : fmt(as?.worstTrade ?? 0), color: "oklch(0.63 0.24 25)" }, { label: "Prom. Diario", value: hideBalances ? "••" : fmt(as?.avgDaily ?? 0), color: (as?.avgDaily ?? 0) >= 0 ? "oklch(0.72 0.19 160)" : "oklch(0.63 0.24 25)" }].map(m => (
+                <div key={m.label} className="flex items-center justify-between py-2 px-3 rounded-lg bg-[oklch(0.11_0.005_260)]"><span className="text-[10px] text-muted-foreground/40">{m.label}</span><span className="text-[11px] font-bold tabular-nums" style={{ color: m.color }}>{m.value}</span></div>
+              ))}
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <div className="flex items-center justify-between py-2 px-3 rounded-lg bg-[oklch(0.11_0.005_260)]"><span className="text-[10px] text-muted-foreground/40">Mejor Día</span><span className="text-[11px] font-bold tabular-nums text-[oklch(0.72_0.19_160)]">{hideBalances ? "••" : fmt(as?.bestDay ?? 0)}</span></div>
+              <div className="flex items-center justify-between py-2 px-3 rounded-lg bg-[oklch(0.11_0.005_260)]"><span className="text-[10px] text-muted-foreground/40">Peor Día</span><span className="text-[11px] font-bold tabular-nums text-[oklch(0.63_0.24_25)]">{hideBalances ? "••" : fmt(as?.worstDay ?? 0)}</span></div>
+            </div>
+          </div>
+        </div>
+
+        {/* Strategy + Top Symbols */}
         <div className="space-y-4">
-          {strategyCard}
-          {topSymbolsCard}
+          {Object.keys(stratBreakdown).length > 0 && (
+            <div className="glass-card overflow-hidden">
+              <div className="px-5 py-3 border-b border-border/15 flex items-center gap-2"><Layers className="h-4 w-4 text-[oklch(0.65_0.2_300)]" /><h3 className="font-bold text-sm">PnL por Estrategia</h3></div>
+              <div className="p-5">
+                {pieData.length > 0 && <div className="flex items-center gap-4 mb-3"><div className="w-24 h-24 shrink-0"><ResponsiveContainer width="100%" height="100%"><RPieChart><Pie data={pieData} dataKey="value" cx="50%" cy="50%" innerRadius={26} outerRadius={42} paddingAngle={3} strokeWidth={0}>{pieData.map((entry, idx) => <Cell key={idx} fill={entry.color} />)}</Pie></RPieChart></ResponsiveContainer></div><div className="flex-1 space-y-2">{pieData.map(d => <div key={d.name} className="flex items-center justify-between"><div className="flex items-center gap-1.5"><div className="w-2.5 h-2.5 rounded-full" style={{ background: d.color }} /><span className="text-xs font-medium text-muted-foreground/60">{d.name}</span></div><span className={`text-xs font-bold tabular-nums ${d.pnl >= 0 ? "text-[oklch(0.72_0.19_160)]" : "text-[oklch(0.63_0.24_25)]"}`}>{hideBalances ? "••" : fmt(d.pnl)}</span></div>)}</div></div>}
+              </div>
+            </div>
+          )}
+          {topSymbols.length > 0 && (
+            <div className="glass-card overflow-hidden">
+              <div className="px-5 py-3 border-b border-border/15 flex items-center gap-2"><Award className="h-4 w-4 text-[oklch(0.8_0.15_85)]" /><h3 className="font-bold text-sm">Top Pares ({periodLabels[selectedPeriod]})</h3></div>
+              <div className="px-5 py-2">{topSymbols.slice(0, 6).map((s: any) => <div key={s.symbol} className="flex items-center justify-between py-2 border-b border-border/8 last:border-0"><div className="flex items-center gap-2"><span className="text-sm font-bold">{s.symbol.replace("USDT", "")}</span><span className="text-[9px] text-muted-foreground/30">{s.trades} ops</span></div><span className={`text-sm font-bold tabular-nums ${s.pnl >= 0 ? "text-[oklch(0.72_0.19_160)]" : "text-[oklch(0.63_0.24_25)]"}`}>{hideBalances ? "••" : fmt(s.pnl)}</span></div>)}</div>
+            </div>
+          )}
         </div>
       </div>
 
-      {/* Desktop Charts Row */}
+      {/* Charts Row */}
       <div className="grid grid-cols-2 gap-4">
-        {pnlChartCard || (
-          <div className="glass-card p-5 flex items-center justify-center">
-            <div className="text-center text-muted-foreground/40">
-              <BarChart3 className="h-8 w-8 mx-auto mb-2 opacity-20" />
-              <p className="text-xs">Sin datos de PnL para este período</p>
-            </div>
+        {pnlChartData.length > 0 ? (
+          <div className="glass-card p-5"><div className="flex items-center gap-2 mb-3"><TrendingUp className="h-4 w-4 text-primary" /><h3 className="font-bold text-sm">Curva PnL ({periodLabels[selectedPeriod]})</h3></div>
+            <ResponsiveContainer width="100%" height={180}><AreaChart data={pnlChartData} margin={{ top: 4, right: 4, left: -10, bottom: 0 }}><defs><linearGradient id="pnlGD" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="oklch(0.72 0.19 160)" stopOpacity={0.3} /><stop offset="95%" stopColor="oklch(0.72 0.19 160)" stopOpacity={0} /></linearGradient></defs><CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.03)" /><XAxis dataKey="date" tick={{ fontSize: 10, fill: 'rgba(255,255,255,0.2)' }} tickFormatter={(v) => v?.slice(5)} axisLine={false} tickLine={false} /><YAxis tick={{ fontSize: 10, fill: 'rgba(255,255,255,0.2)' }} axisLine={false} tickLine={false} /><Tooltip contentStyle={{ background: 'oklch(0.14 0.005 260)', border: '1px solid oklch(1 0 0 / 10%)', borderRadius: 12, fontSize: 11 }} formatter={(v: any) => [fmt(parseFloat(v)), 'PnL']} /><Area type="monotone" dataKey="pnl" stroke="oklch(0.72 0.19 160)" fill="url(#pnlGD)" strokeWidth={2} dot={false} /></AreaChart></ResponsiveContainer>
           </div>
-        )}
-        {barChartCard || (
-          <div className="glass-card p-5">
-            <div className="flex items-center gap-2 mb-4">
-              <div className="w-8 h-8 rounded-lg bg-primary/10 flex items-center justify-center">
-                <Zap className="h-4 w-4 text-primary" />
-              </div>
-              <h3 className="font-bold text-sm">Últimas Operaciones</h3>
-            </div>
-            <div className="space-y-1 max-h-[200px] overflow-y-auto">
-              {(!tradesQuery.data || tradesQuery.data.length === 0) ? (
-                <div className="flex flex-col items-center justify-center h-32 text-muted-foreground">
-                  <Activity className="h-8 w-8 opacity-10 mb-2" />
-                  <span className="text-sm font-medium">Sin operaciones</span>
-                </div>
-              ) : (
-                tradesQuery.data.slice(0, 8).map((t: any) => {
-                  const pnl = parseFloat(String(t.pnl ?? "0"));
-                  return (
-                    <div key={t.id} className="flex items-center justify-between py-2 border-b border-border/15 last:border-0 hover:bg-accent/10 transition-colors rounded-lg px-1">
-                      <div className="flex items-center gap-2">
-                        <Badge variant={t.side === "buy" ? "default" : "destructive"} className="text-[9px] w-10 justify-center shrink-0 font-bold">{t.side === "buy" ? "C" : "V"}</Badge>
-                        <span className="text-sm font-bold">{t.symbol?.replace("USDT", "")}</span>
-                      </div>
-                      <div className="flex items-center gap-3">
-                        <span className="text-xs text-muted-foreground/50 tabular-nums">${fmtPrice(parseFloat(String(t.price ?? "0")))}</span>
-                        <span className={`text-xs font-bold tabular-nums min-w-16 text-right ${pnl > 0 ? "text-[oklch(0.72_0.19_160)]" : pnl < 0 ? "text-[oklch(0.63_0.24_25)]" : "text-muted-foreground/50"}`}>{hideBalances ? "••" : fmt(pnl)}</span>
-                      </div>
-                    </div>
-                  );
-                })
-              )}
-            </div>
+        ) : <div className="glass-card p-5 flex items-center justify-center"><div className="text-center text-muted-foreground/30"><BarChart3 className="h-8 w-8 mx-auto mb-2 opacity-20" /><p className="text-xs">Sin datos PnL</p></div></div>}
+        {barData.length > 0 ? (
+          <div className="glass-card p-5"><div className="flex items-center gap-2 mb-3"><BarChart3 className="h-4 w-4 text-primary" /><h3 className="font-bold text-sm">PnL por Par</h3></div>
+            <ResponsiveContainer width="100%" height={180}><BarChart data={barData} margin={{ top: 4, right: 4, left: -10, bottom: 0 }}><CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.03)" /><XAxis dataKey="pair" tick={{ fontSize: 10, fill: 'rgba(255,255,255,0.3)' }} axisLine={false} /><YAxis tick={{ fontSize: 10, fill: 'rgba(255,255,255,0.3)' }} axisLine={false} /><Tooltip contentStyle={{ background: 'oklch(0.14 0.005 260)', border: '1px solid oklch(1 0 0 / 10%)', borderRadius: 12, fontSize: 11 }} formatter={(v: any) => [fmt(parseFloat(v)), 'PnL']} /><Bar dataKey="pnl" radius={[6, 6, 0, 0]}>{barData.map((entry: any, idx: number) => <Cell key={idx} fill={entry.pnl >= 0 ? "oklch(0.72 0.19 160)" : "oklch(0.63 0.24 25)"} />)}</Bar></BarChart></ResponsiveContainer>
+          </div>
+        ) : (
+          <div className="glass-card p-5"><div className="flex items-center gap-2 mb-4"><Zap className="h-4 w-4 text-primary" /><h3 className="font-bold text-sm">Últimas Operaciones</h3></div>
+            <div className="space-y-1 max-h-[200px] overflow-y-auto">{(!tradesQuery.data || tradesQuery.data.length === 0) ? <div className="flex flex-col items-center justify-center h-32 text-muted-foreground"><Activity className="h-8 w-8 opacity-10 mb-2" /><span className="text-sm">Sin operaciones</span></div> : tradesQuery.data.slice(0, 8).map((t: any) => { const pnl = parseFloat(String(t.pnl ?? "0")); return <div key={t.id} className="flex items-center justify-between py-2 border-b border-border/10 last:border-0 px-1"><div className="flex items-center gap-2"><Badge variant={t.side === "buy" ? "default" : "destructive"} className="text-[9px] w-10 justify-center shrink-0 font-bold">{t.side === "buy" ? "C" : "V"}</Badge><span className="text-sm font-bold">{t.symbol?.replace("USDT", "")}</span></div><span className={`text-xs font-bold tabular-nums ${pnl > 0 ? "text-[oklch(0.72_0.19_160)]" : pnl < 0 ? "text-[oklch(0.63_0.24_25)]" : "text-muted-foreground/30"}`}>{hideBalances ? "••" : fmt(pnl)}</span></div>; })}</div>
           </div>
         )}
       </div>
 
-      {/* Desktop Risk + Open Positions */}
+      {/* Risk + Open Positions */}
       <div className="grid grid-cols-2 gap-4">
         <div className="glass-card p-5">
-          <div className="flex items-center justify-between mb-4">
-            <div className="flex items-center gap-2">
-              <div className="w-8 h-8 rounded-lg bg-[oklch(0.8_0.15_85)]/10 flex items-center justify-center">
-                <Shield className="h-4 w-4 text-[oklch(0.8_0.15_85)]" />
-              </div>
-              <h3 className="font-bold text-sm">Gestión de Riesgo</h3>
-            </div>
-            <Badge variant="outline" className={`text-[10px] font-bold ${dailyLoss > 200 ? "border-destructive/40 text-destructive bg-destructive/5" : "border-primary/20 text-primary bg-primary/5"}`}>
-              {dailyLoss > 200 ? "ALTO" : "OK"}
-            </Badge>
-          </div>
+          <div className="flex items-center justify-between mb-4"><div className="flex items-center gap-2"><Shield className="h-4 w-4 text-[oklch(0.8_0.15_85)]" /><h3 className="font-bold text-sm">Gestión de Riesgo</h3></div><Badge variant="outline" className={`text-[10px] font-bold ${dailyLoss > 200 ? "border-destructive/40 text-destructive bg-destructive/5" : "border-primary/20 text-primary bg-primary/5"}`}>{dailyLoss > 200 ? "ALTO" : "OK"}</Badge></div>
           <div className="space-y-5">
-            <div>
-              <div className="flex justify-between text-xs mb-2">
-                <span className="text-muted-foreground/70 font-medium">Max Drawdown</span>
-                <span className="tabular-nums font-bold">{hideBalances ? "••" : `${(maxDrawdown * 100).toFixed(2)}%`} / 10%</span>
-              </div>
-              <div className="h-2.5 bg-[oklch(0.14_0.005_260)] rounded-full overflow-hidden">
-                <div className="h-full bg-gradient-to-r from-primary to-[oklch(0.75_0.14_200)] rounded-full transition-all duration-700" style={{ width: `${Math.min((maxDrawdown * 100) / 10 * 100, 100)}%` }} />
-              </div>
-            </div>
-            <div>
-              <div className="flex justify-between text-xs mb-2">
-                <span className="text-muted-foreground/70 font-medium">Pérdida Diaria</span>
-                <span className="tabular-nums font-bold">{hideBalances ? "••" : fmtUsd(Math.abs(dailyLoss))} / $250</span>
-              </div>
-              <div className="h-2.5 bg-[oklch(0.14_0.005_260)] rounded-full overflow-hidden">
-                <div className="h-full bg-gradient-to-r from-[oklch(0.8_0.15_85)] to-destructive rounded-full transition-all duration-700" style={{ width: `${Math.min((Math.abs(dailyLoss) / 250) * 100, 100)}%` }} />
-              </div>
-            </div>
+            <div><div className="flex justify-between text-xs mb-2"><span className="text-muted-foreground/50">Max Drawdown</span><span className="tabular-nums font-bold">{hideBalances ? "••" : `${(maxDrawdown * 100).toFixed(2)}%`} / 10%</span></div><div className="h-2 bg-[oklch(0.11_0.005_260)] rounded-full overflow-hidden"><div className="h-full bg-gradient-to-r from-primary to-[oklch(0.75_0.14_200)] rounded-full transition-all duration-700" style={{ width: `${Math.min((maxDrawdown * 100) / 10 * 100, 100)}%` }} /></div></div>
+            <div><div className="flex justify-between text-xs mb-2"><span className="text-muted-foreground/50">Pérdida Diaria</span><span className="tabular-nums font-bold">{hideBalances ? "••" : fmtUsd(Math.abs(dailyLoss))} / $250</span></div><div className="h-2 bg-[oklch(0.11_0.005_260)] rounded-full overflow-hidden"><div className="h-full bg-gradient-to-r from-[oklch(0.8_0.15_85)] to-destructive rounded-full transition-all duration-700" style={{ width: `${Math.min((Math.abs(dailyLoss) / 250) * 100, 100)}%` }} /></div></div>
           </div>
         </div>
-
-        {/* Open Positions Desktop */}
         <div className="glass-card overflow-hidden">
-          <div className="flex items-center justify-between px-5 py-3 border-b border-border/20">
-            <div className="flex items-center gap-2">
-              <div className="w-8 h-8 rounded-lg bg-[oklch(0.8_0.15_85)]/10 flex items-center justify-center">
-                <Flame className="h-4 w-4 text-[oklch(0.8_0.15_85)]" />
-              </div>
-              <h3 className="font-bold text-sm">Posiciones Abiertas</h3>
-            </div>
-            <Badge variant="outline" className="text-[10px] font-bold border-border/40">{totalOpenPositions}</Badge>
-          </div>
-          <div className="divide-y divide-border/10 max-h-[200px] overflow-y-auto">
-            {totalOpenPositions === 0 ? (
-              <div className="flex flex-col items-center justify-center py-10 text-muted-foreground">
-                <Target className="h-8 w-8 opacity-10 mb-2" />
-                <span className="text-sm font-medium">Sin posiciones abiertas</span>
-              </div>
-            ) : (
-              [...openPositions.grid, ...openPositions.futures].map((p: any, i: number) => (
-                <div key={i} className="flex items-center justify-between px-5 py-3 hover:bg-accent/10 transition-colors">
-                  <div className="flex items-center gap-2.5">
-                    <span className="text-sm font-bold">{p.symbol?.replace('USDT', '')}</span>
-                    <span className="text-[10px] text-muted-foreground/60 tabular-nums">@ ${fmtPrice(p.buyPrice)}</span>
-                  </div>
-                  <span className={`text-sm font-bold tabular-nums ${p.unrealizedPnl >= 0 ? 'text-[oklch(0.72_0.19_160)]' : 'text-[oklch(0.63_0.24_25)]'}`}>
-                    {hideBalances ? "••" : fmt(p.unrealizedPnl)}
-                  </span>
-                </div>
-              ))
-            )}
+          <div className="flex items-center justify-between px-5 py-3 border-b border-border/15"><div className="flex items-center gap-2"><Flame className="h-4 w-4 text-[oklch(0.8_0.15_85)]" /><h3 className="font-bold text-sm">Posiciones Abiertas</h3></div><Badge variant="outline" className="text-[10px] font-bold border-border/30">{totalOpenPositions}</Badge></div>
+          <div className="divide-y divide-border/8 max-h-[200px] overflow-y-auto">
+            {totalOpenPositions === 0 ? <div className="flex flex-col items-center justify-center py-10 text-muted-foreground"><Target className="h-8 w-8 opacity-10 mb-2" /><span className="text-sm">Sin posiciones</span></div> : [...openPositions.grid, ...openPositions.futures].map((p: any, i: number) => <div key={i} className="flex items-center justify-between px-5 py-3 hover:bg-accent/10 transition-colors"><div className="flex items-center gap-2.5"><span className="text-sm font-bold">{p.symbol?.replace('USDT', '')}</span><span className="text-[10px] text-muted-foreground/40 tabular-nums">@ ${fmtPrice(p.buyPrice)}</span></div><span className={`text-sm font-bold tabular-nums ${p.unrealizedPnl >= 0 ? 'text-[oklch(0.72_0.19_160)]' : 'text-[oklch(0.63_0.24_25)]'}`}>{hideBalances ? "••" : fmt(p.unrealizedPnl)}</span></div>)}
           </div>
         </div>
       </div>
 
-      {/* Desktop Footer */}
-      <div className="rounded-xl px-4 py-2.5" style={{ background: 'oklch(0.13 0.004 260 / 60%)' }}>
-        <div className="flex items-center justify-center gap-4 text-[10px] text-muted-foreground/40">
+      {/* Footer */}
+      <div className="rounded-xl px-4 py-2.5" style={{ background: 'oklch(0.11 0.004 260 / 50%)' }}>
+        <div className="flex items-center justify-center gap-4 text-[10px] text-muted-foreground/30">
           <span className="flex items-center gap-1.5">{isRunning ? <span className="w-1.5 h-1.5 rounded-full bg-primary pulse-live" /> : <WifiOff className="h-3 w-3" />} {isRunning ? "Conectado" : "Desconectado"}</span>
-          <span className="text-border/20">·</span>
-          <span className="tabular-nums">Ciclos: {data?.cycles ?? 0}</span>
-          <span className="text-border/20">·</span>
-          <span className="tabular-nums">{currentTime.toLocaleTimeString()}</span>
+          <span className="text-border/15">·</span><span className="tabular-nums">Ciclos: {data?.cycles ?? 0}</span>
+          <span className="text-border/15">·</span><span className="tabular-nums">{currentTime.toLocaleTimeString()}</span>
         </div>
       </div>
     </div>

@@ -64,6 +64,15 @@ import {
   buildOpportunityAlert, buildStatsReport, isNocturnalHours, getNocturnalMultiplier,
   VOLATILE_SCALPING_PAIRS, type AllocatorState, type StrategyPerformance
 } from "./capitalAllocator";
+import {
+  detectBreakoutSignal, detectMeanReversion as detectMeanReversionPM,
+  analyzeFundingArbitrage, detectLiquidationOpportunity,
+  analyzeVolumeProfile, detectCorrelationArbitrage,
+  getMarketTimingSignal, analyzeMultiTFAlignment,
+  analyzeStalePosition, analyzeLiquidity,
+  getProfitMaximizerSignal, recordTradeForTiming,
+  type ProfitMaximizerSignal
+} from "./profitMaximizer";
 
 // ─── Fee Constants (per exchange) ───
 const FEES: Record<string, { spot: number; linear: number }> = {
@@ -544,6 +553,94 @@ async function fetchKlines(_client: RestClientV5 | null, symbol: string, _interv
     };
   }
   return { opens: [], highs: [], lows: [], closes: [], volumes: [] };
+}
+
+// ─── v9.0: USDT LIQUIDITY MANAGEMENT ───
+// Rule: maintain minimum 60% of capital in USDT available
+// Don't buy more altcoins if USDT < threshold
+// For big opportunities → use futures (USDT-settled) instead of spot
+const USDT_MIN_RESERVE_PCT = 0.60; // 60% minimum USDT reserve
+const USDT_CHECK_CACHE: { lastCheck: number; bybitUsdt: number; kucoinUsdt: number; totalBalance: number } = {
+  lastCheck: 0, bybitUsdt: 0, kucoinUsdt: 0, totalBalance: 0
+};
+
+async function getUsdtAvailable(engine: EngineState): Promise<{ bybitUsdt: number; kucoinUsdt: number; totalUsdt: number; totalBalance: number; usdtPct: number }> {
+  // Cache for 30 seconds to avoid hammering APIs
+  if (Date.now() - USDT_CHECK_CACHE.lastCheck < 30_000 && USDT_CHECK_CACHE.totalBalance > 0) {
+    const totalUsdt = USDT_CHECK_CACHE.bybitUsdt + USDT_CHECK_CACHE.kucoinUsdt;
+    return {
+      bybitUsdt: USDT_CHECK_CACHE.bybitUsdt,
+      kucoinUsdt: USDT_CHECK_CACHE.kucoinUsdt,
+      totalUsdt,
+      totalBalance: USDT_CHECK_CACHE.totalBalance,
+      usdtPct: USDT_CHECK_CACHE.totalBalance > 0 ? totalUsdt / USDT_CHECK_CACHE.totalBalance : 1,
+    };
+  }
+  let bybitUsdt = 0, kucoinUsdt = 0, totalBal = 0;
+  try {
+    if (engine.client) {
+      const res = await withRetry(() => engine.client.getWalletBalance({ accountType: "UNIFIED" }), "USDT check Bybit");
+      if (res.retCode === 0) {
+        const coins = (res.result as any)?.list?.[0]?.coin ?? [];
+        for (const c of coins) {
+          if (c.coin === "USDT") bybitUsdt = parseFloat(c.availableToWithdraw ?? c.walletBalance ?? "0");
+        }
+        totalBal += parseFloat((res.result as any)?.list?.[0]?.totalEquity ?? "0");
+      }
+    }
+  } catch { /* silent */ }
+  try {
+    if (engine.kucoinClient) {
+      const tradeRes = await withRetry(() => engine.kucoinClient!.getBalances({ type: "trade" }), "USDT check KuCoin");
+      if ((tradeRes as any)?.code === "200000") {
+        const prices = getLivePrices();
+        for (const acc of ((tradeRes as any).data as any[] ?? [])) {
+          const cur = acc.currency;
+          const bal = parseFloat(acc.available ?? "0");
+          if (cur === "USDT") kucoinUsdt += bal;
+          const p = cur === "USDT" ? 1 : (prices[`${cur}USDT`]?.lastPrice ?? 0);
+          totalBal += bal * p;
+        }
+      }
+    }
+  } catch { /* silent */ }
+  USDT_CHECK_CACHE.lastCheck = Date.now();
+  USDT_CHECK_CACHE.bybitUsdt = bybitUsdt;
+  USDT_CHECK_CACHE.kucoinUsdt = kucoinUsdt;
+  USDT_CHECK_CACHE.totalBalance = totalBal;
+  const totalUsdt = bybitUsdt + kucoinUsdt;
+  return {
+    bybitUsdt, kucoinUsdt, totalUsdt, totalBalance: totalBal,
+    usdtPct: totalBal > 0 ? totalUsdt / totalBal : 1,
+  };
+}
+
+/** Check if we have enough USDT to place a spot buy. Returns false if USDT reserve is too low. */
+async function hasUsdtLiquidity(engine: EngineState, tradeAmount: number, strategy: string): Promise<boolean> {
+  if (engine.simulationMode) return true;
+  try {
+    const liq = await getUsdtAvailable(engine);
+    // After this trade, would USDT drop below reserve?
+    const afterTrade = liq.totalUsdt - tradeAmount;
+    const afterPct = liq.totalBalance > 0 ? afterTrade / liq.totalBalance : 0;
+    if (afterPct < USDT_MIN_RESERVE_PCT) {
+      console.log(`[USDT Guard] BLOCK ${strategy} BUY $${tradeAmount.toFixed(2)} — USDT would drop to ${(afterPct * 100).toFixed(1)}% (min ${(USDT_MIN_RESERVE_PCT * 100)}%) | Available: $${liq.totalUsdt.toFixed(2)} / $${liq.totalBalance.toFixed(2)}`);
+      return false;
+    }
+    console.log(`[USDT Guard] OK ${strategy} BUY $${tradeAmount.toFixed(2)} — USDT ${(liq.usdtPct * 100).toFixed(1)}% → ${(afterPct * 100).toFixed(1)}%`);
+    return true;
+  } catch (e) {
+    console.log(`[USDT Guard] Error checking liquidity: ${(e as Error).message} — allowing trade`);
+    return true; // Don't block on error
+  }
+}
+
+/** For big opportunities (score>80), prefer futures over spot to keep capital in USDT */
+function shouldUseFuturesForOpportunity(confidence: number, category: "spot" | "linear"): boolean {
+  // If already using futures, no change needed
+  if (category === "linear") return false;
+  // Big opportunity on spot → suggest switching to futures
+  return confidence >= 80;
 }
 
 async function placeOrder(engine: EngineState, symbol: string, side: "Buy" | "Sell", qty: string, category: "spot" | "linear" = "spot"): Promise<string | null> {
@@ -1094,6 +1191,7 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
       try {
         recordTradeForTuning("grid", pnl, (pnl / pos.tradeAmount) * 100);
         recordTradeResultOptimizer(pnl);
+        recordTradeForTiming(pnl); // v9.0: Market Timing learning
         recordTradeForLearning({ strategy: "grid", symbol, entryScore: smartScore?.confidence ?? 50, entryRegime: "unknown", entrySession: "unknown", entryFearGreed: 50, entryPatterns: [], pnlPercent: (pnl / pos.tradeAmount) * 100, holdTimeMinutes: 0, timestamp: Date.now() });
       } catch { /* silent */ }
 
@@ -1214,6 +1312,19 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
       const tradeAmount = baseTradeAmount * positionSizeMultiplier * gridBoost;
       const qty = (tradeAmount / price).toFixed(6);
 
+      // ─── v9.0: USDT Liquidity Guard for spot buys ───
+      if (level.side === "Buy" && category === "spot") {
+        const hasLiquidity = await hasUsdtLiquidity(engine, tradeAmount, `grid-${symbol}`);
+        if (!hasLiquidity) {
+          console.log(`[Grid] SKIP BUY ${symbol} @ ${level.price.toFixed(2)} — USDT reserve too low`);
+          continue;
+        }
+        // v9.0: Big opportunity → suggest futures instead of spot
+        if (shouldUseFuturesForOpportunity(smartScore?.confidence ?? 0, category)) {
+          console.log(`[Grid] ${symbol} HIGH CONF ${smartScore?.confidence}% — futures preferred over spot (USDT stays liquid)`);
+        }
+      }
+
       const orderId = await placeOrder(engine, symbol, level.side, qty, category);
       if (orderId) {
         level.filled = true;
@@ -1326,6 +1437,14 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
     const maxDcaEntries = 5;
 
     if (dca.entries < maxDcaEntries) {
+      // v9.0: USDT Liquidity Guard for DCA buys
+      if (category === "spot") {
+        const dcaLiq = await hasUsdtLiquidity(engine, dcaAmount, `dca-${symbol}`);
+        if (!dcaLiq) {
+          console.log(`[DCA] SKIP ${symbol} — USDT reserve too low for DCA`);
+          return;
+        }
+      }
       const orderId = await placeOrder(engine, symbol, "Buy", dcaQty, category);
       if (orderId) {
         dca.totalCost += dcaAmount;
@@ -1392,13 +1511,44 @@ async function runScalpingStrategy(engine: EngineState, symbol: string, category
     return;
   }
 
-  // ─── SMART ANALYSIS v6.0 + MARKET INTELLIGENCE v7.0 for Scalping ───
+  // ─── SMART ANALYSIS v6.0 + MARKET INTELLIGENCE v7.0 + PROFIT MAXIMIZER v9.0 for Scalping ───
   const klines = await fetchKlines(engine.client, symbol, "15", 50, category);
   if (klines.closes.length < 26) return;
 
   // Run full smart analysis
   const smartScore = calculateSignalScore(klines, price);
   const scalpCooldown = getLossCooldownMultiplier(symbol, "scalping");
+
+  // ─── v9.0: Profit Maximizer Signals ───
+  const marketTiming = getMarketTimingSignal();
+  const volumeProfile = analyzeVolumeProfile(klines, price);
+  const breakoutSig = detectBreakoutSignal(klines, price);
+  const meanRevSig = detectMeanReversionPM(klines, price);
+
+  // Volume Profile: prefer trading at high-volume zones (POC)
+  if (!volumeProfile.isHighVolumeZone && !breakoutSig.detected && !meanRevSig.detected) {
+    console.log(`[Scalp] ${symbol} LOW VOLUME ZONE: ${volumeProfile.reason} — reducing confidence`);
+  }
+
+  // Market Timing: adjust sizing based on historical profitability of this hour/day
+  const timingMultiplier = marketTiming.sizingMultiplier;
+  if (timingMultiplier < 0.7) {
+    console.log(`[Scalp] ${symbol} BAD TIMING: ${marketTiming.reason} — sizing ${timingMultiplier.toFixed(2)}x`);
+  }
+
+  // Breakout Hunter: if breakout detected, boost confidence
+  let breakoutBoost = 0;
+  if (breakoutSig.detected && breakoutSig.confidence > 60) {
+    breakoutBoost = Math.round(breakoutSig.confidence * 0.3);
+    console.log(`[Scalp] ${symbol} BREAKOUT: ${breakoutSig.reason} — boost +${breakoutBoost}`);
+  }
+
+  // Mean Reversion: if extreme oversold, add confidence
+  let meanRevBoost = 0;
+  if (meanRevSig.detected && meanRevSig.direction === "long" && meanRevSig.confidence > 50) {
+    meanRevBoost = Math.round(meanRevSig.confidence * 0.25);
+    console.log(`[Scalp] ${symbol} MEAN REVERSION: ${meanRevSig.reason} — boost +${meanRevBoost}`);
+  }
 
   // ─── MASTER SIGNAL for Scalping ───
   let scalpMaster: MasterSignal | null = null;
@@ -1478,7 +1628,9 @@ async function runScalpingStrategy(engine: EngineState, symbol: string, category
       if (xauBoost > 1.0) console.log(`[Scalp] ${symbol} XAU BOOST: ${xauBoost.toFixed(2)}x (top performer)`);
     } catch { /* silent */ }
     const nocturnalSizing = nocturnal.sizeMultiplier;
-    const tradeAmount = baseAmount * smartScore.suggestedSizePct * scalpCooldown * scalpBoost * masterSizing * xauBoost * nocturnalSizing;
+    // v9.0: Market Timing + Volume Profile sizing
+    const vpBoost = volumeProfile.isHighVolumeZone ? 1.15 : 0.85;
+    const tradeAmount = baseAmount * smartScore.suggestedSizePct * scalpCooldown * scalpBoost * masterSizing * xauBoost * nocturnalSizing * timingMultiplier * vpBoost;
     const qty = (tradeAmount / price).toFixed(6);
 
     // ─── Position-Tracked Scalping ───
@@ -1561,6 +1713,7 @@ async function runScalpingStrategy(engine: EngineState, symbol: string, category
         try {
           recordTradeForTuning("scalping", pnl, (pnl / (pos.buyPrice * parseFloat(sellQty))) * 100);
           recordTradeResultOptimizer(pnl);
+          recordTradeForTiming(pnl); // v9.0: Market Timing learning
           recordTradeForLearning({ strategy: "scalping", symbol, entryScore: effectiveConfidence, entryRegime: "unknown", entrySession: "unknown", entryFearGreed: 50, entryPatterns: [], pnlPercent: (pnl / (pos.buyPrice * parseFloat(sellQty))) * 100, holdTimeMinutes: 0, timestamp: Date.now() });
         } catch { /* silent */ }
 
@@ -1587,12 +1740,29 @@ async function runScalpingStrategy(engine: EngineState, symbol: string, category
         return;
       }
 
-      // Smart pre-check: only enter if confidence is adequate
-      if (smartScore.confidence < 30) {
-        console.log(`[Scalp] SKIP ${symbol} Buy — confidence too low (${smartScore.confidence}%)`);
+      // Smart pre-check: only enter if confidence is adequate (with v9.0 boosts)
+      const boostedConfidence = smartScore.confidence + breakoutBoost + meanRevBoost;
+      if (boostedConfidence < 30) {
+        console.log(`[Scalp] SKIP ${symbol} Buy — confidence too low (${smartScore.confidence}% + boosts ${breakoutBoost + meanRevBoost} = ${boostedConfidence}%)`);
         return;
       }
       console.log(`[Scalp] ${symbol} Buy — confidence=${smartScore.confidence}% regime=${smartScore.regime} size=${(smartScore.suggestedSizePct * scalpCooldown).toFixed(2)}x`);
+
+      // ─── v9.0: USDT Liquidity Guard for spot scalping buys ───
+      if (category === "spot") {
+        const hasLiquidity = await hasUsdtLiquidity(engine, tradeAmount, `scalp-${symbol}`);
+        if (!hasLiquidity) {
+          console.log(`[Scalp] SKIP ${symbol} Buy — USDT reserve too low, keeping capital liquid`);
+          return;
+        }
+        // v9.0: Big opportunity on spot → redirect to futures (USDT-settled)
+        if (shouldUseFuturesForOpportunity(boostedConfidence, category)) {
+          console.log(`[Scalp] ${symbol} REDIRECTING to FUTURES — score ${boostedConfidence}% >= 80, keeping USDT liquid`);
+          // Don't buy spot, the futures engine will pick this up with the high score
+          return;
+        }
+      }
+
       // v8.2: Opportunity Alert — notify on high-confidence entries
       if (effectiveConfidence >= 70) {
         try {
@@ -1798,6 +1968,7 @@ async function runFuturesStrategy(engine: EngineState, symbol: string, dailyProf
         try {
           recordTradeForTuning("futures", pnl, (pnl / (pos.tradeAmount * pos.leverage)) * 100);
           recordTradeResultOptimizer(pnl);
+          recordTradeForTiming(pnl); // v9.0: Market Timing learning
           recordTradeForLearning({ strategy: "futures", symbol, entryScore: 50, entryRegime: "unknown", entrySession: "unknown", entryFearGreed: 50, entryPatterns: [], pnlPercent: (pnl / (pos.tradeAmount * pos.leverage)) * 100, holdTimeMinutes: 0, timestamp: Date.now() });
         } catch { /* silent */ }
 
@@ -1855,8 +2026,25 @@ async function runFuturesStrategy(engine: EngineState, symbol: string, dailyProf
     return;
   }
 
+  // ─── v9.0: Profit Maximizer for Futures ───
+  const futKlines = await fetchKlines(engine.client, symbol, "15", 50, "linear");
+  const futBreakout = detectBreakoutSignal(futKlines, price);
+  const futMeanRev = detectMeanReversionPM(futKlines, price);
+  const futTiming = getMarketTimingSignal();
+  const futVolProfile = analyzeVolumeProfile(futKlines, price);
+  let futPMBoost = 0;
+  if (futBreakout.detected && futBreakout.confidence > 60) {
+    futPMBoost += Math.round(futBreakout.confidence * 0.3);
+    console.log(`[Futures] ${symbol} BREAKOUT: ${futBreakout.reason} — boost +${futPMBoost}`);
+  }
+  if (futMeanRev.detected && futMeanRev.confidence > 50) {
+    futPMBoost += Math.round(futMeanRev.confidence * 0.2);
+    console.log(`[Futures] ${symbol} MEAN REVERSION: ${futMeanRev.reason}`);
+  }
+
   // Smart scoring determines entry direction — use master signal when available
   const minFuturesConfidence = dailyProfitMode === "cautious" ? 70 : 35;
+  const futBoostedConf = futEffConf + futPMBoost;
   let entryDirection: "long" | "short" | null = null;
 
   // Block entry if master signal says blocked
@@ -1865,11 +2053,11 @@ async function runFuturesStrategy(engine: EngineState, symbol: string, dailyProf
     return;
   }
 
-  if (futEffDir === "buy" && futEffConf >= minFuturesConfidence && longPositions.length < 3) {
+  if (futEffDir === "buy" && futBoostedConf >= minFuturesConfidence && longPositions.length < 3) {
     if (futSmartScore.regime !== "strong_trend_down") {
       entryDirection = "long";
     }
-  } else if (futEffDir === "sell" && futEffConf >= minFuturesConfidence && shortPositions.length < 3) {
+  } else if (futEffDir === "sell" && futBoostedConf >= minFuturesConfidence && shortPositions.length < 3) {
     if (futSmartScore.regime !== "strong_trend_up") {
       entryDirection = "short";
     }
@@ -1893,7 +2081,10 @@ async function runFuturesStrategy(engine: EngineState, symbol: string, dailyProf
   // Smart sizing: confidence-weighted + cooldown + BOOST + master signal multiplier
   const baseTradeAmount = (balance * allocation / 100) / maxPositions;
   const strengthBoost = futEffConf > 80 ? 2.0 : futEffConf > 65 ? 1.5 : 1.0;
-  const tradeAmount = baseTradeAmount * futSmartScore.suggestedSizePct * futCooldown * strengthBoost * futMasterSizing;
+  // v9.0: Market Timing + Volume Profile sizing for futures
+  const futTimingMult = futTiming.sizingMultiplier;
+  const futVPBoost = futVolProfile.isHighVolumeZone ? 1.2 : 0.85;
+  const tradeAmount = baseTradeAmount * futSmartScore.suggestedSizePct * futCooldown * strengthBoost * futMasterSizing * futTimingMult * futVPBoost;
   const qty = ((tradeAmount * leverage) / price).toFixed(6);
 
   // LONG → Buy to open, SHORT → Sell to open
@@ -2532,36 +2723,67 @@ export async function startEngine(userId: number): Promise<{ success: boolean; e
     }
   }, 60_000); // Check every 60 seconds
 
-  // ─── v8.2: Auto-Reinvestment + Capital Rebalancing (every 4 hours) ───
+  // ─── v9.0: Aggressive Compounding (every 1 hour) + Capital Rebalancing (every 4 hours) + Stale Position Checker ───
+  let rebalanceCycleCount = 0;
   engine.autoReinvestId = setInterval(async () => {
     if (!engine.isRunning) return;
     try {
-      // 1. Auto-reinvest accumulated gains
-      const reinvestResult = await checkAutoReinvest(engine.userId);
+      rebalanceCycleCount++;
+      // 1. AGGRESSIVE COMPOUNDING: reinvest every hour with $20 minimum (v9.0)
+      const reinvestResult = await checkAutoReinvest(engine.userId, 20); // $20 min instead of $50
       if (reinvestResult?.reinvested) {
-        console.log(`[Allocator] AUTO-REINVEST: $${reinvestResult.amount.toFixed(2)} → ${reinvestResult.target}`);
+        console.log(`[v9.0] COMPOUND: $${reinvestResult.amount.toFixed(2)} → ${reinvestResult.target}`);
         await sendTelegramNotification(engine,
-          `💰 <b>Auto-Reinversión</b>\nMonto: $${reinvestResult.amount.toFixed(2)}\nDestino: ${reinvestResult.target}\nNuevo capital base: $${reinvestResult.newBalance}`
+          `💰 <b>Compounding Agresivo v9.0</b>\nMonto: $${reinvestResult.amount.toFixed(2)}\nDestino: ${reinvestResult.target}\nNuevo capital: $${reinvestResult.newBalance}`
         );
       }
-      // 2. Rebalance capital allocation based on performance
-      const allocResult = await rebalanceCapital(engine.userId);
-      if (allocResult.decisions.length > 0) {
-        console.log(`[Allocator] REBALANCE: ${allocResult.decisions.length} changes, top=${allocResult.topPerformer?.strategy} ${allocResult.topPerformer?.symbol}`);
-        let msg = `🔄 <b>Capital Rebalanceado</b>\n\n`;
-        for (const d of allocResult.decisions) {
-          msg += `${d.newAllocationPct > d.oldAllocationPct ? "⬆️" : "⬇️"} ${d.strategy} ${d.symbol}: ${d.oldAllocationPct}% → ${d.newAllocationPct}%\n`;
+
+      // 2. STALE POSITION CHECKER: analyze positions stuck too long
+      const allScalpPositions = Object.entries(engine.scalpPositions).flatMap(([sym, positions]) =>
+        positions.map(p => ({ symbol: sym, buyPrice: p.buyPrice, currentPrice: engine.lastPrices[sym] ?? p.buyPrice, openedAt: p.openedAt, strategy: "scalping" as const }))
+      );
+      const allGridPositions = Object.entries(engine.openBuyPositions).flatMap(([sym, positions]) =>
+        positions.map(p => ({ symbol: sym, buyPrice: p.buyPrice, currentPrice: engine.lastPrices[sym] ?? p.buyPrice, openedAt: p.openedAt, strategy: "grid" as const }))
+      );
+      for (const pos of [...allScalpPositions, ...allGridPositions]) {
+        const staleHours = pos.strategy === "scalping" ? 2 : 6;
+        const staleAnalysis = analyzeStalePosition(pos.buyPrice, pos.currentPrice, pos.openedAt, staleHours);
+        if (staleAnalysis.isStale) {
+          console.log(`[v9.0] STALE: ${pos.symbol} ${pos.strategy} — ${staleAnalysis.recommendation} (held ${staleAnalysis.holdTimeHours.toFixed(1)}h, ${staleAnalysis.priceChangePct.toFixed(2)}%)`);
         }
-        if (allocResult.topPerformer) {
-          msg += `\n🏆 Top Performer: ${allocResult.topPerformer.strategy} ${allocResult.topPerformer.symbol} (score=${allocResult.topPerformer.score})`;
+      }
+
+      // 3. LIQUIDITY ANALYSIS: check USDT availability
+      const botState = await db.getOrCreateBotState(engine.userId);
+      const currentBal = parseFloat(botState?.currentBalance ?? "5000");
+      const investedPct = 1 - (currentBal * 0.3 / currentBal); // rough estimate
+      const totalPositions = Object.values(engine.scalpPositions).reduce((a, b) => a + b.length, 0) + Object.values(engine.openBuyPositions).reduce((a, b) => a + b.length, 0);
+      const deployedEstimate = currentBal * 0.7; // rough estimate of deployed capital
+      const liqAnalysis = analyzeLiquidity(currentBal, deployedEstimate, totalPositions);
+      if (liqAnalysis.recommendation === "hold_cash" || liqAnalysis.recommendation === "reduce_exposure") {
+        console.log(`[v9.0] LIQUIDITY: ${liqAnalysis.recommendation} — ${liqAnalysis.reason}`);
+      }
+
+      // 4. REBALANCE: every 4 cycles (4 hours)
+      if (rebalanceCycleCount % 4 === 0) {
+        const allocResult = await rebalanceCapital(engine.userId);
+        if (allocResult.decisions.length > 0) {
+          console.log(`[Allocator] REBALANCE: ${allocResult.decisions.length} changes, top=${allocResult.topPerformer?.strategy} ${allocResult.topPerformer?.symbol}`);
+          let msg = `🔄 <b>Capital Rebalanceado v9.0</b>\n\n`;
+          for (const d of allocResult.decisions) {
+            msg += `${d.newAllocationPct > d.oldAllocationPct ? "⬆️" : "⬇️"} ${d.strategy} ${d.symbol}: ${d.oldAllocationPct}% → ${d.newAllocationPct}%\n`;
+          }
+          if (allocResult.topPerformer) {
+            msg += `\n🏆 Top Performer: ${allocResult.topPerformer.strategy} ${allocResult.topPerformer.symbol} (score=${allocResult.topPerformer.score})`;
+          }
+          await sendTelegramNotification(engine, msg);
         }
-        await sendTelegramNotification(engine, msg);
       }
     } catch (e) {
-      console.error("[Allocator] Error:", (e as Error).message);
+      console.error("[v9.0 Allocator] Error:", (e as Error).message);
     }
-  }, 4 * 60 * 60 * 1000); // Every 4 hours
-  console.log(`[Engine] Auto-reinvestment + capital rebalancing scheduled (every 4h)`);
+  }, 60 * 60 * 1000); // Every 1 hour (v9.0: aggressive compounding)
+  console.log(`[Engine] v9.0 Aggressive Compounding (1h) + Rebalancing (4h) + Stale Checker active`);
 
   // ─── Telegram Polling for /status command ───
   if (engine.telegramBotToken && engine.telegramChatId) {
