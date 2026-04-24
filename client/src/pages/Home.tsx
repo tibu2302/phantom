@@ -145,6 +145,9 @@ export default function Home() {
   const realProfit = parseFloat(eb?.realProfit ?? "0");
   const realProfitPct = parseFloat(eb?.realProfitPct ?? "0");
   const todayPnl = parseFloat(eb?.todayPnl ?? "0");
+  const yesterdayPnl = parseFloat(eb?.yesterdayPnl ?? "0");
+  const weekPnl = parseFloat(eb?.weekPnl ?? "0");
+  const yearPnl = parseFloat(eb?.yearPnl ?? "0");
   const todayTrades = eb?.todayTrades ?? 0;
   const totalTrades = eb?.totalTrades ?? 0;
   const winRate = parseFloat(eb?.winRate ?? "0");
@@ -189,6 +192,9 @@ export default function Home() {
 
   const pnlColor = realProfit >= 0 ? "text-[oklch(0.72_0.19_160)]" : "text-[oklch(0.63_0.24_25)]";
   const todayColor = todayPnl >= 0 ? "text-[oklch(0.72_0.19_160)]" : "text-[oklch(0.63_0.24_25)]";
+  const yesterdayColor = yesterdayPnl >= 0 ? "text-[oklch(0.72_0.19_160)]" : "text-[oklch(0.63_0.24_25)]";
+  const weekColor = weekPnl >= 0 ? "text-[oklch(0.72_0.19_160)]" : "text-[oklch(0.63_0.24_25)]";
+  const yearColor = yearPnl >= 0 ? "text-[oklch(0.72_0.19_160)]" : "text-[oklch(0.63_0.24_25)]";
 
   const tickerPairs = [
     { symbol: "XAUUSDT", label: "XAU/USD", icon: "Au", color: "oklch(0.8 0.15 85)", isGold: true },
@@ -407,18 +413,36 @@ export default function Home() {
                 <span className="text-[8px] font-bold tracking-[0.15em] text-muted-foreground/50 uppercase">Ganancia Real</span>
                 <span className={`text-lg font-black tabular-nums ${pnlColor}`}>{hideBalances ? "----" : fmt(realProfit)}</span>
               </div>
-              <div className="grid grid-cols-3 gap-2">
-                <div className="bg-white/[0.03] rounded-xl p-2.5 text-center">
-                  <span className="text-[8px] text-muted-foreground/40 font-medium block">Hoy ({todayTrades})</span>
-                  <span className={`text-[13px] font-bold tabular-nums ${todayColor}`}>{hideBalances ? "--" : fmt(todayPnl)}</span>
+              <div className="grid grid-cols-4 gap-1.5">
+                <div className="bg-white/[0.03] rounded-xl p-2 text-center">
+                  <span className="text-[7px] text-muted-foreground/40 font-medium block">Hoy</span>
+                  <span className={`text-[12px] font-bold tabular-nums ${todayColor}`}>{hideBalances ? "--" : fmt(todayPnl)}</span>
                 </div>
-                <div className="bg-white/[0.03] rounded-xl p-2.5 text-center">
-                  <span className="text-[8px] text-muted-foreground/40 font-medium block">Abierto ({openPosCount})</span>
-                  <span className={`text-[13px] font-bold tabular-nums ${unrealizedPnl >= 0 ? 'text-[oklch(0.75_0.14_200)]' : 'text-[oklch(0.8_0.15_85)]'}`}>{hideBalances ? "--" : fmt(unrealizedPnl)}</span>
+                <div className="bg-white/[0.03] rounded-xl p-2 text-center">
+                  <span className="text-[7px] text-muted-foreground/40 font-medium block">Ayer</span>
+                  <span className={`text-[12px] font-bold tabular-nums ${yesterdayColor}`}>{hideBalances ? "--" : fmt(yesterdayPnl)}</span>
                 </div>
-                <div className="bg-white/[0.03] rounded-xl p-2.5 text-center">
-                  <span className="text-[8px] text-muted-foreground/40 font-medium block">Futuros</span>
-                  <span className={`text-[13px] font-bold tabular-nums ${bybitUnrealized >= 0 ? 'text-[oklch(0.72_0.19_160)]' : 'text-[oklch(0.63_0.24_25)]'}`}>{hideBalances ? "--" : fmt(bybitUnrealized)}</span>
+                <div className="bg-white/[0.03] rounded-xl p-2 text-center">
+                  <span className="text-[7px] text-muted-foreground/40 font-medium block">Semana</span>
+                  <span className={`text-[12px] font-bold tabular-nums ${weekColor}`}>{hideBalances ? "--" : fmt(weekPnl)}</span>
+                </div>
+                <div className="bg-white/[0.03] rounded-xl p-2 text-center">
+                  <span className="text-[7px] text-muted-foreground/40 font-medium block">A\u00f1o</span>
+                  <span className={`text-[12px] font-bold tabular-nums ${yearColor}`}>{hideBalances ? "--" : fmt(yearPnl)}</span>
+                </div>
+              </div>
+              <div className="grid grid-cols-3 gap-1.5 mt-1.5">
+                <div className="bg-white/[0.03] rounded-xl p-2 text-center">
+                  <span className="text-[7px] text-muted-foreground/40 font-medium block">Abierto ({openPosCount})</span>
+                  <span className={`text-[12px] font-bold tabular-nums ${unrealizedPnl >= 0 ? 'text-[oklch(0.75_0.14_200)]' : 'text-[oklch(0.8_0.15_85)]'}`}>{hideBalances ? "--" : fmt(unrealizedPnl)}</span>
+                </div>
+                <div className="bg-white/[0.03] rounded-xl p-2 text-center">
+                  <span className="text-[7px] text-muted-foreground/40 font-medium block">Futuros PnL</span>
+                  <span className={`text-[12px] font-bold tabular-nums ${bybitUnrealized >= 0 ? 'text-[oklch(0.72_0.19_160)]' : 'text-[oklch(0.63_0.24_25)]'}`}>{hideBalances ? "--" : fmt(bybitUnrealized)}</span>
+                </div>
+                <div className="bg-white/[0.03] rounded-xl p-2 text-center">
+                  <span className="text-[7px] text-muted-foreground/40 font-medium block">Trades Hoy</span>
+                  <span className="text-[12px] font-bold tabular-nums text-primary">{todayTrades}</span>
                 </div>
               </div>
             </div>
@@ -867,10 +891,16 @@ export default function Home() {
             </div>
             <div className="mt-5 pt-4 border-t border-white/[0.05]">
               <div className="flex items-center justify-between mb-4"><span className="text-[10px] font-bold tracking-[0.15em] text-muted-foreground/50 uppercase">Ganancia Real</span><span className={`text-xl font-black tabular-nums ${pnlColor}`}>{hideBalances ? "----" : fmt(realProfit)}</span></div>
-              <div className="grid grid-cols-3 gap-4">
-                <div className="bg-white/[0.03] rounded-xl p-3"><span className="text-[10px] text-muted-foreground/50 block font-medium">Hoy ({todayTrades})</span><span className={`text-base font-bold tabular-nums ${todayColor}`}>{hideBalances ? "----" : fmt(todayPnl)}</span></div>
-                <div className="bg-white/[0.03] rounded-xl p-3"><span className="text-[10px] text-muted-foreground/50 block font-medium">Abierto ({openPosCount})</span><span className={`text-base font-bold tabular-nums ${unrealizedPnl >= 0 ? 'text-[oklch(0.75_0.14_200)]' : 'text-[oklch(0.8_0.15_85)]'}`}>{hideBalances ? "----" : fmt(unrealizedPnl)}</span></div>
-                <div className="bg-white/[0.03] rounded-xl p-3"><span className="text-[10px] text-muted-foreground/50 block font-medium">Futuros PnL</span><span className={`text-base font-bold tabular-nums ${bybitUnrealized >= 0 ? 'text-[oklch(0.72_0.19_160)]' : 'text-[oklch(0.63_0.24_25)]'}`}>{hideBalances ? "----" : fmt(bybitUnrealized)}</span></div>
+              <div className="grid grid-cols-4 gap-2">
+                <div className="bg-white/[0.03] rounded-xl p-2.5 text-center"><span className="text-[9px] text-muted-foreground/50 block font-medium">Hoy</span><span className={`text-sm font-bold tabular-nums ${todayColor}`}>{hideBalances ? "--" : fmt(todayPnl)}</span></div>
+                <div className="bg-white/[0.03] rounded-xl p-2.5 text-center"><span className="text-[9px] text-muted-foreground/50 block font-medium">Ayer</span><span className={`text-sm font-bold tabular-nums ${yesterdayColor}`}>{hideBalances ? "--" : fmt(yesterdayPnl)}</span></div>
+                <div className="bg-white/[0.03] rounded-xl p-2.5 text-center"><span className="text-[9px] text-muted-foreground/50 block font-medium">Semana</span><span className={`text-sm font-bold tabular-nums ${weekColor}`}>{hideBalances ? "--" : fmt(weekPnl)}</span></div>
+                <div className="bg-white/[0.03] rounded-xl p-2.5 text-center"><span className="text-[9px] text-muted-foreground/50 block font-medium">A\u00f1o</span><span className={`text-sm font-bold tabular-nums ${yearColor}`}>{hideBalances ? "--" : fmt(yearPnl)}</span></div>
+              </div>
+              <div className="grid grid-cols-3 gap-2 mt-2">
+                <div className="bg-white/[0.03] rounded-xl p-2.5 text-center"><span className="text-[9px] text-muted-foreground/50 block font-medium">Abierto ({openPosCount})</span><span className={`text-sm font-bold tabular-nums ${unrealizedPnl >= 0 ? 'text-[oklch(0.75_0.14_200)]' : 'text-[oklch(0.8_0.15_85)]'}`}>{hideBalances ? "--" : fmt(unrealizedPnl)}</span></div>
+                <div className="bg-white/[0.03] rounded-xl p-2.5 text-center"><span className="text-[9px] text-muted-foreground/50 block font-medium">Futuros PnL</span><span className={`text-sm font-bold tabular-nums ${bybitUnrealized >= 0 ? 'text-[oklch(0.72_0.19_160)]' : 'text-[oklch(0.63_0.24_25)]'}`}>{hideBalances ? "--" : fmt(bybitUnrealized)}</span></div>
+                <div className="bg-white/[0.03] rounded-xl p-2.5 text-center"><span className="text-[9px] text-muted-foreground/50 block font-medium">Trades Hoy</span><span className="text-sm font-bold tabular-nums text-primary">{todayTrades}</span></div>
               </div>
             </div>
           </div>

@@ -122,13 +122,17 @@ export const appRouter = router({
         realProfit: string;
         realProfitPct: string;
         todayPnl: string;
+        yesterdayPnl: string;
+        weekPnl: string;
+        yearPnl: string;
         todayTrades: number;
         totalTrades: number;
         winRate: string;
         openPositions: { count: number; unrealizedPnl: string };
       } = {
         totalBalance: "0", initialDeposit: "0", realProfit: "0", realProfitPct: "0",
-        todayPnl: "0", todayTrades: 0, totalTrades: 0, winRate: "0",
+        todayPnl: "0", yesterdayPnl: "0", weekPnl: "0", yearPnl: "0",
+        todayTrades: 0, totalTrades: 0, winRate: "0",
         openPositions: { count: 0, unrealizedPnl: "0" },
       };
 
@@ -238,6 +242,24 @@ export const appRouter = router({
         const winTrades = sellTrades.filter(t => parseFloat(t.pnl ?? "0") > 0);
         results.winRate = sellTrades.length > 0 ? ((winTrades.length / sellTrades.length) * 100).toFixed(1) : "0";
       } catch { /* trades query failed */ }
+
+      // Yesterday, Week, Year PnL from pnl_history
+      try {
+        const pnlHist = await db.getPnlHistory(ctx.user.id, 365);
+        const now = new Date();
+        const yesterdayStr = new Date(now.getTime() - 86400000).toISOString().slice(0, 10);
+        const weekAgo = new Date(now.getTime() - 7 * 86400000);
+        const yearStart = new Date(now.getFullYear(), 0, 1);
+        // Yesterday PnL
+        const yesterdayEntry = pnlHist.find(h => h.date === yesterdayStr);
+        results.yesterdayPnl = yesterdayEntry ? parseFloat(yesterdayEntry.pnl ?? "0").toFixed(2) : "0";
+        // Week PnL (sum of last 7 days)
+        const weekPnl = pnlHist.filter(h => new Date(h.date) >= weekAgo).reduce((s, h) => s + parseFloat(h.pnl ?? "0"), 0);
+        results.weekPnl = weekPnl.toFixed(2);
+        // Year PnL (sum from Jan 1)
+        const yearPnl = pnlHist.filter(h => new Date(h.date) >= yearStart).reduce((s, h) => s + parseFloat(h.pnl ?? "0"), 0);
+        results.yearPnl = yearPnl.toFixed(2);
+      } catch { /* pnl history query failed */ }
 
       // Open positions from engine
       try {

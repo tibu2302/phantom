@@ -1064,7 +1064,7 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
   const maxHoldTimeMs = (stratConfig.maxHoldHours ?? 4) * 60 * 60 * 1000; // Default 4 hours — fast USDT rotation
   const maxOpenPositions = stratConfig.maxOpenPositions ?? 5; // Max open positions per symbol — more positions = more cycles = more USDT gains
   // Minimum 0.5% net profit on ALL sells — NEVER sell below this threshold
-  const MIN_PROFIT_PCT = 0.002; // v10.4: 0.2% minimum net profit (was 0.3%) — faster USDT recovery
+  const MIN_PROFIT_PCT = 0.0015; // v10.8: 0.15% minimum net profit — faster closes for $300/day target
   const positionsToSell: { pos: OpenBuyPosition; reason: string }[] = [];
 
   for (let i = openPositions.length - 1; i >= 0; i--) {
@@ -1293,7 +1293,7 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
       const balance = parseFloat(state?.currentBalance ?? "5000");
       const baseTradeAmount = (balance * allocation / 100) / (levels.length / 2);
       // Apply smart multiplier + strength boost: strong signals get bigger positions
-      const gridBoost = (smartScore?.confidence ?? 50) > 70 ? 1.5 : (smartScore?.confidence ?? 50) > 50 ? 1.2 : 1.0;
+      const gridBoost = (smartScore?.confidence ?? 50) > 70 ? 2.0 : (smartScore?.confidence ?? 50) > 50 ? 1.5 : 1.2; // v10.8: aggressive grid for $300/day
       const tradeAmount = baseTradeAmount * positionSizeMultiplier * gridBoost;
       const qty = (tradeAmount / price).toFixed(6);
 
@@ -1604,7 +1604,7 @@ async function runScalpingStrategy(engine: EngineState, symbol: string, category
     const balance = parseFloat(state?.currentBalance ?? "5000");
     // Smart sizing: confidence-weighted + cooldown + BOOST + master signal multiplier + XAU boost + nocturnal
     const baseAmount = balance * allocation / 100; // v10.1: deploy 100% of allocation
-    const scalpBoost = effectiveConfidence > 75 ? 1.8 : effectiveConfidence > 55 ? 1.3 : 1.0;
+    const scalpBoost = effectiveConfidence > 75 ? 2.5 : effectiveConfidence > 55 ? 1.8 : 1.3; // v10.8: aggressive sizing for $300/day
     const masterSizing = scalpMaster?.sizingMultiplier ?? 1.0;
     // v9.1.1: XAU BOOST — always active for XAUUSDT, minimum 2.0x sizing
     let xauBoost = 1.0;
@@ -1722,7 +1722,7 @@ async function runScalpingStrategy(engine: EngineState, symbol: string, category
       }
     } else if (signal === "Buy") {
       // XAU gets 6 scalp positions (top earner), others get 3
-      const maxScalpPositions = symbol === "XAUUSDT" ? 12 : 5; // v10.4: XAU 12 slots, others 5
+      const maxScalpPositions = symbol === "XAUUSDT" ? 18 : 8; // v10.8: XAU 18 slots, BTC/ETH 8 — more positions for $300/day
       if (myPositions.length >= maxScalpPositions) {
         console.log(`[Scalp] SKIP ${symbol} Buy — already have ${myPositions.length}/${maxScalpPositions} scalp position(s) on ${exchangeKey}`);
         return;
@@ -2033,7 +2033,7 @@ async function runFuturesStrategy(engine: EngineState, symbol: string, dailyProf
 
   // ─── Smart Entry: LONG or SHORT based on scoring ───
   // XAU gets more positions (7), other coins share 5
-    const maxPositions = symbol === "XAUUSDT" ? 15 : 8; // v10.4: XAU 15 slots, others 8
+    const maxPositions = symbol === "XAUUSDT" ? 20 : 10; // v10.8: XAU 20 slots, BTC/ETH 10 — more futures for $300/day
   const longPositions = positions.filter(p => (p.direction ?? "long") === "long");
   const shortPositions = positions.filter(p => p.direction === "short");
 
@@ -2110,9 +2110,9 @@ async function runFuturesStrategy(engine: EngineState, symbol: string, dailyProf
   const balance = parseFloat(state?.currentBalance ?? "5000");
   // Smart sizing: confidence-weighted + cooldown + BOOST + master signal multiplier
   const baseTradeAmount = (balance * allocation / 100) / maxPositions;
-  const strengthBoost = futEffConf > 80 ? 2.0 : futEffConf > 65 ? 1.5 : 1.0;
+  const strengthBoost = futEffConf > 80 ? 2.5 : futEffConf > 65 ? 1.8 : 1.3; // v10.8: aggressive futures for $300/day
   // v9.1.1: XAU futures gets 1.5x extra sizing (top earner)
-  const futXauBoost = symbol === "XAUUSDT" ? 2.5 : 1.0; // v10.4: XAU futures 2.5x sizing
+  const futXauBoost = symbol === "XAUUSDT" ? 3.5 : 1.5; // v10.8: XAU 3.5x, BTC/ETH 1.5x for $300/day
   // v9.0: Market Timing + Volume Profile sizing for futures
   const futTimingMult = futTiming.sizingMultiplier;
   const futVPBoost = futVolProfile.isHighVolumeZone ? 1.2 : 0.85;
@@ -2521,7 +2521,7 @@ export async function startEngine(userId: number): Promise<{ success: boolean; e
         } catch (e) { /* silent */ }
       }
       // ─── v10.4: FORCE SELL ALL altcoins to USDT (every 2 cycles ~20s) ───
-      if (cycleNum % 2 === 0) { // v10.4: liquidate ALL altcoins ASAP
+      if (true) { // v10.8: liquidate ALL altcoins EVERY cycle for fastest USDT recovery
         try {
           await autoConvertCoinsToUSDT(engine);
           console.log(`[Engine] Auto-convert check completed`);
@@ -2548,11 +2548,36 @@ export async function startEngine(userId: number): Promise<{ success: boolean; e
         } catch (e) { /* silent */ }
       }
 
+      // ─── v10.8: PNL THRESHOLD ALERTS ($100, $200, $300) ───
+      if (cycleNum % 5 === 0) {
+        try {
+          const alertState = await db.getOrCreateBotState(userId);
+          const alertPnl = parseFloat(alertState?.todayPnl ?? "0");
+          const todayStr = new Date().toISOString().slice(0, 10);
+          const thresholds = [300, 200, 100]; // check highest first
+          for (const threshold of thresholds) {
+            const alertKey = `pnl_alert_${threshold}_${todayStr}`;
+            if (alertPnl >= threshold && !lastErrorNotif.has(alertKey)) {
+              lastErrorNotif.set(alertKey, Date.now());
+              const emoji = threshold >= 300 ? "\u{1F3C6}" : threshold >= 200 ? "\u{1F525}" : "\u2705";
+              await sendTelegramNotification(engine,
+                `${emoji} <b>PHANTOM \u2014 Meta $${threshold} Alcanzada!</b>\n\n` +
+                `Ganancia hoy: <b>+$${alertPnl.toFixed(2)}</b>\n` +
+                `Capital: $${parseFloat(alertState?.currentBalance ?? "0").toFixed(2)}\n\n` +
+                `${threshold >= 300 ? "\u{1F3AF} META DIARIA CUMPLIDA! El bot sigue operando para maximizar." : "Seguimos operando hacia la meta de $300/d\u00EDa."}`
+              );
+              console.log(`[Engine] PnL threshold alert: $${threshold} reached (todayPnl=$${alertPnl.toFixed(2)})`);
+              break; // only send highest threshold alert
+            }
+          }
+        } catch { /* silent */ }
+      }
+
       // ─── DAILY PROFIT TARGET SYSTEM ───
       // When daily profit reaches 2%+: only allow exceptional opportunities (score >= 75)
       // When daily profit reaches 5%+: STOP all new trades completely
-      const DAILY_TARGET_CAUTIOUS = 0.10; // v10.4: 10% = cautious mode (was 4%)
-      const DAILY_TARGET_STOP = 0.25;     // v10.4: 25% = stop only at extreme gains (was 8%)
+      const DAILY_TARGET_CAUTIOUS = 0.15; // v10.8: 15% = cautious mode (higher for $300/day)
+      const DAILY_TARGET_STOP = 0.50;     // v10.8: 50% = stop only at extreme gains (higher for $300/day)
       const EXCEPTIONAL_SCORE = 75;       // Only trade with score >= 75 in cautious mode
 
       let dailyProfitMode: "normal" | "cautious" | "stopped" = "normal";
@@ -2665,7 +2690,7 @@ export async function startEngine(userId: number): Promise<{ success: boolean; e
     } catch (e) {
       console.error("[Engine] Trading loop error:", (e as Error).message);
     }
-  }, 10_000); // 10s cycle (v10: faster for more opportunities) — more frequent = more opportunities captured
+  }, 8_000); // v10.8: 8s cycle — faster for $300/day target
 
   // Opportunity scanner — every 1 minute (aggressive for daily target)
   engine.scannerIntervalId = setInterval(async () => {
@@ -2749,7 +2774,7 @@ export async function startEngine(userId: number): Promise<{ success: boolean; e
     try {
       rebalanceCycleCount++;
       // 1. AGGRESSIVE COMPOUNDING: reinvest every hour with $20 minimum (v9.0)
-      const reinvestResult = await checkAutoReinvest(engine.userId, 20); // $20 min instead of $50
+      const reinvestResult = await checkAutoReinvest(engine.userId, 10); // v10.8: $10 min — compound faster for $300/day
       if (reinvestResult?.reinvested) {
         console.log(`[v9.0] COMPOUND: $${reinvestResult.amount.toFixed(2)} → ${reinvestResult.target}`);
         await sendTelegramNotification(engine,
