@@ -981,7 +981,15 @@
 - [ ] Push a GitHub y checkpoint
 
 ## v11.5 — Solo Grid + Scalping, sin Futuros (25 Abril 2026)
-- [ ] Desactivar futuros completamente — solo Grid Trading (Spot) y Scalping (Spot)
-- [ ] Fix alertas duplicadas "Meta $100 Alcanzada" — enviar solo una vez por umbral por día
+- [x] Desactivar futuros completamente — skip en main loop + first cycle
+- [x] Fix alertas duplicadas "Meta $100 Alcanzada" — triple-check (Set + Map)
+- [x] Remover Futures de /status y daily summary
+- [x] Verificar TypeScript y tests — 0 errores, 1/1 passing
+- [x] Push a GitHub y checkpoint — commit fb99c89
+
+## v11.6 — Concentrar capital + Fix alertas Telegram (25 Abril 2026)
+- [ ] Concentrar capital en BTC, ETH, SOL, XAU — desactivar monedas pequeñas (DOGE, ADA, AVAX, LINK, ARB, SUI, XRP)
+- [ ] Fix alerta "Meta $100" repetida — usar PnL real de trades cerrados hoy, no balance vs capital
+- [ ] Fix "Capital Rebalanceado" — solo rebalancear entre las 4 monedas activas
 - [ ] Verificar TypeScript y tests
 - [ ] Push a GitHub y checkpoint

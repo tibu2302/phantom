@@ -223,8 +223,9 @@ export function getEngineCycles(userId: number): number {
 
 // Coins to scan for opportunities
 // v11.0: BEAST MODE — 4 core assets: XAU, BTC, ETH, SP500
+// v11.6: Concentrated — only BTC, ETH, SOL, XAU
 const SCANNER_COINS = [
-  "XAUUSDT", "BTCUSDT", "ETHUSDT", "SP500USDT",
+  "XAUUSDT", "BTCUSDT", "ETHUSDT", "SOLUSDT",
 ];
 
 // ─── Trading Hours Filter ───
@@ -252,8 +253,8 @@ function hasAdequateVolume(symbol: string): boolean {
   const minTurnover: Record<string, number> = {
     BTCUSDT: 5_000_000,
     ETHUSDT: 2_000_000,
+    SOLUSDT: 1_000_000,
     XAUUSDT: 500_000,
-    SP500USDT: 0,
     default: 100_000,
   };
   const threshold = minTurnover[symbol] ?? minTurnover.default;
@@ -447,7 +448,7 @@ const YAHOO_TICKERS: Record<string, string> = {
 
 // Bybit klines API as fallback for linear symbols
 // v10.7: CONCENTRATED — only XAU, BTC, ETH
-const BYBIT_KLINE_SYMBOLS = new Set(["XAUUSDT", "BTCUSDT", "ETHUSDT", "SP500USDT"]);
+const BYBIT_KLINE_SYMBOLS = new Set(["XAUUSDT", "BTCUSDT", "ETHUSDT", "SOLUSDT"]); // v11.6: concentrated
 
 async function fetchKlines(_client: RestClientV5 | null, symbol: string, _interval: any = "15", limit: number = 50, _category: "spot" | "linear" = "spot"): Promise<KlineData> {
   // Check cache first
@@ -2522,7 +2523,7 @@ export async function startEngine(userId: number): Promise<{ success: boolean; e
 
       // ─── PAIR PRICE TRACKING: Update every cycle for pairs trading ───
       try {
-        for (const sym of ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "DOGEUSDT", "AVAXUSDT"]) {
+        for (const sym of ["BTCUSDT", "ETHUSDT", "SOLUSDT"]) { // v11.6: concentrated
           const ticker = livePrices.get(sym);
           if (ticker) updatePairPrice(sym, ticker.lastPrice);
         }
@@ -2598,43 +2599,51 @@ export async function startEngine(userId: number): Promise<{ success: boolean; e
         } catch (e) { /* silent */ }
       }
 
-      // ─── v10.8.1: PNL THRESHOLD ALERTS ($100, $200, $300) — real Bybit balance, no duplicates ───
-      // v11.5: Check every 30 cycles (~3 min) instead of 5 to reduce alert spam
-      if (cycleNum % 30 === 0) {
+      // ─── v11.6: PNL THRESHOLD ALERTS ($100, $200, $300) — REAL trades PnL, no duplicates ───
+      // Check every 60 cycles (~6 min) to avoid spam and give time for new trades
+      if (cycleNum % 60 === 0) {
         try {
-          const alertState = await db.getOrCreateBotState(userId);
-          const alertPnl = parseFloat(alertState?.todayPnl ?? "0");
           const todayStr = new Date().toISOString().slice(0, 10);
+          const now = new Date();
+          const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+
+          // v11.6: Calculate REAL PnL from actual closed trades today (not stale DB value)
+          const allTradesForAlert = await db.getUserTrades(userId, 5000);
+          const todayClosedTrades = allTradesForAlert.filter(t => 
+            new Date(t.createdAt) >= todayStart && t.side === "sell"
+          );
+          const realTodayPnl = todayClosedTrades.reduce((sum, t) => sum + parseFloat(t.pnl ?? "0"), 0);
 
           // Fetch REAL Bybit balance for the alert message
-          let realCapital = parseFloat(alertState?.currentBalance ?? "0");
+          let realCapital = 0;
           try {
             if (engine.client) {
               const walletRes = await withRetry(() => engine.client.getWalletBalance({ accountType: "UNIFIED" }), "Alert Bybit balance");
               const bybitEquity = parseFloat((walletRes.result as any)?.list?.[0]?.totalEquity ?? "0");
               if (bybitEquity > 0) realCapital = bybitEquity;
             }
-          } catch { /* use DB balance as fallback */ }
+          } catch { /* use 0 as fallback */ }
 
           const thresholds = [300, 200, 100]; // check highest first
           for (const threshold of thresholds) {
             const alertKey = `pnl_threshold_${threshold}_${todayStr}`;
-            // v11.5: Triple-check to prevent duplicates: in-memory Set + Map + time-based cooldown
+            // Triple-check to prevent duplicates: in-memory Set + Map
             const alreadySentMemory = engine.pnlAlertsSentToday?.has(alertKey) ?? false;
             const alreadySentMap = lastErrorNotif.has(alertKey);
-            if (alertPnl >= threshold && !alreadySentMemory && !alreadySentMap) {
+            if (realTodayPnl >= threshold && !alreadySentMemory && !alreadySentMap) {
               // Mark as sent in BOTH places immediately
               if (!engine.pnlAlertsSentToday) engine.pnlAlertsSentToday = new Set();
               engine.pnlAlertsSentToday.add(alertKey);
               lastErrorNotif.set(alertKey, Date.now());
               const emoji = threshold >= 300 ? "\u{1F3C6}" : threshold >= 200 ? "\u{1F525}" : "\u2705";
+              const tradeCount = todayClosedTrades.length;
               await sendTelegramNotification(engine,
                 `${emoji} <b>PHANTOM \u2014 Meta $${threshold} Alcanzada!</b>\n\n` +
-                `Ganancia hoy: <b>+$${alertPnl.toFixed(2)}</b>\n` +
+                `Ganancia hoy: <b>+$${realTodayPnl.toFixed(2)}</b> (${tradeCount} trades cerrados)\n` +
                 `Capital real (Bybit): <b>$${realCapital.toFixed(2)}</b>\n\n` +
                 `${threshold >= 300 ? "\u{1F3AF} META DIARIA CUMPLIDA! El bot sigue operando para maximizar." : "Seguimos operando hacia la meta de $300/d\u00EDa."}`
               );
-              console.log(`[Engine] PnL threshold alert: $${threshold} reached (todayPnl=$${alertPnl.toFixed(2)}, realCapital=$${realCapital.toFixed(2)})`);
+              console.log(`[Engine] PnL threshold alert: $${threshold} reached (realTodayPnl=$${realTodayPnl.toFixed(2)}, trades=${tradeCount}, capital=$${realCapital.toFixed(2)})`);
               break; // only send highest threshold alert
             }
           }
@@ -2837,7 +2846,7 @@ export async function startEngine(userId: number): Promise<{ success: boolean; e
         const allocResult = await rebalanceCapital(engine.userId);
         if (allocResult.decisions.length > 0) {
           console.log(`[Allocator] REBALANCE: ${allocResult.decisions.length} changes, top=${allocResult.topPerformer?.strategy} ${allocResult.topPerformer?.symbol}`);
-          let msg = `🔄 <b>Capital Rebalanceado v9.0</b>\n\n`;
+          let msg = `🔄 <b>Capital Rebalanceado v11.6</b>\n\n`;
           for (const d of allocResult.decisions) {
             msg += `${d.newAllocationPct > d.oldAllocationPct ? "⬆️" : "⬇️"} ${d.strategy} ${d.symbol}: ${d.oldAllocationPct}% → ${d.newAllocationPct}%\n`;
           }
@@ -2988,21 +2997,23 @@ async function sendStatusReport(engine: EngineState) {
     const realProfit = totalBal - initialDeposit;
     const realProfitPct = initialDeposit > 0 ? ((realProfit / initialDeposit) * 100).toFixed(1) : "0";
 
-    // TODAY's PnL: calculated from actual trades created today (authoritative source)
+    // v11.6: TODAY's PnL from CLOSED (sell) trades only — these have real PnL values
     const allTrades = await db.getUserTrades(engine.userId, 5000);
     const now = new Date();
     const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     const todayTrades = allTrades.filter(t => new Date(t.createdAt) >= todayStart);
-    const todayPnl = todayTrades.reduce((sum, t) => sum + parseFloat(t.pnl ?? "0"), 0);
+    const todaySellTrades = todayTrades.filter(t => t.side === "sell");
+    const todayPnl = todaySellTrades.reduce((sum, t) => sum + parseFloat(t.pnl ?? "0"), 0);
+    const todayBuyCount = todayTrades.filter(t => t.side === "buy").length;
 
     // Win rate from all sell trades
     const sellTrades = allTrades.filter(t => t.side === "sell");
     const winTrades = sellTrades.filter(t => parseFloat(t.pnl ?? "0") > 0);
     const winRate = sellTrades.length > 0 ? ((winTrades.length / sellTrades.length) * 100).toFixed(1) : "0";
 
-    // Per-strategy breakdown for today
+    // Per-strategy breakdown for today (only sell trades = closed with PnL)
     const stratBreakdown: Record<string, { count: number; pnl: number }> = {};
-    for (const t of todayTrades) {
+    for (const t of todaySellTrades) {
       const key = t.strategy ?? "unknown";
       if (!stratBreakdown[key]) stratBreakdown[key] = { count: 0, pnl: 0 };
       stratBreakdown[key].count++;
@@ -3021,13 +3032,13 @@ async function sendStatusReport(engine: EngineState) {
 
     const message = `\u{1F47B} <b>PHANTOM \u2014 Estado Actual</b>\n${mode} | ${uptime}\n\n` +
       `\u{1F4B0} <b>Balances</b>\n  Bybit: ${bybitBal}\n  KuCoin: ${kucoinBal}\n  Total: $${totalBal.toFixed(2)}\n  Capital: $${initialDeposit.toFixed(2)}\n\n` +
-      `${todayEmoji} <b>PnL Hoy</b>: ${todayPnl >= 0 ? "+" : ""}$${todayPnl.toFixed(2)}\n` +
-      `${totalEmoji} <b>Ganancia Real</b>: ${realProfit >= 0 ? "+" : ""}$${realProfit.toFixed(2)} (${realProfitPct}%)\n\n` +
+      `${todayEmoji} <b>Ganancia Hoy</b>: ${todayPnl >= 0 ? "+" : ""}$${todayPnl.toFixed(2)} (${todaySellTrades.length} ventas cerradas)\n` +
+      `${totalEmoji} <b>Ganancia Total</b>: ${realProfit >= 0 ? "+" : ""}$${realProfit.toFixed(2)} (${realProfitPct}%)\n\n` +
       `\u{1F4E6} <b>Posiciones Abiertas</b>\n  Grid: ${gridCount}\n  Scalping: ${scalpCount}\n\n` +
-      `\u{1F3AF} <b>Operaciones Hoy</b>: ${todayTrades.length}\n` +
-      `\u{1F3C6} <b>Win Rate</b>: ${winRate}% (${sellTrades.length} sells)\n` +
+      `\u{1F3AF} <b>Operaciones Hoy</b>: ${todayBuyCount} compras, ${todaySellTrades.length} ventas\n` +
+      `\u{1F3C6} <b>Win Rate</b>: ${winRate}% (${sellTrades.length} ventas totales)\n` +
       (stratLines ? `\n\u{1F4CA} <b>Desglose Hoy</b>:${stratLines}\n` : "") +
-      `\n\u2014\n<i>PHANTOM Trading Bot</i>`;
+      `\n\u2014\n<i>PHANTOM Trading Bot v11.6</i>`;
 
     await sendTelegramNotification(engine, message);
     console.log(`[Engine] /status report sent via Telegram for user ${engine.userId}`);
@@ -3319,10 +3330,10 @@ let wsInitialized = false;
 
 // v11.0: BEAST MODE — BTC/ETH spot feed
 const SPOT_SYMBOLS = [
-  "BTCUSDT", "ETHUSDT",
+  "BTCUSDT", "ETHUSDT", "SOLUSDT",
 ];
-// v11.0: BEAST MODE — 4 core assets on linear
-const LINEAR_SYMBOLS = ["XAUUSDT", "BTCUSDT", "ETHUSDT", "SP500USDT"];
+// v11.6: Concentrated — BTC, ETH, SOL, XAU only
+const LINEAR_SYMBOLS = ["XAUUSDT", "BTCUSDT", "ETHUSDT", "SOLUSDT"];
 
 function parseWsTickerMsg(data: Buffer | string): void {
   try {

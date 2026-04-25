@@ -45,25 +45,20 @@ export const appRouter = router({
     start: protectedProcedure.mutation(async ({ ctx }) => {
       // Auto-seed default strategies if none exist
       const existingStrats = await db.getUserStrategies(ctx.user.id);
-      // v10.7: CONCENTRATED — Only XAU, BTC, ETH. All other coins disabled.
+      // v11.6: CONCENTRATED — Only BTC, ETH, SOL, XAU. Grid + Scalping only (no futures).
       // Force-sync: ALWAYS upsert strategies with concentrated allocation
       {
         const defaultStrats: Array<{ symbol: string; strategyType: string; market: string; category: string; allocationPct: number; enabled: boolean; config?: any }> = [
-          // v11.0 BEAST MODE: 4 assets × 3 strategies = 12 strategies, 100% capital
-          // Grid strategies — BTC, ETH, SP500 (LINEAR/USDT-settled)
-          { symbol: "BTCUSDT", strategyType: "grid", market: "crypto", category: "linear", allocationPct: 40, enabled: true },
-          { symbol: "ETHUSDT", strategyType: "grid", market: "crypto", category: "linear", allocationPct: 40, enabled: true },
-          { symbol: "SP500USDT", strategyType: "grid", market: "tradfi", category: "linear", allocationPct: 30, enabled: true },
-          // Scalping — XAU is king, all 4 assets active
+          // v11.6: CONCENTRATED — Only BTC, ETH, SOL, XAU. Grid + Scalping only (no futures).
+          // Grid strategies — BTC, ETH, SOL (spot via LINEAR/USDT-settled)
+          { symbol: "BTCUSDT", strategyType: "grid", market: "crypto", category: "linear", allocationPct: 30, enabled: true },
+          { symbol: "ETHUSDT", strategyType: "grid", market: "crypto", category: "linear", allocationPct: 25, enabled: true },
+          { symbol: "SOLUSDT", strategyType: "grid", market: "crypto", category: "linear", allocationPct: 20, enabled: true },
+          // Scalping — XAU is king, BTC/ETH/SOL also active
           { symbol: "XAUUSDT", strategyType: "scalping", market: "tradfi", category: "linear", allocationPct: 50, enabled: true },
-          { symbol: "BTCUSDT", strategyType: "scalping", market: "crypto", category: "linear", allocationPct: 30, enabled: true },
-          { symbol: "ETHUSDT", strategyType: "scalping", market: "crypto", category: "linear", allocationPct: 30, enabled: true },
-          { symbol: "SP500USDT", strategyType: "scalping", market: "tradfi", category: "linear", allocationPct: 25, enabled: true },
-          // Futures — all 4 assets with aggressive leverage
-          { symbol: "XAUUSDT", strategyType: "futures", market: "tradfi", category: "linear", allocationPct: 35, enabled: true, config: { leverage: 5, takeProfitPct: 1.2 } },
-          { symbol: "BTCUSDT", strategyType: "futures", market: "crypto", category: "linear", allocationPct: 30, enabled: true, config: { leverage: 5, takeProfitPct: 1.2 } },
-          { symbol: "ETHUSDT", strategyType: "futures", market: "crypto", category: "linear", allocationPct: 30, enabled: true, config: { leverage: 5, takeProfitPct: 1.2 } },
-          { symbol: "SP500USDT", strategyType: "futures", market: "tradfi", category: "linear", allocationPct: 20, enabled: true, config: { leverage: 3, takeProfitPct: 1.5 } },
+          { symbol: "BTCUSDT", strategyType: "scalping", market: "crypto", category: "linear", allocationPct: 25, enabled: true },
+          { symbol: "ETHUSDT", strategyType: "scalping", market: "crypto", category: "linear", allocationPct: 20, enabled: true },
+          { symbol: "SOLUSDT", strategyType: "scalping", market: "crypto", category: "linear", allocationPct: 15, enabled: true },
         ];
         // Disable ALL strategies not in the concentrated list
         const allowedKeys = new Set(defaultStrats.map(s => `${s.symbol}_${s.strategyType}`));
@@ -71,7 +66,7 @@ export const appRouter = router({
           const key = `${existing.symbol}_${existing.strategyType}`;
           if (!allowedKeys.has(key) && existing.enabled) {
             await db.upsertStrategy(ctx.user.id, { ...existing, enabled: false } as any);
-            console.log(`[Bot] v10.7: DISABLED ${existing.strategyType} ${existing.symbol}`);
+            console.log(`[Bot] v11.6: DISABLED ${existing.strategyType} ${existing.symbol}`);
           }
         }
         let synced = 0;
@@ -79,7 +74,7 @@ export const appRouter = router({
           await db.upsertStrategy(ctx.user.id, strat as any);
           synced++;
         }
-        console.log(`[Bot] v10.7: Synced ${synced} CONCENTRATED strategies (XAU+BTC+ETH only) for user ${ctx.user.id}`);
+        console.log(`[Bot] v11.6: Synced ${synced} CONCENTRATED strategies (BTC+ETH+SOL+XAU, Grid+Scalping only) for user ${ctx.user.id}`);
       }
       const result = await startEngine(ctx.user.id);
       if (!result.success) {

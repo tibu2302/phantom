@@ -200,7 +200,7 @@ export default function Home() {
     { symbol: "XAUUSDT", label: "XAU/USD", icon: "Au", color: "oklch(0.8 0.15 85)", isGold: true },
     { symbol: "BTCUSDT", label: "BTC", icon: "\u20bf", color: "oklch(0.8 0.15 85)", isGold: false },
     { symbol: "ETHUSDT", label: "ETH", icon: "\u039e", color: "oklch(0.75 0.14 200)", isGold: false },
-    { symbol: "SP500", label: "S&P", icon: "SP", color: "oklch(0.65 0.2 300)", isGold: false },
+    { symbol: "SOLUSDT", label: "SOL", icon: "◎", color: "oklch(0.75 0.18 280)", isGold: false },
   ];
 
   const as = advancedStats.data;
