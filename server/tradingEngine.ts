@@ -2599,13 +2599,14 @@ export async function startEngine(userId: number): Promise<{ success: boolean; e
       }
 
       // ─── v10.8.1: PNL THRESHOLD ALERTS ($100, $200, $300) — real Bybit balance, no duplicates ───
-      if (cycleNum % 5 === 0) {
+      // v11.5: Check every 30 cycles (~3 min) instead of 5 to reduce alert spam
+      if (cycleNum % 30 === 0) {
         try {
           const alertState = await db.getOrCreateBotState(userId);
           const alertPnl = parseFloat(alertState?.todayPnl ?? "0");
           const todayStr = new Date().toISOString().slice(0, 10);
 
-          // v10.8.1: Fetch REAL Bybit balance for the alert message
+          // Fetch REAL Bybit balance for the alert message
           let realCapital = parseFloat(alertState?.currentBalance ?? "0");
           try {
             if (engine.client) {
@@ -2617,13 +2618,14 @@ export async function startEngine(userId: number): Promise<{ success: boolean; e
 
           const thresholds = [300, 200, 100]; // check highest first
           for (const threshold of thresholds) {
-            // v10.8.1: Use date-based key so alert fires ONCE per threshold per day
             const alertKey = `pnl_threshold_${threshold}_${todayStr}`;
-            if (alertPnl >= threshold && !engine.pnlAlertsSentToday?.has(alertKey)) {
-              // Mark as sent for this engine session
+            // v11.5: Triple-check to prevent duplicates: in-memory Set + Map + time-based cooldown
+            const alreadySentMemory = engine.pnlAlertsSentToday?.has(alertKey) ?? false;
+            const alreadySentMap = lastErrorNotif.has(alertKey);
+            if (alertPnl >= threshold && !alreadySentMemory && !alreadySentMap) {
+              // Mark as sent in BOTH places immediately
               if (!engine.pnlAlertsSentToday) engine.pnlAlertsSentToday = new Set();
               engine.pnlAlertsSentToday.add(alertKey);
-              // Also mark in lastErrorNotif to survive across checks
               lastErrorNotif.set(alertKey, Date.now());
               const emoji = threshold >= 300 ? "\u{1F3C6}" : threshold >= 200 ? "\u{1F525}" : "\u2705";
               await sendTelegramNotification(engine,
@@ -2663,7 +2665,8 @@ export async function startEngine(userId: number): Promise<{ success: boolean; e
               const bybitEngine: EngineState = { ...engine, client: bybitClient, exchange: "bybit", kucoinClient: null };
               console.log(`[Engine] Running ${strat.strategyType} for ${strat.symbol} on Bybit (forced)`);
               if (strat.strategyType === "scalping") await runScalpingStrategy(bybitEngine, strat.symbol, "linear", dailyProfitMode);
-              else if (strat.strategyType === "futures") await runFuturesLongOnly(bybitEngine, strat.symbol, dailyProfitMode);
+              // v11.5: Futures DISABLED — only Grid + Scalping
+              // else if (strat.strategyType === "futures") await runFuturesLongOnly(bybitEngine, strat.symbol, dailyProfitMode);
               else await runGridStrategy(bybitEngine, strat.symbol, "linear", dailyProfitMode);
             } else {
               console.log(`[Engine] Skipping ${strat.symbol} — no Bybit keys available`);
@@ -2671,27 +2674,16 @@ export async function startEngine(userId: number): Promise<{ success: boolean; e
           } else {
             console.log(`[Engine] Running ${strat.strategyType} for ${strat.symbol} on Bybit`);
             if (strat.strategyType === "scalping") await runScalpingStrategy(engine, strat.symbol, "linear", dailyProfitMode);
-            else if (strat.strategyType === "futures") await runFuturesLongOnly(engine, strat.symbol, dailyProfitMode);
+            // v11.5: Futures DISABLED — only Grid + Scalping
+            // else if (strat.strategyType === "futures") await runFuturesLongOnly(engine, strat.symbol, dailyProfitMode);
             else await runGridStrategy(engine, strat.symbol, "linear", dailyProfitMode);
           }
           continue;
         }
 
-        // Futures strategy always on Bybit
+        // v11.5: Futures strategy DISABLED — skip entirely
         if (strat.strategyType === "futures") {
-          if (engine.exchange === "kucoin") {
-            const bybitKeys = await db.getApiKey(userId, "bybit");
-            if (bybitKeys) {
-              const bybitClient = new RestClientV5({ key: bybitKeys.apiKey, secret: bybitKeys.apiSecret });
-              const bybitEngine: EngineState = { ...engine, client: bybitClient, exchange: "bybit", kucoinClient: null };
-              console.log(`[Engine] Running futures for ${strat.symbol} on Bybit (forced)`);
-              await runFuturesLongOnly(bybitEngine, strat.symbol, dailyProfitMode);
-            }
-          } else {
-            console.log(`[Engine] Running futures for ${strat.symbol} on Bybit`);
-            const bybitEngine: EngineState = { ...engine, exchange: "bybit", kucoinClient: null };
-            await runFuturesLongOnly(bybitEngine, strat.symbol, dailyProfitMode);
-          }
+          console.log(`[Engine] SKIP ${strat.symbol} futures — v11.5: futures disabled (only Grid + Scalping)`);
           continue;
         }
 
@@ -2744,23 +2736,23 @@ export async function startEngine(userId: number): Promise<{ success: boolean; e
             const bybitEngine: EngineState = { ...engine, client: bybitClient, exchange: "bybit", kucoinClient: null };
             console.log(`[Engine] First cycle: ${strat.strategyType} ${strat.symbol} on Bybit (forced)`);
             if (strat.strategyType === "scalping") await runScalpingStrategy(bybitEngine, strat.symbol, "linear");
-            else if (strat.strategyType === "futures") await runFuturesLongOnly(bybitEngine, strat.symbol);
+            // v11.5: Futures DISABLED in first cycle too
+            else if (strat.strategyType === "futures") { console.log(`[Engine] SKIP ${strat.symbol} futures (first cycle) — v11.5`); }
             else await runGridStrategy(bybitEngine, strat.symbol, "linear");
           }
         } else {
           console.log(`[Engine] First cycle: ${strat.strategyType} ${strat.symbol} on Bybit`);
           if (strat.strategyType === "scalping") await runScalpingStrategy(engine, strat.symbol, "linear");
-          else if (strat.strategyType === "futures") await runFuturesLongOnly(engine, strat.symbol);
+          // v11.5: Futures DISABLED in first cycle too
+          else if (strat.strategyType === "futures") { console.log(`[Engine] SKIP ${strat.symbol} futures (first cycle) — v11.5`); }
           else await runGridStrategy(engine, strat.symbol, "linear");
         }
         continue;
       }
 
-      // Futures always on Bybit
+      // v11.5: Futures DISABLED — skip in first cycle
       if (strat.strategyType === "futures") {
-        const bybitEngine: EngineState = { ...engine, exchange: "bybit", kucoinClient: null };
-        console.log(`[Engine] First cycle: futures ${strat.symbol} on Bybit`);
-        await runFuturesLongOnly(bybitEngine, strat.symbol);
+        console.log(`[Engine] SKIP ${strat.symbol} futures (first cycle) — v11.5: futures disabled`);
         continue;
       }
 
@@ -3031,7 +3023,7 @@ async function sendStatusReport(engine: EngineState) {
       `\u{1F4B0} <b>Balances</b>\n  Bybit: ${bybitBal}\n  KuCoin: ${kucoinBal}\n  Total: $${totalBal.toFixed(2)}\n  Capital: $${initialDeposit.toFixed(2)}\n\n` +
       `${todayEmoji} <b>PnL Hoy</b>: ${todayPnl >= 0 ? "+" : ""}$${todayPnl.toFixed(2)}\n` +
       `${totalEmoji} <b>Ganancia Real</b>: ${realProfit >= 0 ? "+" : ""}$${realProfit.toFixed(2)} (${realProfitPct}%)\n\n` +
-      `\u{1F4E6} <b>Posiciones Abiertas</b>\n  Grid: ${gridCount}\n  Scalping: ${scalpCount}\n  Futures: ${futCount}\n\n` +
+      `\u{1F4E6} <b>Posiciones Abiertas</b>\n  Grid: ${gridCount}\n  Scalping: ${scalpCount}\n\n` +
       `\u{1F3AF} <b>Operaciones Hoy</b>: ${todayTrades.length}\n` +
       `\u{1F3C6} <b>Win Rate</b>: ${winRate}% (${sellTrades.length} sells)\n` +
       (stratLines ? `\n\u{1F4CA} <b>Desglose Hoy</b>:${stratLines}\n` : "") +
@@ -3146,7 +3138,7 @@ async function sendDailySummary(engine: EngineState) {
       `🎯 <b>Operaciones Hoy</b>: ${todayTrades.length}\n` +
       `🏆 <b>Win Rate Hoy</b>: ${todayWinRate}%\n` +
       `📊 <b>Win Rate Total</b>: ${overallWinRate}% (${sellTrades.length} sells)\n\n` +
-      `📦 <b>Posiciones Abiertas</b>: ${gridCount} grid + ${scalpCount} scalp + ${futCount} futures\n\n` +
+      `📦 <b>Posiciones Abiertas</b>: ${gridCount} grid + ${scalpCount} scalp\n\n` +
       (stratLines ? `📊 <b>Desglose por Estrategia</b>:${stratLines}\n\n` : "") +
       `—\n<i>PHANTOM Trading Bot • Resumen automático 23:00</i>`;
 

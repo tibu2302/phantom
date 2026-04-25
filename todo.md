@@ -973,3 +973,15 @@
 - [ ] Restaurar drawdown protection con límite de $500
 - [ ] Verificar TypeScript y tests
 - [ ] Push a GitHub y checkpoint
+
+## v11.4.1 — Fix alertas duplicadas y PnL Hoy (25 Abril 2026)
+- [ ] BUG: Alerta "Meta $100 Alcanzada" se repite múltiples veces con el mismo monto
+- [ ] BUG: PnL Hoy muestra +$0.00 en /status mientras Ganancia Real muestra +$284.53
+- [ ] Verificar TypeScript y tests
+- [ ] Push a GitHub y checkpoint
+
+## v11.5 — Solo Grid + Scalping, sin Futuros (25 Abril 2026)
+- [ ] Desactivar futuros completamente — solo Grid Trading (Spot) y Scalping (Spot)
+- [ ] Fix alertas duplicadas "Meta $100 Alcanzada" — enviar solo una vez por umbral por día
+- [ ] Verificar TypeScript y tests
+- [ ] Push a GitHub y checkpoint
