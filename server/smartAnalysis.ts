@@ -587,18 +587,20 @@ export function calculateSignalScore(klines: FullKlineData, currentPrice: number
   
   // ─── Final Score Calculation ───
   const maxPossible = 100; // Theoretical max from all indicators
+  // v11.3: Reduced neutral threshold from 10 to 3 — generate more buy/sell signals, less neutral
   const direction: "buy" | "sell" | "neutral" = 
-    buyScore > sellScore + 10 ? "buy" :
-    sellScore > buyScore + 10 ? "sell" : "neutral";
+    buyScore > sellScore + 3 ? "buy" :
+    sellScore > buyScore + 3 ? "sell" : "neutral";
   
   const rawConfidence = direction === "buy" ? buyScore : direction === "sell" ? sellScore : Math.max(buyScore, sellScore);
   const confidence = Math.min(95, Math.round((rawConfidence / maxPossible) * 100));
   
   // ─── Dynamic Position Sizing ───
   // Higher confidence → larger position (0.5x to 1.5x)
-  const suggestedSizePct = confidence >= 70 ? 1.3 :
-                           confidence >= 55 ? 1.0 :
-                           confidence >= 40 ? 0.7 : 0.5;
+  // v11.3: More aggressive sizing — minimum 0.8x even on low confidence
+  const suggestedSizePct = confidence >= 70 ? 1.5 :
+                           confidence >= 55 ? 1.2 :
+                           confidence >= 40 ? 1.0 : 0.8;
   
   // ─── Dynamic Trailing Stop based on ATR ───
   const atrPct = calculateATRPercent(highs, lows, closes);
@@ -694,11 +696,11 @@ export function getLossCooldownMultiplier(symbol: string, strategy: string): num
   const streak = lossStreaks.get(key);
   if (!streak || streak.consecutive === 0) return 1.0;
   
-  // Reduce size after consecutive losses
-  // 1 loss: 80%, 2 losses: 60%, 3+ losses: 40%
-  if (streak.consecutive >= 3) return 0.4;
-  if (streak.consecutive >= 2) return 0.6;
-  return 0.8;
+  // v11.3: Minimal cooldown — keep trading aggressively even after losses
+  // 1 loss: 90%, 2 losses: 80%, 3+ losses: 70% (was 40%)
+  if (streak.consecutive >= 3) return 0.7;
+  if (streak.consecutive >= 2) return 0.8;
+  return 0.9;
 }
 
 // ─── Helper functions (duplicated from tradingEngine to keep module independent) ───

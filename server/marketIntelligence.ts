@@ -945,7 +945,7 @@ export function aggregateMasterSignal(params: {
       sizingMultiplier *= mta.boost;
     } else {
       reasons.push("MTA conflictivo — timeframes en desacuerdo");
-      sizingMultiplier *= 0.5;
+      sizingMultiplier *= 0.8; // v11.3: reduced penalty (was 0.5x) — still trade on conflicting signals
     }
   } else {
     // Fallback: single timeframe
@@ -955,12 +955,9 @@ export function aggregateMasterSignal(params: {
   }
 
   // ─── 2. BTC Correlation ───
+  // v11.3: BTC correlation filter DISABLED — never block trades based on BTC movement
   const btcFilter = getBTCCorrelationFilter(params.symbol);
-  if (!btcFilter.allowed) {
-    blocked = true;
-    blockReason = btcFilter.reason;
-  }
-  sizingMultiplier *= btcFilter.boost;
+  sizingMultiplier *= Math.max(0.7, btcFilter.boost); // min 0.7x, never block
   if (btcFilter.boost !== 1.0) reasons.push(btcFilter.reason);
 
   // ─── 3. Volume Spike ───
@@ -1015,42 +1012,36 @@ export function aggregateMasterSignal(params: {
   sizingMultiplier *= intradayBoost;
 
   // ─── 16. Drawdown Protection ───
+  // v11.3: DISABLED drawdown protection — never pause or reduce size due to daily losses
   const drawdown = updateDrawdownState(params.currentBalance, params.todayPnl);
-  const ddMultiplier = getDrawdownMultiplier();
-  if (ddMultiplier.multiplier === 0) {
-    blocked = true;
-    blockReason = ddMultiplier.reason;
-  }
-  sizingMultiplier *= ddMultiplier.multiplier;
-  if (ddMultiplier.mode !== "normal") reasons.push(ddMultiplier.reason);
+  if (drawdown.mode !== "normal") reasons.push(`Drawdown: ${drawdown.dailyLoss.toFixed(1)}% (ignored — keep trading)`);
 
   // ─── 17. Diversification ───
+  // v11.3: DISABLED diversification block — allow full concentration in best performers
   const diversification = checkDiversification(params.symbol, params.proposedAmount, params.totalCapital);
-  if (!diversification.allowed) {
-    blocked = true;
-    blockReason = diversification.reason;
-  }
+  if (!diversification.allowed) reasons.push(`Diversification: ${diversification.reason} (ignored)`);
 
   // ─── 18. Anti-Manipulation ───
   const manipulation = detectManipulation(params.klines15m);
   if (manipulation.isFakeWick) {
     reasons.push(manipulation.reason);
-    sizingMultiplier *= 0.3; // Drastically reduce size on manipulation
+    sizingMultiplier *= 0.7; // v11.3: reduced penalty (was 0.3x) — still trade during manipulation
     if (manipulation.wickType === "lower") sellScore += 5; // Fake lower wick = bearish
     if (manipulation.wickType === "upper") buyScore += 5; // Fake upper wick = bullish
   }
 
   // ─── Final Calculation ───
   const maxPossible = 100;
+  // v11.3: Reduced neutral threshold from 8 to 3 — more directional signals
   const direction: "buy" | "sell" | "neutral" =
-    buyScore > sellScore + 8 ? "buy" :
-    sellScore > buyScore + 8 ? "sell" : "neutral";
+    buyScore > sellScore + 3 ? "buy" :
+    sellScore > buyScore + 3 ? "sell" : "neutral";
 
   const rawConfidence = direction === "buy" ? buyScore : direction === "sell" ? sellScore : Math.max(buyScore, sellScore);
   const confidence = Math.min(95, Math.round((rawConfidence / maxPossible) * 100));
 
   // Clamp sizing multiplier
-  sizingMultiplier = Math.max(0.2, Math.min(3.0, sizingMultiplier));
+  sizingMultiplier = Math.max(0.5, Math.min(3.0, sizingMultiplier)); // v11.3: min 0.5x (was 0.2x) — always trade meaningful size
 
   return {
     direction,
@@ -1069,7 +1060,7 @@ export function aggregateMasterSignal(params: {
     breakout,
     manipulation,
     session: { session: session.session, aggressiveness: session.aggressiveness },
-    drawdown: { multiplier: ddMultiplier.multiplier, mode: ddMultiplier.mode },
+    drawdown: { multiplier: 1.0, mode: drawdown.mode },
     diversification,
   };
 }

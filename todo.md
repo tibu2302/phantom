@@ -939,3 +939,28 @@
 - [ ] Arreglar el motor para que empiece a operar con el capital disponible
 - [ ] Verificar TypeScript y tests
 - [ ] Push a GitHub y checkpoint
+
+## v11.3 — Capital 100% en uso, generar ganancias constantes (25 Abril 2026)
+- [x] Smart Analysis: reducir threshold neutral de 10 a 3 — más señales buy/sell
+- [x] Master Signal: reducir threshold neutral de 8 a 3 — más señales direccionales
+- [x] BTC Correlation Filter: DESHABILITADO — nunca bloquear trades por BTC
+- [x] Drawdown Protection: DESHABILITADO — nunca pausar el bot por pérdidas diarias
+- [x] Diversification Check: DESHABILITADO — permitir concentración en mejores performers
+- [x] Loss Cooldown: reducido a 90%/80%/70% (era 80%/60%/40%) — seguir operando después de pérdidas
+- [x] Scalp minConfidence: reducido a 5/10 (era 10/25) — entrar más trades
+- [x] Scalp NEUTRAL ENTRY: cuando señal es neutral, forzar Buy para mantener capital desplegado
+- [x] Scalp maxPositions: aumentado a 30/20/20 (era 25/15/12)
+- [x] Scalp boosted confidence: reducido a 3/5 (era 10/20)
+- [x] Futures minConfidence: reducido a 3/5 (era 5/10)
+- [x] Futures neutral entry threshold: reducido a 3 (era 5)
+- [x] Futures maxPositions: aumentado a 20/15/12 (era 15/10/8)
+- [x] Grid maxOpenPositions: aumentado de 5 a 15
+- [x] Grid maxHoldTime: reducido de 4h a 2h — rotación de capital más rápida
+- [x] Compounding: cada 5 min con mínimo $5 (era 15 min / $10)
+- [x] Stale detection: reducido a 0.5h/2h (era 0.75h/3h)
+- [x] Smart Analysis sizing: mínimo 0.8x (era 0.5x)
+- [x] Master Signal sizing clamp: mínimo 0.5x (era 0.2x)
+- [x] MTA conflicting penalty: reducido a 0.8x (era 0.5x)
+- [x] Anti-manipulation penalty: reducido a 0.7x (era 0.3x)
+- [ ] Verificar TypeScript y tests
+- [ ] Push a GitHub y checkpoint

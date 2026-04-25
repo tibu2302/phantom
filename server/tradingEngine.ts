@@ -1058,8 +1058,8 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
   const configTrailingPct = (stratConfig.trailingStopPct ?? 0.5) / 100;
   const trailingPct = dynamicTrailingPct > 0 ? dynamicTrailingPct : configTrailingPct; // ATR-based trailing
   const trailingActivation = (stratConfig.trailingActivationPct ?? 0.5) / 100;
-  const maxHoldTimeMs = (stratConfig.maxHoldHours ?? 4) * 60 * 60 * 1000; // Default 4 hours — fast USDT rotation
-  const maxOpenPositions = stratConfig.maxOpenPositions ?? 5; // Max open positions per symbol — more positions = more cycles = more USDT gains
+  const maxHoldTimeMs = (stratConfig.maxHoldHours ?? 2) * 60 * 60 * 1000; // v11.3: 2 hours default (was 4) — faster capital rotation
+  const maxOpenPositions = stratConfig.maxOpenPositions ?? 15; // v11.3: increased from 5 to 15 — more positions = more capital deployed
   // Minimum 0.5% net profit on ALL sells — NEVER sell below this threshold
   const MIN_PROFIT_PCT = 0.001; // v11.0: BEAST MODE 0.1% minimum net profit — ultra-fast capital rotation for $300-$500/day
   const positionsToSell: { pos: OpenBuyPosition; reason: string }[] = [];
@@ -1560,22 +1560,24 @@ async function runScalpingStrategy(engine: EngineState, symbol: string, category
   // ─── v8.2: Nocturnal Mode — lower thresholds during 2am-6am UTC ───
   const nocturnal = getNocturnalMultiplier();
   // v9.1.1: XAU gets lower threshold (20) to trade more frequently
-  const baseMinConfidence = symbol === "XAUUSDT" ? 10 : 25; // v10.4: XAU ultra-aggressive (10), others 25
+  // v11.3: Ultra-low confidence thresholds — trade as much as possible
+  const baseMinConfidence = symbol === "XAUUSDT" ? 5 : 10; // v11.3: XAU 5, others 10 (was 10/25)
   const minConfidence = Math.round(baseMinConfidence * (1 - nocturnal.confidenceReduction));
   if (nocturnal.confidenceReduction > 0) {
     console.log(`[Scalp] ${symbol} NOCTURNAL MODE: minConfidence reduced ${baseMinConfidence} → ${minConfidence}`);
   }
   if (!isBlocked && effectiveDirection === "buy" && effectiveConfidence >= minConfidence) {
     signal = "Buy";
-    // v11.2: REMOVED micro-momentum filter — was blocking too many entries
-    // Entries now go through immediately when confidence is met
   } else if (effectiveDirection === "sell" && effectiveConfidence >= minConfidence) {
     signal = "Sell";
+  } else if (!isBlocked && effectiveDirection === "neutral" && effectiveConfidence >= 5) {
+    // v11.3: NEUTRAL ENTRY — when signal is neutral, default to Buy to keep capital deployed
+    signal = "Buy";
+    console.log(`[Scalp] ${symbol} NEUTRAL-ENTRY — forcing Buy (conf=${effectiveConfidence}, no clear direction)`);
   }
-
   // In simulation, be more lenient
-  if (engine.simulationMode && !signal && effectiveConfidence >= 20) {
-    signal = effectiveDirection === "buy" ? "Buy" : effectiveDirection === "sell" ? "Sell" : null;
+  if (engine.simulationMode && !signal && effectiveConfidence >= 10) {
+    signal = effectiveDirection === "buy" ? "Buy" : effectiveDirection === "sell" ? "Sell" : "Buy";
   }
 
   console.log(`[Scalp] ${symbol} SMART+MASTER: price=${price.toFixed(2)} score=${effectiveConfidence} dir=${effectiveDirection} regime=${smartScore.regime} signal=${signal ?? 'none'} blocked=${isBlocked} reasons=${reasons.length} cooldown=${scalpCooldown.toFixed(1)}x dailyMode=${dailyProfitMode}`);
@@ -1735,7 +1737,7 @@ async function runScalpingStrategy(engine: EngineState, symbol: string, category
       }
     } else if (signal === "Buy") {
       // XAU gets 6 scalp positions (top earner), others get 3
-      const maxScalpPositions = symbol === "XAUUSDT" ? 25 : (symbol === "SP500USDT" ? 15 : 12); // v11.0: BEAST MODE — XAU 25, SP500 15, BTC/ETH 12
+      const maxScalpPositions = symbol === "XAUUSDT" ? 30 : (symbol === "SP500USDT" ? 20 : 20); // v11.3: XAU 30, SP500 20, BTC/ETH 20 (was 25/15/12)
       if (myPositions.length >= maxScalpPositions) {
         console.log(`[Scalp] SKIP ${symbol} Buy — already have ${myPositions.length}/${maxScalpPositions} scalp position(s) on ${exchangeKey}`);
         return;
@@ -1743,7 +1745,8 @@ async function runScalpingStrategy(engine: EngineState, symbol: string, category
 
       // v10.5: ultra-low confidence thresholds to maximize entries
       const boostedConfidence = smartScore.confidence + breakoutBoost + meanRevBoost;
-      const minScalpConfidence = symbol === "XAUUSDT" ? 10 : 20;
+      // v11.3: Ultra-low confidence — almost always enter
+      const minScalpConfidence = symbol === "XAUUSDT" ? 3 : 5; // v11.3: was 10/20
       if (boostedConfidence < minScalpConfidence) {
         console.log(`[Scalp] SKIP ${symbol} Buy — confidence too low (${smartScore.confidence}% + boosts ${breakoutBoost + meanRevBoost} = ${boostedConfidence}% < ${minScalpConfidence})`);
         return;
@@ -2078,7 +2081,8 @@ async function runFuturesStrategy(engine: EngineState, symbol: string, dailyProf
   }
 
   // Smart scoring determines entry direction — use master signal when available
-  const minFuturesConfidence = dailyProfitMode === "cautious" ? 40 : (symbol === "XAUUSDT" ? 5 : 10); // v10.5: ultra-low thresholds to maximize entries
+  // v11.3: Ultra-low confidence for ALL symbols — enter as many futures as possible
+  const minFuturesConfidence = symbol === "XAUUSDT" ? 3 : 5; // v11.3: was 5/10
   const futBoostedConf = futEffConf + futPMBoost;
   let entryDirection: "long" | "short" | null = null;
 
@@ -2089,16 +2093,16 @@ async function runFuturesStrategy(engine: EngineState, symbol: string, dailyProf
   }
 
   // v10.5: increased per-pair limits (was 3), allow neutral dir for XAU
-  const maxLongPerPair = symbol === "XAUUSDT" ? 15 : (symbol === "SP500USDT" ? 10 : 8); // v11.0: BEAST MODE
-  const maxShortPerPair = symbol === "XAUUSDT" ? 15 : (symbol === "SP500USDT" ? 10 : 8);
+  const maxLongPerPair = symbol === "XAUUSDT" ? 20 : (symbol === "SP500USDT" ? 15 : 12); // v11.3: increased (was 15/10/8)
+  const maxShortPerPair = symbol === "XAUUSDT" ? 20 : (symbol === "SP500USDT" ? 15 : 12);
 
   // v11.2: BEAST MODE — very aggressive entry logic
   if (futEffDir === "buy" && futBoostedConf >= minFuturesConfidence && longPositions.length < maxLongPerPair) {
     entryDirection = "long"; // v11.2: removed regime block
   } else if (futEffDir === "sell" && futBoostedConf >= minFuturesConfidence && shortPositions.length < maxShortPerPair) {
     entryDirection = "short"; // v11.2: removed regime block
-  } else if (futEffDir === "neutral" && futBoostedConf >= 5 && longPositions.length < maxLongPerPair) {
-    // v11.2: ALL symbols enter long on neutral signal (not just XAU)
+  } else if (futEffDir === "neutral" && futBoostedConf >= 3 && longPositions.length < maxLongPerPair) {
+    // v11.3: ALL symbols enter long on neutral signal with ultra-low threshold (3)
     entryDirection = "long";
     console.log(`[Futures] ${symbol} NEUTRAL-ENTRY — forcing long (score=${futBoostedConf})`);
   }
@@ -2770,7 +2774,7 @@ export async function startEngine(userId: number): Promise<{ success: boolean; e
     try {
       rebalanceCycleCount++;
       // 1. AGGRESSIVE COMPOUNDING: reinvest every hour with $20 minimum (v9.0)
-      const reinvestResult = await checkAutoReinvest(engine.userId, 10); // v10.8: $10 min — compound faster for $300/day
+      const reinvestResult = await checkAutoReinvest(engine.userId, 5); // v11.3: $5 min — compound every penny
       if (reinvestResult?.reinvested) {
         console.log(`[v9.0] COMPOUND: $${reinvestResult.amount.toFixed(2)} → ${reinvestResult.target}`);
         await sendTelegramNotification(engine,
@@ -2787,7 +2791,7 @@ export async function startEngine(userId: number): Promise<{ success: boolean; e
       );
       for (const pos of [...allScalpPositions, ...allGridPositions]) {
         // v9.1.1: Faster USDT recovery — shorter stale timeouts
-        const staleHours = pos.strategy === "scalping" ? 0.75 : 3; // v10: faster stale detection
+        const staleHours = pos.strategy === "scalping" ? 0.5 : 2; // v11.3: even faster stale detection (was 0.75/3)
         const staleAnalysis = analyzeStalePosition(pos.buyPrice, pos.currentPrice, pos.openedAt, staleHours);
         if (staleAnalysis.isStale) {
           console.log(`[v9.0] STALE: ${pos.symbol} ${pos.strategy} — ${staleAnalysis.recommendation} (held ${staleAnalysis.holdTimeHours.toFixed(1)}h, ${staleAnalysis.priceChangePct.toFixed(2)}%)`);
@@ -2823,7 +2827,7 @@ export async function startEngine(userId: number): Promise<{ success: boolean; e
     } catch (e) {
       console.error("[v9.0 Allocator] Error:", (e as Error).message);
     }
-  }, 15 * 60 * 1000); // v11.0: BEAST MODE — compound every 15 min for maximum capital utilization
+  }, 5 * 60 * 1000); // v11.3: compound every 5 min — reinvest gains immediately
   console.log(`[Engine] v9.0 Aggressive Compounding (1h) + Rebalancing (4h) + Stale Checker active`);
 
   // ─── Telegram Polling for /status command ───
