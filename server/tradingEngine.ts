@@ -248,12 +248,13 @@ function hasAdequateVolume(symbol: string): boolean {
   const ticker = livePrices.get(symbol);
   if (!ticker) return true; // allow if no data
   // Minimum 24h turnover thresholds (in USDT)
+  // v11.2: BEAST MODE — drastically lower volume thresholds to maximize entries
   const minTurnover: Record<string, number> = {
-    BTCUSDT: 50_000_000,
-    ETHUSDT: 20_000_000,
-    XAUUSDT: 5_000_000,
-    SP500USDT: 0, // v11.0: SP500 from Yahoo Finance, always allow
-    default: 1_000_000,
+    BTCUSDT: 5_000_000,
+    ETHUSDT: 2_000_000,
+    XAUUSDT: 500_000,
+    SP500USDT: 0,
+    default: 100_000,
   };
   const threshold = minTurnover[symbol] ?? minTurnover.default;
   return ticker.turnover24h >= threshold;
@@ -872,23 +873,21 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
       const cooldownMult = getLossCooldownMultiplier(symbol, "grid");
       positionSizeMultiplier *= cooldownMult;
 
-      // Market regime determines buy permission
-      if (smartScore.regime === "strong_trend_down") {
-        trendAllowsBuy = false;
-        trendLabel = "bearish-strong";
-      } else if (smartScore.regime === "trend_down" && smartScore.confidence > 50) {
-        trendAllowsBuy = false;
-        trendLabel = "bearish";
+      // v11.2: RELAXED regime guards — only block on EXTREME bearish with HIGH confidence
+      // v11.2: Only block on EXTREME bearish with very high confidence
+      if (smartScore.regime === "strong_trend_down" && smartScore.confidence > 85) {
+        trendLabel = "bearish-extreme";
+        // v11.2: Don't block buys — just reduce size via positionSizeMultiplier
+        positionSizeMultiplier *= 0.5;
       } else if (smartScore.regime === "strong_trend_up") {
         trendLabel = "bullish-strong";
       } else if (smartScore.regime === "trend_up") {
         trendLabel = "bullish";
       } else if (smartScore.regime === "volatile") {
         trendLabel = "volatile";
-        // In volatile market, only buy if score says buy with high confidence
-        if (smartScore.direction !== "buy" || smartScore.confidence < 50) {
-          trendAllowsBuy = false;
-        }
+        // v11.2: Allow buys in volatile markets — more opportunities
+      } else if (smartScore.regime === "trend_down") {
+        trendLabel = "bearish-mild"; // v11.2: don't block, just label
       } else {
         trendLabel = "ranging";
       }
@@ -915,11 +914,11 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
 
       console.log(`[Grid] ${symbol} SMART: score=${smartScore.confidence} dir=${smartScore.direction} regime=${marketRegime} size=${positionSizeMultiplier.toFixed(2)}x trailing=${(dynamicTrailingPct * 100).toFixed(2)}% reasons=${smartScore.reasons.length}`);
     } else {
-      // Fallback to simple EMA
+      // v11.2: EMA fallback only labels, never blocks buys
       const ema20 = calculateEMA(klines.closes, 20);
       const ema50 = calculateEMA(klines.closes, Math.min(50, klines.closes.length));
       if (ema20.length > 0 && ema50.length > 0) {
-        if (ema20[ema20.length - 1] < ema50[ema50.length - 1]) { trendAllowsBuy = false; trendLabel = "bearish"; }
+        if (ema20[ema20.length - 1] < ema50[ema50.length - 1]) { trendLabel = "bearish"; }
         else trendLabel = "bullish";
       }
     }
@@ -956,13 +955,13 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
       strategy: "grid",
     });
     
-    // Apply master signal to buy permission
-    if (masterSignal.blocked) {
-      trendAllowsBuy = false;
+    // v11.2: RELAXED master signal — never block buys, just reduce size
+    if (masterSignal.blocked && masterSignal.confidence > 80) {
       trendLabel = `BLOCKED: ${masterSignal.blockReason}`;
-    } else if (masterSignal.direction === "sell" && masterSignal.confidence > 40) {
-      trendAllowsBuy = false;
+      positionSizeMultiplier *= 0.3; // reduce size but don't block
+    } else if (masterSignal.direction === "sell" && masterSignal.confidence > 70) {
       trendLabel = `master-sell-${masterSignal.confidence}`;
+      positionSizeMultiplier *= 0.5; // reduce size but don't block
     }
     
     // Apply master sizing multiplier
@@ -980,12 +979,8 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
     console.warn(`[Grid] ${symbol} Master signal error: ${(e as Error).message}`);
   }
   
-  // Legacy MTA fallback
-  const mtf = await multiTimeframeCheck(engine.client, symbol, category);
-  if (mtf.direction === "bearish" && mtf.aligned && !masterSignal) {
-    trendAllowsBuy = false;
-    trendLabel = "bearish-mtf";
-  }
+  // v11.2: REMOVED legacy MTA fallback — was too conservative and blocking entries
+  // Master signal already handles multi-timeframe analysis
 
   // Read strategy config
   const strats = await db.getUserStrategies(engine.userId);
@@ -1258,16 +1253,11 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
         console.log(`[Grid] SKIP BUY ${symbol} @ ${level.price.toFixed(2)} — ${trendLabel} trend (regime=${marketRegime})`);
         continue;
       }
-      // Additional: skip buy if smart score says sell OR confidence is too low
+      // v11.2: RELAXED smart score guards — only block on very strong sell signals
       if (level.side === "Buy" && smartScore) {
-        // Block buy if analysis says sell with moderate confidence
-        if (smartScore.direction === "sell" && smartScore.confidence >= 45) {
-          console.log(`[Grid] SKIP BUY ${symbol} @ ${level.price.toFixed(2)} — smart score SELL conf=${smartScore.confidence}`);
-          continue;
-        }
-        // Block buy if confidence is too low (weak signal = risky entry)
-        if (smartScore.direction === "buy" && smartScore.confidence < 20) {
-          console.log(`[Grid] SKIP BUY ${symbol} @ ${level.price.toFixed(2)} — buy confidence too low (${smartScore.confidence}%)`);
+        // Only block if analysis says STRONG sell (confidence >= 70)
+        if (smartScore.direction === "sell" && smartScore.confidence >= 70) {
+          console.log(`[Grid] SKIP BUY ${symbol} @ ${level.price.toFixed(2)} — STRONG sell signal conf=${smartScore.confidence}`);
           continue;
         }
       }
@@ -1564,7 +1554,8 @@ async function runScalpingStrategy(engine: EngineState, symbol: string, category
   // Use master signal if available, fallback to smart score
   const effectiveConfidence = scalpMaster ? scalpMaster.confidence : smartScore.confidence;
   const effectiveDirection = scalpMaster ? scalpMaster.direction : smartScore.direction;
-  const isBlocked = scalpMaster?.blocked ?? false;
+  // v11.2: Only block scalp on very high confidence master signal (>80)
+  const isBlocked = (scalpMaster?.blocked ?? false) && (scalpMaster?.confidence ?? 0) > 80;
 
   // ─── v8.2: Nocturnal Mode — lower thresholds during 2am-6am UTC ───
   const nocturnal = getNocturnalMultiplier();
@@ -1576,26 +1567,8 @@ async function runScalpingStrategy(engine: EngineState, symbol: string, category
   }
   if (!isBlocked && effectiveDirection === "buy" && effectiveConfidence >= minConfidence) {
     signal = "Buy";
-    // v10.9: 1-minute momentum filter — confirm buy with short-term price action
-    try {
-      const klines1m = await fetchKlines(engine.client, symbol, "1", 15, category);
-      if (klines1m.closes.length >= 10) {
-        const last5 = klines1m.closes.slice(-5);
-        const first5 = klines1m.closes.slice(-10, -5);
-        const avgLast = last5.reduce((a, b) => a + b, 0) / 5;
-        const avgFirst = first5.reduce((a, b) => a + b, 0) / 5;
-        const microMomentum = (avgLast - avgFirst) / avgFirst;
-        // If short-term momentum is strongly negative (>0.3% drop in last 5 min), delay entry
-        if (microMomentum < -0.003 && effectiveConfidence < 70) {
-          console.log(`[Scalp] ${symbol} MICRO-DELAY: 1m momentum ${(microMomentum * 100).toFixed(3)}% — waiting for stabilization`);
-          signal = null;
-        }
-        // If short-term momentum confirms buy (rising), boost confidence
-        if (microMomentum > 0.001) {
-          console.log(`[Scalp] ${symbol} MICRO-CONFIRM: 1m momentum +${(microMomentum * 100).toFixed(3)}% — entry confirmed`);
-        }
-      }
-    } catch { /* silent — proceed without 1m filter */ }
+    // v11.2: REMOVED micro-momentum filter — was blocking too many entries
+    // Entries now go through immediately when confidence is met
   } else if (effectiveDirection === "sell" && effectiveConfidence >= minConfidence) {
     signal = "Sell";
   }
@@ -2109,9 +2082,9 @@ async function runFuturesStrategy(engine: EngineState, symbol: string, dailyProf
   const futBoostedConf = futEffConf + futPMBoost;
   let entryDirection: "long" | "short" | null = null;
 
-  // Block entry if master signal says blocked
-  if (futBlocked) {
-    console.log(`[Futures] ${symbol} BLOCKED by master signal: ${futMaster?.blockReason}`);
+  // v11.2: Only block on very high confidence master signal
+  if (futBlocked && (futMaster?.confidence ?? 0) > 80) {
+    console.log(`[Futures] ${symbol} BLOCKED by master signal (conf ${futMaster?.confidence}): ${futMaster?.blockReason}`);
     return;
   }
 
@@ -2119,47 +2092,22 @@ async function runFuturesStrategy(engine: EngineState, symbol: string, dailyProf
   const maxLongPerPair = symbol === "XAUUSDT" ? 15 : (symbol === "SP500USDT" ? 10 : 8); // v11.0: BEAST MODE
   const maxShortPerPair = symbol === "XAUUSDT" ? 15 : (symbol === "SP500USDT" ? 10 : 8);
 
+  // v11.2: BEAST MODE — very aggressive entry logic
   if (futEffDir === "buy" && futBoostedConf >= minFuturesConfidence && longPositions.length < maxLongPerPair) {
-    if (futSmartScore.regime !== "strong_trend_down") {
-      entryDirection = "long";
-    }
+    entryDirection = "long"; // v11.2: removed regime block
   } else if (futEffDir === "sell" && futBoostedConf >= minFuturesConfidence && shortPositions.length < maxShortPerPair) {
-    if (futSmartScore.regime !== "strong_trend_up") {
-      entryDirection = "short";
-    }
-  } else if (symbol === "XAUUSDT" && futEffDir === "neutral" && futBoostedConf >= 5 && longPositions.length < maxLongPerPair) {
-    // v10.5: XAU always enters long even on neutral signal
+    entryDirection = "short"; // v11.2: removed regime block
+  } else if (futEffDir === "neutral" && futBoostedConf >= 5 && longPositions.length < maxLongPerPair) {
+    // v11.2: ALL symbols enter long on neutral signal (not just XAU)
     entryDirection = "long";
-    console.log(`[Futures] XAUUSDT NEUTRAL-ENTRY — forcing long (score=${futBoostedConf})`);
+    console.log(`[Futures] ${symbol} NEUTRAL-ENTRY — forcing long (score=${futBoostedConf})`);
   }
 
   if (dailyProfitMode === "cautious" && entryDirection) {
     console.log(`[Futures] 💡 EXCEPTIONAL ${entryDirection.toUpperCase()} ${symbol} — score ${futEffConf} >= 70 despite daily target`);
   }
 
-  // v10.9: 1-minute momentum filter for futures — confirm entry with short-term price action
-  if (entryDirection) {
-    try {
-      const futKlines1m = await fetchKlines(engine.client, symbol, "1", 15, "linear");
-      if (futKlines1m.closes.length >= 10) {
-        const futLast5 = futKlines1m.closes.slice(-5);
-        const futFirst5 = futKlines1m.closes.slice(-10, -5);
-        const futAvgLast = futLast5.reduce((a, b) => a + b, 0) / 5;
-        const futAvgFirst = futFirst5.reduce((a, b) => a + b, 0) / 5;
-        const futMicroMom = (futAvgLast - futAvgFirst) / futAvgFirst;
-        // Long entry but price dropping fast → delay
-        if (entryDirection === "long" && futMicroMom < -0.003 && futBoostedConf < 60) {
-          console.log(`[Futures] ${symbol} MICRO-DELAY LONG: 1m momentum ${(futMicroMom * 100).toFixed(3)}% — waiting`);
-          entryDirection = null;
-        }
-        // Short entry but price rising fast → delay
-        if (entryDirection === "short" && futMicroMom > 0.003 && futBoostedConf < 60) {
-          console.log(`[Futures] ${symbol} MICRO-DELAY SHORT: 1m momentum +${(futMicroMom * 100).toFixed(3)}% — waiting`);
-          entryDirection = null;
-        }
-      }
-    } catch { /* silent */ }
-  }
+  // v11.2: REMOVED micro-momentum filter for futures — was blocking too many entries
 
   if (!entryDirection) {
     console.log(`[Futures] ${symbol} SKIP entry — score=${futEffConf} dir=${futEffDir} regime=${futSmartScore.regime}`);
@@ -2659,49 +2607,10 @@ export async function startEngine(userId: number): Promise<{ success: boolean; e
       // ─── DAILY PROFIT TARGET SYSTEM ───
       // When daily profit reaches 2%+: only allow exceptional opportunities (score >= 75)
       // When daily profit reaches 5%+: STOP all new trades completely
-      const DAILY_TARGET_CAUTIOUS = 0.15; // v10.8: 15% = cautious mode (higher for $300/day)
-      const DAILY_TARGET_STOP = 0.50;     // v10.8: 50% = stop only at extreme gains (higher for $300/day)
-      const EXCEPTIONAL_SCORE = 75;       // Only trade with score >= 75 in cautious mode
-
+      // v11.2: NEVER STOP TRADING — always normal mode, target is $300-$500/day
+      // Removed cautious/stopped modes that were blocking trades
       let dailyProfitMode: "normal" | "cautious" | "stopped" = "normal";
-      try {
-        const dpState = await db.getOrCreateBotState(userId);
-        const todayPnl = parseFloat(dpState?.todayPnl ?? "0");
-        const capital = parseFloat(dpState?.initialBalance ?? dpState?.currentBalance ?? "5000");
-        const dailyProfitPct = capital > 0 ? todayPnl / capital : 0;
-
-        if (dailyProfitPct >= DAILY_TARGET_STOP) {
-          dailyProfitMode = "stopped";
-          // Notify once per day
-          const todayStr = new Date().toISOString().slice(0, 10);
-          const stopKey = `daily_stop_${todayStr}`;
-          if (!lastErrorNotif.has(stopKey)) {
-            lastErrorNotif.set(stopKey, Date.now());
-            await sendTelegramNotification(engine,
-              `🏆 <b>PHANTOM — Meta Diaria Alcanzada!</b>\n\n` +
-              `Ganancia hoy: <b>+$${todayPnl.toFixed(2)} (+${(dailyProfitPct * 100).toFixed(1)}%)</b>\n` +
-              `Capital: $${capital.toFixed(2)}\n\n` +
-              `🛑 Bot en PAUSA — protegiendo ganancias del día.\n` +
-              `Las posiciones abiertas siguen cerrándose normalmente.`
-            );
-          }
-          console.log(`[Engine] 🏆 DAILY TARGET HIT: +${(dailyProfitPct * 100).toFixed(1)}% ($${todayPnl.toFixed(2)}) — STOPPED (>= 5%)`);
-        } else if (dailyProfitPct >= DAILY_TARGET_CAUTIOUS) {
-          dailyProfitMode = "cautious";
-          // Notify once per day
-          const todayStr = new Date().toISOString().slice(0, 10);
-          const cautionKey = `daily_cautious_${todayStr}`;
-          if (!lastErrorNotif.has(cautionKey)) {
-            lastErrorNotif.set(cautionKey, Date.now());
-            await sendTelegramNotification(engine,
-              `✅ <b>PHANTOM — Meta Diaria 2% Alcanzada</b>\n\n` +
-              `Ganancia hoy: <b>+$${todayPnl.toFixed(2)} (+${(dailyProfitPct * 100).toFixed(1)}%)</b>\n\n` +
-              `🧠 Modo INTELIGENTE activado — solo operaciones excepcionales (score >= ${EXCEPTIONAL_SCORE}).`
-            );
-          }
-          console.log(`[Engine] ✅ DAILY TARGET 2%: +${(dailyProfitPct * 100).toFixed(1)}% ($${todayPnl.toFixed(2)}) — CAUTIOUS MODE (only score >= ${EXCEPTIONAL_SCORE})`);
-        }
-      } catch (e) { /* keep normal mode on error */ }
+      // Always normal mode — keep trading 24/7
 
       const strats = await db.getUserStrategies(userId);
       console.log(`[Engine] Found ${strats.length} strategies, ${strats.filter(s => s.enabled).length} enabled (dailyMode=${dailyProfitMode})`);

@@ -932,3 +932,10 @@
 - [x] Telegram notification para ventas > $50
 - [x] Verificar TypeScript y tests — passing
 - [x] Push a GitHub y checkpoint — commit f37b51b
+
+## v11.2 — Dashboard ganancia del día + bot no opera (25 Abril 2026)
+- [ ] GANANCIA REAL: cambiar de ganancia total acumulada a ganancia del día
+- [ ] Investigar por qué Trades Hoy: 0, Abierto (0) — el bot no abre posiciones
+- [ ] Arreglar el motor para que empiece a operar con el capital disponible
+- [ ] Verificar TypeScript y tests
+- [ ] Push a GitHub y checkpoint

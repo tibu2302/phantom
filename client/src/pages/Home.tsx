@@ -411,8 +411,8 @@ export default function Home() {
             {/* PnL Summary Row */}
             <div className="mt-4 pt-3 border-t border-white/[0.05]">
               <div className="flex items-center justify-between mb-3">
-                <span className="text-[8px] font-bold tracking-[0.15em] text-muted-foreground/50 uppercase">Ganancia Real</span>
-                <span className={`text-lg font-black tabular-nums ${pnlColor}`}>{hideBalances ? "----" : fmt(realProfit)}</span>
+                <span className="text-[8px] font-bold tracking-[0.15em] text-muted-foreground/50 uppercase">Ganancia Hoy</span>
+                <span className={`text-lg font-black tabular-nums ${todayColor}`}>{hideBalances ? "----" : fmt(todayPnl)}</span>
               </div>
               <div className="grid grid-cols-4 gap-1.5">
                 <div className="bg-white/[0.03] rounded-xl p-2 text-center">
@@ -920,7 +920,7 @@ export default function Home() {
               </div>
             </div>
             <div className="mt-5 pt-4 border-t border-white/[0.05]">
-              <div className="flex items-center justify-between mb-4"><span className="text-[10px] font-bold tracking-[0.15em] text-muted-foreground/50 uppercase">Ganancia Real</span><span className={`text-xl font-black tabular-nums ${pnlColor}`}>{hideBalances ? "----" : fmt(realProfit)}</span></div>
+              <div className="flex items-center justify-between mb-4"><span className="text-[10px] font-bold tracking-[0.15em] text-muted-foreground/50 uppercase">Ganancia Hoy</span><span className={`text-xl font-black tabular-nums ${todayColor}`}>{hideBalances ? "----" : fmt(todayPnl)}</span></div>
               <div className="grid grid-cols-4 gap-2">
                 <div className="bg-white/[0.03] rounded-xl p-2.5 text-center"><span className="text-[9px] text-muted-foreground/50 block font-medium">Hoy</span><span className={`text-sm font-bold tabular-nums ${todayColor}`}>{hideBalances ? "--" : fmt(todayPnl)}</span></div>
                 <div className="bg-white/[0.03] rounded-xl p-2.5 text-center"><span className="text-[9px] text-muted-foreground/50 block font-medium">Ayer</span><span className={`text-sm font-bold tabular-nums ${yesterdayColor}`}>{hideBalances ? "--" : fmt(yesterdayPnl)}</span></div>
