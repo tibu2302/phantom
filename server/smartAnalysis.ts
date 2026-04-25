@@ -587,10 +587,10 @@ export function calculateSignalScore(klines: FullKlineData, currentPrice: number
   
   // ─── Final Score Calculation ───
   const maxPossible = 100; // Theoretical max from all indicators
-  // v11.3: Reduced neutral threshold from 10 to 3 — generate more buy/sell signals, less neutral
+  // v11.4: Balanced neutral threshold (7) — enough signals but IA must be reasonably sure
   const direction: "buy" | "sell" | "neutral" = 
-    buyScore > sellScore + 3 ? "buy" :
-    sellScore > buyScore + 3 ? "sell" : "neutral";
+    buyScore > sellScore + 7 ? "buy" :
+    sellScore > buyScore + 7 ? "sell" : "neutral";
   
   const rawConfidence = direction === "buy" ? buyScore : direction === "sell" ? sellScore : Math.max(buyScore, sellScore);
   const confidence = Math.min(95, Math.round((rawConfidence / maxPossible) * 100));

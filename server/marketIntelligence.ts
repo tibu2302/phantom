@@ -1012,14 +1012,20 @@ export function aggregateMasterSignal(params: {
   sizingMultiplier *= intradayBoost;
 
   // ─── 16. Drawdown Protection ───
-  // v11.3: DISABLED drawdown protection — never pause or reduce size due to daily losses
+  // v11.4: Drawdown protection restored — reduce size when losing but never fully stop (emergency stop handles that)
   const drawdown = updateDrawdownState(params.currentBalance, params.todayPnl);
-  if (drawdown.mode !== "normal") reasons.push(`Drawdown: ${drawdown.dailyLoss.toFixed(1)}% (ignored — keep trading)`);
+  const ddMultiplier = getDrawdownMultiplier();
+  // Never fully block (multiplier 0), minimum 0.5x sizing
+  sizingMultiplier *= Math.max(0.5, ddMultiplier.multiplier);
+  if (ddMultiplier.mode !== "normal") reasons.push(ddMultiplier.reason);
 
   // ─── 17. Diversification ───
-  // v11.3: DISABLED diversification block — allow full concentration in best performers
+  // v11.4: Diversification restored — reduce size on over-concentration but don't block
   const diversification = checkDiversification(params.symbol, params.proposedAmount, params.totalCapital);
-  if (!diversification.allowed) reasons.push(`Diversification: ${diversification.reason} (ignored)`);
+  if (!diversification.allowed) {
+    sizingMultiplier *= 0.6; // Reduce size instead of blocking
+    reasons.push(`Diversification: ${diversification.reason} (size reduced)`);
+  }
 
   // ─── 18. Anti-Manipulation ───
   const manipulation = detectManipulation(params.klines15m);
@@ -1032,10 +1038,10 @@ export function aggregateMasterSignal(params: {
 
   // ─── Final Calculation ───
   const maxPossible = 100;
-  // v11.3: Reduced neutral threshold from 8 to 3 — more directional signals
+  // v11.4: Balanced neutral threshold (6) — IA must have reasonable conviction
   const direction: "buy" | "sell" | "neutral" =
-    buyScore > sellScore + 3 ? "buy" :
-    sellScore > buyScore + 3 ? "sell" : "neutral";
+    buyScore > sellScore + 6 ? "buy" :
+    sellScore > buyScore + 6 ? "sell" : "neutral";
 
   const rawConfidence = direction === "buy" ? buyScore : direction === "sell" ? sellScore : Math.max(buyScore, sellScore);
   const confidence = Math.min(95, Math.round((rawConfidence / maxPossible) * 100));
@@ -1060,7 +1066,7 @@ export function aggregateMasterSignal(params: {
     breakout,
     manipulation,
     session: { session: session.session, aggressiveness: session.aggressiveness },
-    drawdown: { multiplier: 1.0, mode: drawdown.mode },
+    drawdown: { multiplier: ddMultiplier.multiplier, mode: ddMultiplier.mode },
     diversification,
   };
 }

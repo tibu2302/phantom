@@ -964,3 +964,12 @@
 - [x] Anti-manipulation penalty: reducido a 0.7x (era 0.3x)
 - [ ] Verificar TypeScript y tests
 - [ ] Push a GitHub y checkpoint
+
+## v11.4 — Trading Inteligente y Seguro (25 Abril 2026)
+- [ ] Apalancamiento máximo 5x (era 10x) — reducir riesgo de liquidación
+- [ ] Freno de emergencia $500 — si pierde más de $500 en el día, parar todo + notificar Telegram
+- [ ] Subir umbrales de confianza — solo entrar en trades con buena probabilidad (IA más selectiva)
+- [ ] Revertir neutral entry forzado — no forzar Buy cuando no hay señal clara
+- [ ] Restaurar drawdown protection con límite de $500
+- [ ] Verificar TypeScript y tests
+- [ ] Push a GitHub y checkpoint

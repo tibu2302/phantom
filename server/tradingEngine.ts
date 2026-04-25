@@ -1560,8 +1560,8 @@ async function runScalpingStrategy(engine: EngineState, symbol: string, category
   // ─── v8.2: Nocturnal Mode — lower thresholds during 2am-6am UTC ───
   const nocturnal = getNocturnalMultiplier();
   // v9.1.1: XAU gets lower threshold (20) to trade more frequently
-  // v11.3: Ultra-low confidence thresholds — trade as much as possible
-  const baseMinConfidence = symbol === "XAUUSDT" ? 5 : 10; // v11.3: XAU 5, others 10 (was 10/25)
+  // v11.4: Smarter confidence thresholds — only enter trades with good probability
+  const baseMinConfidence = symbol === "XAUUSDT" ? 15 : 20; // v11.4: XAU 15, others 20 (balanced)
   const minConfidence = Math.round(baseMinConfidence * (1 - nocturnal.confidenceReduction));
   if (nocturnal.confidenceReduction > 0) {
     console.log(`[Scalp] ${symbol} NOCTURNAL MODE: minConfidence reduced ${baseMinConfidence} → ${minConfidence}`);
@@ -1570,14 +1570,11 @@ async function runScalpingStrategy(engine: EngineState, symbol: string, category
     signal = "Buy";
   } else if (effectiveDirection === "sell" && effectiveConfidence >= minConfidence) {
     signal = "Sell";
-  } else if (!isBlocked && effectiveDirection === "neutral" && effectiveConfidence >= 5) {
-    // v11.3: NEUTRAL ENTRY — when signal is neutral, default to Buy to keep capital deployed
-    signal = "Buy";
-    console.log(`[Scalp] ${symbol} NEUTRAL-ENTRY — forcing Buy (conf=${effectiveConfidence}, no clear direction)`);
   }
+  // v11.4: REMOVED neutral forced buy — only enter when IA has a clear direction
   // In simulation, be more lenient
-  if (engine.simulationMode && !signal && effectiveConfidence >= 10) {
-    signal = effectiveDirection === "buy" ? "Buy" : effectiveDirection === "sell" ? "Sell" : "Buy";
+  if (engine.simulationMode && !signal && effectiveConfidence >= 15) {
+    signal = effectiveDirection === "buy" ? "Buy" : effectiveDirection === "sell" ? "Sell" : null;
   }
 
   console.log(`[Scalp] ${symbol} SMART+MASTER: price=${price.toFixed(2)} score=${effectiveConfidence} dir=${effectiveDirection} regime=${smartScore.regime} signal=${signal ?? 'none'} blocked=${isBlocked} reasons=${reasons.length} cooldown=${scalpCooldown.toFixed(1)}x dailyMode=${dailyProfitMode}`);
@@ -1737,7 +1734,8 @@ async function runScalpingStrategy(engine: EngineState, symbol: string, category
       }
     } else if (signal === "Buy") {
       // XAU gets 6 scalp positions (top earner), others get 3
-      const maxScalpPositions = symbol === "XAUUSDT" ? 30 : (symbol === "SP500USDT" ? 20 : 20); // v11.3: XAU 30, SP500 20, BTC/ETH 20 (was 25/15/12)
+      // v11.4: Safer exposure — fewer positions but higher quality
+      const maxScalpPositions = symbol === "XAUUSDT" ? 10 : (symbol === "SP500USDT" ? 6 : 6); // v11.4: XAU 10, others 6 (was 30/20/20)
       if (myPositions.length >= maxScalpPositions) {
         console.log(`[Scalp] SKIP ${symbol} Buy — already have ${myPositions.length}/${maxScalpPositions} scalp position(s) on ${exchangeKey}`);
         return;
@@ -1746,7 +1744,8 @@ async function runScalpingStrategy(engine: EngineState, symbol: string, category
       // v10.5: ultra-low confidence thresholds to maximize entries
       const boostedConfidence = smartScore.confidence + breakoutBoost + meanRevBoost;
       // v11.3: Ultra-low confidence — almost always enter
-      const minScalpConfidence = symbol === "XAUUSDT" ? 3 : 5; // v11.3: was 10/20
+      // v11.4: Smarter entries — require decent confidence before buying
+      const minScalpConfidence = symbol === "XAUUSDT" ? 12 : 18; // v11.4: XAU 12, others 18 (was 3/5)
       if (boostedConfidence < minScalpConfidence) {
         console.log(`[Scalp] SKIP ${symbol} Buy — confidence too low (${smartScore.confidence}% + boosts ${breakoutBoost + meanRevBoost} = ${boostedConfidence}% < ${minScalpConfidence})`);
         return;
@@ -2081,8 +2080,8 @@ async function runFuturesStrategy(engine: EngineState, symbol: string, dailyProf
   }
 
   // Smart scoring determines entry direction — use master signal when available
-  // v11.3: Ultra-low confidence for ALL symbols — enter as many futures as possible
-  const minFuturesConfidence = symbol === "XAUUSDT" ? 3 : 5; // v11.3: was 5/10
+  // v11.4: Smarter futures entries — require decent confidence (IA-driven)
+  const minFuturesConfidence = symbol === "XAUUSDT" ? 15 : 20; // v11.4: XAU 15, others 20 (was 3/5)
   const futBoostedConf = futEffConf + futPMBoost;
   let entryDirection: "long" | "short" | null = null;
 
@@ -2093,18 +2092,19 @@ async function runFuturesStrategy(engine: EngineState, symbol: string, dailyProf
   }
 
   // v10.5: increased per-pair limits (was 3), allow neutral dir for XAU
-  const maxLongPerPair = symbol === "XAUUSDT" ? 20 : (symbol === "SP500USDT" ? 15 : 12); // v11.3: increased (was 15/10/8)
-  const maxShortPerPair = symbol === "XAUUSDT" ? 20 : (symbol === "SP500USDT" ? 15 : 12);
+  // v11.4: Reduced max positions for safer exposure
+  const maxLongPerPair = symbol === "XAUUSDT" ? 8 : (symbol === "SP500USDT" ? 5 : 5); // v11.4: XAU 8, others 5 (was 20/15/12)
+  const maxShortPerPair = symbol === "XAUUSDT" ? 8 : (symbol === "SP500USDT" ? 5 : 5);
 
   // v11.2: BEAST MODE — very aggressive entry logic
   if (futEffDir === "buy" && futBoostedConf >= minFuturesConfidence && longPositions.length < maxLongPerPair) {
     entryDirection = "long"; // v11.2: removed regime block
   } else if (futEffDir === "sell" && futBoostedConf >= minFuturesConfidence && shortPositions.length < maxShortPerPair) {
     entryDirection = "short"; // v11.2: removed regime block
-  } else if (futEffDir === "neutral" && futBoostedConf >= 3 && longPositions.length < maxLongPerPair) {
-    // v11.3: ALL symbols enter long on neutral signal with ultra-low threshold (3)
+  } else if (futEffDir === "neutral" && futBoostedConf >= 35 && longPositions.length < maxLongPerPair) {
+    // v11.4: Only enter neutral with HIGH confidence (35+) — IA must be fairly sure
     entryDirection = "long";
-    console.log(`[Futures] ${symbol} NEUTRAL-ENTRY — forcing long (score=${futBoostedConf})`);
+    console.log(`[Futures] ${symbol} NEUTRAL-ENTRY — high-confidence long (score=${futBoostedConf} >= 35)`);
   }
 
   if (dailyProfitMode === "cautious" && entryDirection) {
@@ -2120,15 +2120,16 @@ async function runFuturesStrategy(engine: EngineState, symbol: string, dailyProf
 
   const strat = futStrat;
   const config = futConfig;
-  const leverage = config?.leverage ?? 5;
+  const leverage = Math.min(config?.leverage ?? 5, 5); // v11.4: HARD CAP 5x max leverage for safety
   const allocation = strat?.allocationPct ?? 25;
   const state = await db.getOrCreateBotState(engine.userId);
   const balance = parseFloat(state?.currentBalance ?? "5000");
   // Smart sizing: confidence-weighted + cooldown + BOOST + master signal multiplier
   const baseTradeAmount = (balance * allocation / 100) / maxPositions;
-  const strengthBoost = futEffConf > 80 ? 2.5 : futEffConf > 65 ? 1.8 : 1.3; // v10.8: aggressive futures for $300/day
-  // v9.1.1: XAU futures gets 1.5x extra sizing (top earner)
-  const futXauBoost = symbol === "XAUUSDT" ? 4.0 : (symbol === "SP500USDT" ? 2.5 : 2.0); // v11.0: BEAST MODE — XAU 4x, SP500 2.5x, BTC/ETH 2x
+  // v11.4: Safer sizing — confidence-weighted but not over-leveraged
+  const strengthBoost = futEffConf > 80 ? 1.5 : futEffConf > 65 ? 1.2 : 1.0; // v11.4: reduced (was 2.5/1.8/1.3)
+  // v11.4: Reduced symbol boosts for safety
+  const futXauBoost = symbol === "XAUUSDT" ? 2.0 : (symbol === "SP500USDT" ? 1.5 : 1.2); // v11.4: XAU 2x, SP500 1.5x, BTC/ETH 1.2x (was 4/2.5/2)
   // v9.0: Market Timing + Volume Profile sizing for futures
   const futTimingMult = futTiming.sizingMultiplier;
   const futVPBoost = futVolProfile.isHighVolumeZone ? 1.2 : 0.85;
@@ -2137,6 +2138,17 @@ async function runFuturesStrategy(engine: EngineState, symbol: string, dailyProf
   const futAdaptiveMultiplier = futAdaptive.aggressiveness;
   const tradeAmount = baseTradeAmount * futSmartScore.suggestedSizePct * futCooldown * strengthBoost * futMasterSizing * futTimingMult * futVPBoost * futXauBoost * futAdaptiveMultiplier;
   const qty = ((tradeAmount * leverage) / price).toFixed(6);
+
+  // v11.4: Force leverage on Bybit before placing order
+  try {
+    await engine.client.setLeverage({ category: "linear", symbol, buyLeverage: String(leverage), sellLeverage: String(leverage) });
+    console.log(`[Futures] Set leverage ${symbol} to ${leverage}x`);
+  } catch (e: any) {
+    // 110043 = leverage not modified (already set) — safe to ignore
+    if (!e?.message?.includes("110043") && !e?.message?.includes("not modified")) {
+      console.warn(`[Futures] setLeverage ${symbol} warning: ${e?.message}`);
+    }
+  }
 
   // LONG → Buy to open, SHORT → Sell to open
   const entrySide = entryDirection === "long" ? "Buy" : "Sell";
@@ -2546,23 +2558,42 @@ export async function startEngine(userId: number): Promise<{ success: boolean; e
           console.log(`[Engine] Auto-convert check completed`);
         } catch (e) { /* silent */ }
       }
-      // ─── Drawdown Alert (check every 10 cycles) ───
+      // ─── v11.4: EMERGENCY STOP — $500 daily loss limit ───
       if (cycleNum % 10 === 0) {
         try {
           const ddState = await db.getOrCreateBotState(userId);
           const ddTodayPnl = parseFloat(ddState?.todayPnl ?? "0");
-          const DRAWDOWN_THRESHOLD = -100; // v10: more room to operate ($100 threshold)
+          const EMERGENCY_STOP_THRESHOLD = -500; // v11.4: HARD STOP at -$500
+          const WARNING_THRESHOLD = -300; // v11.4: Warning at -$300
           const todayStr = new Date().toISOString().slice(0, 10);
-          if (ddTodayPnl <= DRAWDOWN_THRESHOLD && engine.lastDrawdownAlertDate !== todayStr) {
+
+          // EMERGENCY STOP: -$500 — stop ALL trading immediately
+          if (ddTodayPnl <= EMERGENCY_STOP_THRESHOLD) {
+            console.log(`[ENGINE] 🚨🚨🚨 EMERGENCY STOP TRIGGERED: todayPnl=$${ddTodayPnl.toFixed(2)} <= $${EMERGENCY_STOP_THRESHOLD}`);
+            engine.isRunning = false;
+            await sendTelegramNotification(engine,
+              `🚨🚨🚨 <b>PHANTOM — FRENO DE EMERGENCIA</b>\n\n` +
+              `Pérdida del día: <b>$${ddTodayPnl.toFixed(2)}</b>\n` +
+              `Límite configurado: $${EMERGENCY_STOP_THRESHOLD}\n\n` +
+              `⛔ <b>EL BOT SE DETUVO AUTOMÁTICAMENTE</b>\n` +
+              `No se abrirán más posiciones hasta que reinicies manualmente.\n` +
+              `Revisa las posiciones abiertas en Bybit y decide si cerrarlas.`
+            );
+            await db.updateBotState(userId, { isRunning: false });
+            return; // Stop the entire engine loop
+          }
+
+          // WARNING: -$300 — alert but keep trading
+          if (ddTodayPnl <= WARNING_THRESHOLD && engine.lastDrawdownAlertDate !== todayStr) {
             engine.lastDrawdownAlertDate = todayStr;
             await sendTelegramNotification(engine,
-              `\u{1F6A8} <b>PHANTOM — Alerta de Drawdown</b>\n\n` +
-              `P\u00E9rdida del d\u00EDa: <b>$${ddTodayPnl.toFixed(2)}</b>\n` +
-              `Umbral configurado: $${DRAWDOWN_THRESHOLD}\n\n` +
-              `\u26A0\uFE0F Considera revisar las estrategias activas o detener el bot.\n` +
+              `⚠️ <b>PHANTOM — Alerta de Pérdida</b>\n\n` +
+              `Pérdida del día: <b>$${ddTodayPnl.toFixed(2)}</b>\n` +
+              `Límite de emergencia: $${EMERGENCY_STOP_THRESHOLD}\n\n` +
+              `El bot sigue operando pero se detendrá automáticamente si llega a $${EMERGENCY_STOP_THRESHOLD}.\n` +
               `Usa /status para ver el estado actual.`
             );
-            console.log(`[Engine] Drawdown alert sent: todayPnl=$${ddTodayPnl.toFixed(2)} threshold=$${DRAWDOWN_THRESHOLD}`);
+            console.log(`[Engine] Drawdown WARNING: todayPnl=$${ddTodayPnl.toFixed(2)} threshold=$${WARNING_THRESHOLD}`);
           }
         } catch (e) { /* silent */ }
       }
