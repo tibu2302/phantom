@@ -910,15 +910,23 @@
 - [x] Push a GitHub y checkpoint — commit cbfde6a
 
 ## v11.0 — MODO BESTIA: $300-$500/día, 100% capital, 4 activos (24 Abril 2026)
-- [ ] Agregar SP500USDT a todas las estrategias (scalping + grid + futures)
-- [ ] Modo turbo nocturno: parámetros más agresivos fuera de horario pico
-- [ ] 100% del capital en uso — eliminar reservas, todo trabaja
-- [ ] Boost máximo en todas las estrategias: XAU 4x, BTC 3x, ETH 3x, SP500 3x
-- [ ] Más posiciones simultáneas: XAU 25, BTC 15, ETH 15, SP500 15
-- [ ] Ciclo ultra-rápido: 6 segundos (era 8)
-- [ ] TP más agresivo: cerrar más rápido para rotar capital
-- [ ] Altcoins → USDT → reinvertir en BTC/ETH/XAU/SP500 automáticamente
-- [ ] Actualizar SCANNER_COINS, LINEAR_SYMBOLS, SPOT_SYMBOLS para incluir SP500
-- [ ] Actualizar seed de estrategias en auto-start con SP500
+- [x] Agregar SP500USDT a todas las estrategias (scalping + grid + futures)
+- [x] Modo turbo nocturno: parámetros más agresivos fuera de horario pico — confidence -40%, size +30%
+- [x] 100% del capital en uso — eliminar reservas, todo trabaja (ya estaba en 0% reserva)
+- [x] Boost máximo en todas las estrategias: XAU 4x, BTC/ETH 2x, SP500 2.5x
+- [x] Más posiciones simultáneas: XAU 25 scalp + 15 futures, SP500 15/10, BTC/ETH 12/8
+- [x] Ciclo ultra-rápido: 6 segundos (era 8)
+- [x] TP más agresivo: MIN_PROFIT 0.1%, scalp TP 0.08%/0.12%, futures TP base 1.2%, forced close 3%
+- [x] Altcoins → USDT → reinvertir en BTC/ETH/XAU/SP500 automáticamente
+- [x] Actualizar SCANNER_COINS, LINEAR_SYMBOLS, SPOT_SYMBOLS para incluir SP500
+- [x] Actualizar seed de estrategias en auto-start con SP500 (routers.ts + _core/index.ts)
+- [x] Verificar TypeScript y tests — passing
+- [x] Push a GitHub y checkpoint — commit 4b450ad
+
+## v11.1 — Fix autoConvert: vender TODAS las altcoins a USDT (25 Abril 2026)
+- [ ] Diagnosticar por qué autoConvert no vende ADA ($4,861), ARB ($2,189), XRP ($1,532), DOGE ($1,083), LINK ($698), SUI ($321), AVAX ($259), SOL ($54), BTC spot ($23)
+- [ ] Arreglar autoConvert para que use market sell en spot para cada altcoin
+- [ ] Asegurar que el mínimo de orden sea respetado (Bybit spot min order)
+- [ ] Verificar que el bot no re-compre altcoins después de venderlas
 - [ ] Verificar TypeScript y tests
 - [ ] Push a GitHub y checkpoint

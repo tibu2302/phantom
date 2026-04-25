@@ -1,7 +1,6 @@
 // ─── Auto-Convert ALL Coins to USDT ───
-// v10.4: AGGRESSIVE MODE — sell ALL non-USDT coins immediately
-// No profit threshold — we want 100% of capital in USDT for linear trading
-// The small loss on spot positions is worth it to free capital for XAU scalping
+// v11.1: FIXED — properly handle lot sizes, don't skip coins with futures positions
+// Sell ALL non-USDT coins immediately to free capital for linear trading
 
 import type { EngineState } from "./tradingEngine";
 import { withRetry } from "./tradingEngine";
@@ -14,6 +13,42 @@ interface CoinBalance {
   walletBalance: string;
   usdValue: string;
   availableToWithdraw: string;
+}
+
+// Bybit spot minimum order sizes and step sizes for common pairs
+// These are approximate — the bot will try and handle errors gracefully
+const SPOT_LOT_SIZES: Record<string, { minQty: number; stepSize: number; minNotional: number }> = {
+  BTCUSDT:  { minQty: 0.000001, stepSize: 0.000001, minNotional: 1 },
+  ETHUSDT:  { minQty: 0.0001,   stepSize: 0.0001,   minNotional: 1 },
+  SOLUSDT:  { minQty: 0.01,     stepSize: 0.01,      minNotional: 1 },
+  XRPUSDT:  { minQty: 0.01,     stepSize: 0.01,      minNotional: 1 },
+  DOGEUSDT: { minQty: 1,        stepSize: 1,         minNotional: 1 },
+  ADAUSDT:  { minQty: 1,        stepSize: 1,         minNotional: 1 },
+  AVAXUSDT: { minQty: 0.01,     stepSize: 0.01,      minNotional: 1 },
+  LINKUSDT: { minQty: 0.01,     stepSize: 0.01,      minNotional: 1 },
+  ARBUSDT:  { minQty: 0.1,      stepSize: 0.1,       minNotional: 1 },
+  SUIUSDT:  { minQty: 0.01,     stepSize: 0.01,      minNotional: 1 },
+  PEPEUSDT: { minQty: 100,      stepSize: 100,       minNotional: 1 },
+  SHIBUSDT: { minQty: 100,      stepSize: 100,       minNotional: 1 },
+  WIFUSDT:  { minQty: 0.1,      stepSize: 0.1,       minNotional: 1 },
+  FLOKIUSDT:{ minQty: 100,      stepSize: 100,       minNotional: 1 },
+  BONKUSDT: { minQty: 100,      stepSize: 100,       minNotional: 1 },
+};
+
+/**
+ * Round down qty to the nearest valid step size for Bybit spot
+ */
+function roundToStepSize(qty: number, stepSize: number): number {
+  const decimals = Math.max(0, -Math.floor(Math.log10(stepSize)));
+  const factor = Math.pow(10, decimals);
+  return Math.floor(qty * factor) / factor;
+}
+
+/**
+ * Get the number of decimal places for a step size
+ */
+function getDecimals(stepSize: number): number {
+  return Math.max(0, -Math.floor(Math.log10(stepSize)));
 }
 
 /**
@@ -47,6 +82,26 @@ async function getAvgBuyPrice(userId: number, symbol: string): Promise<number> {
   }
 }
 
+/**
+ * Try to fetch instrument info from Bybit to get exact lot size
+ */
+async function fetchLotSize(client: any, pair: string): Promise<{ minQty: number; stepSize: number } | null> {
+  try {
+    const res = await client.getInstrumentsInfo({ category: "spot", symbol: pair });
+    if (res.retCode === 0 && res.result?.list?.[0]) {
+      const info = res.result.list[0];
+      const lotFilter = info.lotSizeFilter;
+      if (lotFilter) {
+        return {
+          minQty: parseFloat(lotFilter.minOrderQty ?? "0.0001"),
+          stepSize: parseFloat(lotFilter.basePrecision ?? lotFilter.minOrderQty ?? "0.0001"),
+        };
+      }
+    }
+  } catch { /* use fallback */ }
+  return null;
+}
+
 export async function autoConvertCoinsToUSDT(engine: EngineState): Promise<void> {
   if (engine.simulationMode) return;
   
@@ -56,6 +111,7 @@ export async function autoConvertCoinsToUSDT(engine: EngineState): Promise<void>
       const res = await withRetry(() => engine.client.getWalletBalance({ accountType: "UNIFIED" }), "AutoConvert Bybit getWalletBalance");
       if (res.retCode === 0) {
         const coins: CoinBalance[] = (res.result as any)?.list?.[0]?.coin ?? [];
+        
         for (const coin of coins) {
           const symbol = coin.coin;
           if (symbol === "USDT" || symbol === "USDC" || symbol === "USD") continue;
@@ -68,11 +124,9 @@ export async function autoConvertCoinsToUSDT(engine: EngineState): Promise<void>
           
           const pair = `${symbol}USDT`;
           
-          // v10.4: SELL EVERYTHING — no position check for spot coins
-          // Linear positions don't hold actual coins, so spot balances are always stale
-          // Only skip if there's an active futures position (which uses margin, not coins)
-          const futuresPositions = engine.futuresPositions[pair] ?? [];
-          if (futuresPositions.length > 0) continue;
+          // v11.1: DO NOT skip coins with futures positions
+          // Futures use margin (USDT), not actual coins
+          // Spot balances are independent and should ALWAYS be sold
           
           // Calculate profit/loss for logging only
           const avgBuyPrice = await getAvgBuyPrice(engine.userId, pair);
@@ -87,9 +141,40 @@ export async function autoConvertCoinsToUSDT(engine: EngineState): Promise<void>
             profitInfo = "no buy history";
           }
           
-          // v10.4: FORCE SELL — no profit threshold, free ALL capital to USDT
+          // v11.1: Get proper lot size — try API first, then fallback to hardcoded
+          let lotInfo = SPOT_LOT_SIZES[pair];
+          if (!lotInfo) {
+            const fetched = await fetchLotSize(engine.client, pair);
+            if (fetched) {
+              lotInfo = { ...fetched, minNotional: 1 };
+            } else {
+              // Conservative fallback: use 0.01 step size
+              lotInfo = { minQty: 0.01, stepSize: 0.01, minNotional: 1 };
+            }
+          }
+          
+          // Round down to valid step size
+          const roundedQty = roundToStepSize(available, lotInfo.stepSize);
+          
+          // Check minimum order size
+          if (roundedQty < lotInfo.minQty) {
+            console.log(`[AutoConvert] Bybit: SKIP ${symbol} — qty ${roundedQty} < minQty ${lotInfo.minQty} (dust)`);
+            continue;
+          }
+          
+          // Check minimum notional value
+          if (usdValue < lotInfo.minNotional) {
+            console.log(`[AutoConvert] Bybit: SKIP ${symbol} — value $${usdValue.toFixed(2)} < minNotional $${lotInfo.minNotional}`);
+            continue;
+          }
+          
+          // v11.1: FORCE SELL with properly formatted qty
           try {
-            const qtyStr = available.toFixed(8);
+            const decimals = getDecimals(lotInfo.stepSize);
+            const qtyStr = roundedQty.toFixed(decimals);
+            
+            console.log(`[AutoConvert] Bybit: Attempting to sell ${qtyStr} ${symbol} (~$${usdValue.toFixed(2)}) — ${profitInfo}`);
+            
             const sellRes = await withRetry(() => engine.client.submitOrder({
               category: "spot",
               symbol: pair,
@@ -98,10 +183,42 @@ export async function autoConvertCoinsToUSDT(engine: EngineState): Promise<void>
               qty: qtyStr,
             }), `AutoConvert Bybit sell ${symbol}`);
             
-            if (sellRes.result?.orderId) {
-              console.log(`[AutoConvert] Bybit: FORCE SOLD ${available.toFixed(4)} ${symbol} (~$${usdValue.toFixed(2)}) to USDT — ${profitInfo} — orderId: ${sellRes.result.orderId}`);
+            if (sellRes.retCode === 0 && sellRes.result?.orderId) {
+              console.log(`[AutoConvert] ✅ Bybit: SOLD ${qtyStr} ${symbol} (~$${usdValue.toFixed(2)}) to USDT — ${profitInfo} — orderId: ${sellRes.result.orderId}`);
+              
+              // Send Telegram notification for significant sells (> $50)
+              if (usdValue > 50 && engine.telegramBotToken && engine.telegramChatId) {
+                try {
+                  const msg = `🔄 <b>AutoConvert</b>\nVendido: ${qtyStr} ${symbol}\nValor: ~$${usdValue.toFixed(2)}\n${profitInfo}\n\nCapital liberado a USDT para trading.`;
+                  await fetch(`https://api.telegram.org/bot${engine.telegramBotToken}/sendMessage`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ chat_id: engine.telegramChatId, text: msg, parse_mode: "HTML" }),
+                  });
+                } catch { /* silent */ }
+              }
             } else {
-              console.log(`[AutoConvert] Bybit: Failed to sell ${symbol}: ${JSON.stringify(sellRes)}`);
+              // v11.1: If order fails, try with market order using quote qty (sell by USD value)
+              console.log(`[AutoConvert] Bybit: Standard sell failed for ${symbol} (retCode=${sellRes.retCode}, msg=${(sellRes as any).retMsg}), trying marketUnit=quoteCoin...`);
+              
+              try {
+                const sellRes2 = await withRetry(() => engine.client.submitOrder({
+                  category: "spot",
+                  symbol: pair,
+                  side: "Sell",
+                  orderType: "Market",
+                  qty: qtyStr,
+                  marketUnit: "baseCoin",
+                }), `AutoConvert Bybit sell ${symbol} (baseCoin)`);
+                
+                if (sellRes2.retCode === 0 && sellRes2.result?.orderId) {
+                  console.log(`[AutoConvert] ✅ Bybit: SOLD ${symbol} via baseCoin (~$${usdValue.toFixed(2)}) — orderId: ${sellRes2.result.orderId}`);
+                } else {
+                  console.log(`[AutoConvert] ❌ Bybit: All sell methods failed for ${symbol}: retCode=${sellRes2.retCode}, msg=${(sellRes2 as any).retMsg}`);
+                }
+              } catch (e2) {
+                console.log(`[AutoConvert] ❌ Bybit: Cannot sell ${symbol} (both methods failed): ${(e2 as Error).message}`);
+              }
             }
           } catch (e) {
             console.log(`[AutoConvert] Bybit: Cannot sell ${symbol}: ${(e as Error).message}`);
@@ -140,7 +257,6 @@ export async function autoConvertCoinsToUSDT(engine: EngineState): Promise<void>
         processBalances(hfRes);
         
         for (const { symbol, qty, usdValue, currentPrice } of coinsToSell) {
-          // v10.4: FORCE SELL — no profit check, liquidate everything to USDT
           const pair = `${symbol}USDT`;
           const avgBuyPrice = await getAvgBuyPrice(engine.userId, pair);
           let profitInfo = "";
