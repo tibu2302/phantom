@@ -222,9 +222,9 @@ export function getEngineCycles(userId: number): number {
 }
 
 // Coins to scan for opportunities
-// v10.7: CONCENTRATED — only scan XAU, BTC, ETH
+// v11.0: BEAST MODE — 4 core assets: XAU, BTC, ETH, SP500
 const SCANNER_COINS = [
-  "XAUUSDT", "BTCUSDT", "ETHUSDT",
+  "XAUUSDT", "BTCUSDT", "ETHUSDT", "SP500USDT",
 ];
 
 // ─── Trading Hours Filter ───
@@ -252,6 +252,7 @@ function hasAdequateVolume(symbol: string): boolean {
     BTCUSDT: 50_000_000,
     ETHUSDT: 20_000_000,
     XAUUSDT: 5_000_000,
+    SP500USDT: 0, // v11.0: SP500 from Yahoo Finance, always allow
     default: 1_000_000,
   };
   const threshold = minTurnover[symbol] ?? minTurnover.default;
@@ -445,7 +446,7 @@ const YAHOO_TICKERS: Record<string, string> = {
 
 // Bybit klines API as fallback for linear symbols
 // v10.7: CONCENTRATED — only XAU, BTC, ETH
-const BYBIT_KLINE_SYMBOLS = new Set(["XAUUSDT", "BTCUSDT", "ETHUSDT"]);
+const BYBIT_KLINE_SYMBOLS = new Set(["XAUUSDT", "BTCUSDT", "ETHUSDT", "SP500USDT"]);
 
 async function fetchKlines(_client: RestClientV5 | null, symbol: string, _interval: any = "15", limit: number = 50, _category: "spot" | "linear" = "spot"): Promise<KlineData> {
   // Check cache first
@@ -1065,7 +1066,7 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
   const maxHoldTimeMs = (stratConfig.maxHoldHours ?? 4) * 60 * 60 * 1000; // Default 4 hours — fast USDT rotation
   const maxOpenPositions = stratConfig.maxOpenPositions ?? 5; // Max open positions per symbol — more positions = more cycles = more USDT gains
   // Minimum 0.5% net profit on ALL sells — NEVER sell below this threshold
-  const MIN_PROFIT_PCT = 0.0015; // v10.8: 0.15% minimum net profit — faster closes for $300/day target
+  const MIN_PROFIT_PCT = 0.001; // v11.0: BEAST MODE 0.1% minimum net profit — ultra-fast capital rotation for $300-$500/day
   const positionsToSell: { pos: OpenBuyPosition; reason: string }[] = [];
 
   for (let i = openPositions.length - 1; i >= 0; i--) {
@@ -1628,15 +1629,15 @@ async function runScalpingStrategy(engine: EngineState, symbol: string, category
     const balance = parseFloat(state?.currentBalance ?? "5000");
     // Smart sizing: confidence-weighted + cooldown + BOOST + master signal multiplier + XAU boost + nocturnal
     const baseAmount = balance * allocation / 100; // v10.1: deploy 100% of allocation
-    const scalpBoost = effectiveConfidence > 75 ? 2.5 : effectiveConfidence > 55 ? 1.8 : 1.3; // v10.8: aggressive sizing for $300/day
+    const scalpBoost = effectiveConfidence > 75 ? 3.5 : effectiveConfidence > 55 ? 2.5 : 1.8; // v11.0: BEAST MODE — ultra-aggressive sizing for $300-$500/day
     const masterSizing = scalpMaster?.sizingMultiplier ?? 1.0;
     // v9.1.1: XAU BOOST — always active for XAUUSDT, minimum 2.0x sizing
     let xauBoost = 1.0;
     if (symbol === "XAUUSDT") {
       try {
         const perfs = await analyzeStrategyPerformance(engine.userId);
-        xauBoost = Math.max(3.0, getXAUBoostMultiplier(perfs)); // v10.4: minimum 3.0x for XAU
-      } catch { xauBoost = 3.0; /* default boost even on error */ }
+        xauBoost = Math.max(4.0, getXAUBoostMultiplier(perfs)); // v11.0: BEAST MODE minimum 4.0x for XAU
+      } catch { xauBoost = 4.0; /* default boost even on error */ }
       console.log(`[Scalp] ${symbol} XAU BOOST: ${xauBoost.toFixed(2)}x (top earner — always boosted)`);
     }
     const nocturnalSizing = nocturnal.sizeMultiplier;
@@ -1689,7 +1690,7 @@ async function runScalpingStrategy(engine: EngineState, symbol: string, category
       const estGross = (price - pos.buyPrice) * parseFloat(pos.qty);
       const estNet = calcNetPnl(estGross, posValue, category, true, engine.exchange);
       // v10.9: Dynamic TP based on ATR volatility — wider TP in volatile markets, tighter in calm
-      let scalpMinProfitPct = symbol === "XAUUSDT" ? 0.001 : 0.002; // base: XAU 0.1%, others 0.2%
+      let scalpMinProfitPct = symbol === "XAUUSDT" ? 0.0008 : 0.0012; // v11.0: BEAST MODE — XAU 0.08%, others 0.12% for ultra-fast rotation
       try {
         const tpKlines = await fetchKlines(engine.client, symbol, "1", 30, category);
         if (tpKlines.highs.length >= 14) {
@@ -1761,7 +1762,7 @@ async function runScalpingStrategy(engine: EngineState, symbol: string, category
       }
     } else if (signal === "Buy") {
       // XAU gets 6 scalp positions (top earner), others get 3
-      const maxScalpPositions = symbol === "XAUUSDT" ? 18 : 8; // v10.8: XAU 18 slots, BTC/ETH 8 — more positions for $300/day
+      const maxScalpPositions = symbol === "XAUUSDT" ? 25 : (symbol === "SP500USDT" ? 15 : 12); // v11.0: BEAST MODE — XAU 25, SP500 15, BTC/ETH 12
       if (myPositions.length >= maxScalpPositions) {
         console.log(`[Scalp] SKIP ${symbol} Buy — already have ${myPositions.length}/${maxScalpPositions} scalp position(s) on ${exchangeKey}`);
         return;
@@ -1879,8 +1880,8 @@ async function runFuturesStrategy(engine: EngineState, symbol: string, dailyProf
 
   // ATR-based dynamic TP and trailing
   const atrPct = calculateATRPercent(klines.highs, klines.lows, klines.closes);
-  const baseTpPct = futConfig.takeProfitPct ?? 1.5;
-  const dynamicTpPct = Math.max(0.8, Math.min(3.0, baseTpPct * Math.max(1, atrPct / 0.5)));
+  const baseTpPct = futConfig.takeProfitPct ?? 1.2; // v11.0: BEAST MODE — lower base TP for faster rotation
+  const dynamicTpPct = Math.max(0.6, Math.min(2.5, baseTpPct * Math.max(1, atrPct / 0.5)));
 
   // ─── ATR-based trailing stop for futures ───
   const trailingActivationPct = Math.max(0.003, atrPct / 100 * 1.0);
@@ -1916,8 +1917,8 @@ async function runFuturesStrategy(engine: EngineState, symbol: string, dailyProf
     // Minimum 0.1% net profit on ALL futures exits (lowered from 0.5% to avoid missing big gains)
     const futMinProfit = pos.tradeAmount * 0.0005; // v10.4: 0.05% of position value — close faster
 
-    // 0. FORCED CLOSE: If profit >= 4%, close immediately to lock in gains (v10.4: capture faster)
-    if (!closeReason && profitPct >= 0.04) {
+    // 0. FORCED CLOSE: If profit >= 3%, close immediately to lock in gains (v11.0: faster capture)
+    if (!closeReason && profitPct >= 0.03) {
       const estGrossBig = isLong
         ? (price - pos.entryPrice) * parseFloat(pos.qty) * pos.leverage
         : (pos.entryPrice - price) * parseFloat(pos.qty) * pos.leverage;
@@ -2115,8 +2116,8 @@ async function runFuturesStrategy(engine: EngineState, symbol: string, dailyProf
   }
 
   // v10.5: increased per-pair limits (was 3), allow neutral dir for XAU
-  const maxLongPerPair = symbol === "XAUUSDT" ? 8 : 4;
-  const maxShortPerPair = symbol === "XAUUSDT" ? 8 : 4;
+  const maxLongPerPair = symbol === "XAUUSDT" ? 15 : (symbol === "SP500USDT" ? 10 : 8); // v11.0: BEAST MODE
+  const maxShortPerPair = symbol === "XAUUSDT" ? 15 : (symbol === "SP500USDT" ? 10 : 8);
 
   if (futEffDir === "buy" && futBoostedConf >= minFuturesConfidence && longPositions.length < maxLongPerPair) {
     if (futSmartScore.regime !== "strong_trend_down") {
@@ -2175,7 +2176,7 @@ async function runFuturesStrategy(engine: EngineState, symbol: string, dailyProf
   const baseTradeAmount = (balance * allocation / 100) / maxPositions;
   const strengthBoost = futEffConf > 80 ? 2.5 : futEffConf > 65 ? 1.8 : 1.3; // v10.8: aggressive futures for $300/day
   // v9.1.1: XAU futures gets 1.5x extra sizing (top earner)
-  const futXauBoost = symbol === "XAUUSDT" ? 3.5 : 1.5; // v10.8: XAU 3.5x, BTC/ETH 1.5x for $300/day
+  const futXauBoost = symbol === "XAUUSDT" ? 4.0 : (symbol === "SP500USDT" ? 2.5 : 2.0); // v11.0: BEAST MODE — XAU 4x, SP500 2.5x, BTC/ETH 2x
   // v9.0: Market Timing + Volume Profile sizing for futures
   const futTimingMult = futTiming.sizingMultiplier;
   const futVPBoost = futVolProfile.isHighVolumeZone ? 1.2 : 0.85;
@@ -2772,7 +2773,7 @@ export async function startEngine(userId: number): Promise<{ success: boolean; e
     } catch (e) {
       console.error("[Engine] Trading loop error:", (e as Error).message);
     }
-  }, 8_000); // v10.8: 8s cycle — faster for $300/day target
+  }, 6_000); // v11.0: BEAST MODE — 6s cycle for $300-$500/day target
 
   // Opportunity scanner — every 1 minute (aggressive for daily target)
   engine.scannerIntervalId = setInterval(async () => {
@@ -2913,7 +2914,7 @@ export async function startEngine(userId: number): Promise<{ success: boolean; e
     } catch (e) {
       console.error("[v9.0 Allocator] Error:", (e as Error).message);
     }
-  }, 30 * 60 * 1000); // Every 30 min (v10: ultra-aggressive compounding)
+  }, 15 * 60 * 1000); // v11.0: BEAST MODE — compound every 15 min for maximum capital utilization
   console.log(`[Engine] v9.0 Aggressive Compounding (1h) + Rebalancing (4h) + Stale Checker active`);
 
   // ─── Telegram Polling for /status command ───
@@ -3380,12 +3381,12 @@ let wsReconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let wsKucoinReconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let wsInitialized = false;
 
-// v10.7: CONCENTRATED — only BTC/ETH spot feed (XAU is on linear)
+// v11.0: BEAST MODE — BTC/ETH spot feed
 const SPOT_SYMBOLS = [
   "BTCUSDT", "ETHUSDT",
 ];
-// v10.7: CONCENTRATED — only XAU, BTC, ETH on linear
-const LINEAR_SYMBOLS = ["XAUUSDT", "BTCUSDT", "ETHUSDT"];
+// v11.0: BEAST MODE — 4 core assets on linear
+const LINEAR_SYMBOLS = ["XAUUSDT", "BTCUSDT", "ETHUSDT", "SP500USDT"];
 
 function parseWsTickerMsg(data: Buffer | string): void {
   try {
@@ -3555,7 +3556,11 @@ async function startKuCoinWebSocketFeed() {
 
 async function updateSP500Price() {
   const sp500 = await fetchSP500Price();
-  if (sp500) livePrices.set("SP500", sp500);
+  if (sp500) {
+    livePrices.set("SP500", sp500);
+    // v11.0: Also set SP500USDT so strategies can find it by their symbol key
+    livePrices.set("SP500USDT", { ...sp500, symbol: "SP500USDT" });
+  }
 }
 
 // Auto-start on module load

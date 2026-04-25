@@ -69,8 +69,9 @@ export function isNocturnalHours(): boolean {
 
 export function getNocturnalMultiplier(): { confidenceReduction: number; sizeMultiplier: number } {
   if (!isNocturnalHours()) return { confidenceReduction: 0, sizeMultiplier: 1.0 };
-  // During nocturnal hours: lower confidence threshold by 25%, but reduce size by 30%
-  return { confidenceReduction: 0.25, sizeMultiplier: 0.7 };
+  // v11.0: TURBO NOCTURNO — más agresivo de noche (menos competencia, spreads similares en crypto/XAU)
+  // Lower confidence threshold by 40% (enter more trades) AND increase size by 30%
+  return { confidenceReduction: 0.40, sizeMultiplier: 1.3 };
 }
 
 // ─── Performance Analysis ───

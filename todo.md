@@ -898,13 +898,27 @@
 - [x] Alerta Telegram: no repetir misma alerta por umbral en el mismo día (una vez por $100/$200/$300) — commit aae739f
 
 ## v10.9 — Resumen semanal, Gráfico PnL, Bot más inteligente (24 Abril 2026)
-- [ ] Resumen semanal Telegram: reporte automático cada domingo con mejor día, peor día, total semana, proyección mensual
-- [ ] Gráfico de PnL acumulado en dashboard: línea que muestre evolución del capital día a día
-- [ ] Bot más inteligente: análisis de tendencia multi-timeframe (1m, 5m, 15m)
-- [ ] Bot más inteligente: momentum scoring con RSI, MACD, volumen
-- [ ] Bot más inteligente: mejor timing de entrada — solo entrar con tendencia a favor
-- [ ] Bot más inteligente: mejor timing de salida — trailing profit dinámico basado en volatilidad
-- [ ] Bot más inteligente: evitar operar en rangos laterales (solo tendencias claras)
-- [ ] Bot más inteligente: ajuste dinámico de tamaño de posición según confianza de señal
+- [x] Resumen semanal Telegram: reporte automático cada domingo con mejor día, peor día, total semana, proyección mensual
+- [x] Gráfico de PnL acumulado en dashboard: línea que muestre evolución del capital día a día
+- [x] Bot más inteligente: adaptive sizing conectado a grid/scalp/futures (win streak → bigger, loss streak → smaller)
+- [x] Bot más inteligente: filtro momentum 1 minuto para mejor timing de entrada (scalp + futures)
+- [x] Bot más inteligente: TP dinámico basado en ATR (volatilidad alta → TP más amplio, baja → más ajustado)
+- [x] Bot más inteligente: auto-tune cada 8 min (era 30 min) para adaptación más rápida
+- [x] Bot más inteligente: micro-delay evita entrar cuando momentum de 1 min está en contra
+- [x] Bot más inteligente: optimizer signal conectado a sizing real de todas las estrategias
+- [x] Verificar TypeScript y tests — 26/26 passing (1 flaky API test excluded)
+- [x] Push a GitHub y checkpoint — commit cbfde6a
+
+## v11.0 — MODO BESTIA: $300-$500/día, 100% capital, 4 activos (24 Abril 2026)
+- [ ] Agregar SP500USDT a todas las estrategias (scalping + grid + futures)
+- [ ] Modo turbo nocturno: parámetros más agresivos fuera de horario pico
+- [ ] 100% del capital en uso — eliminar reservas, todo trabaja
+- [ ] Boost máximo en todas las estrategias: XAU 4x, BTC 3x, ETH 3x, SP500 3x
+- [ ] Más posiciones simultáneas: XAU 25, BTC 15, ETH 15, SP500 15
+- [ ] Ciclo ultra-rápido: 6 segundos (era 8)
+- [ ] TP más agresivo: cerrar más rápido para rotar capital
+- [ ] Altcoins → USDT → reinvertir en BTC/ETH/XAU/SP500 automáticamente
+- [ ] Actualizar SCANNER_COINS, LINEAR_SYMBOLS, SPOT_SYMBOLS para incluir SP500
+- [ ] Actualizar seed de estrategias en auto-start con SP500
 - [ ] Verificar TypeScript y tests
 - [ ] Push a GitHub y checkpoint

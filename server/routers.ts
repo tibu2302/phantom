@@ -49,17 +49,21 @@ export const appRouter = router({
       // Force-sync: ALWAYS upsert strategies with concentrated allocation
       {
         const defaultStrats: Array<{ symbol: string; strategyType: string; market: string; category: string; allocationPct: number; enabled: boolean; config?: any }> = [
-          // Grid strategies — only BTC & ETH (LINEAR/USDT-settled)
-          { symbol: "BTCUSDT", strategyType: "grid", market: "crypto", category: "linear", allocationPct: 50, enabled: true },
-          { symbol: "ETHUSDT", strategyType: "grid", market: "crypto", category: "linear", allocationPct: 50, enabled: true },
-          // Scalping — XAU is king (50% allocation)
+          // v11.0 BEAST MODE: 4 assets × 3 strategies = 12 strategies, 100% capital
+          // Grid strategies — BTC, ETH, SP500 (LINEAR/USDT-settled)
+          { symbol: "BTCUSDT", strategyType: "grid", market: "crypto", category: "linear", allocationPct: 40, enabled: true },
+          { symbol: "ETHUSDT", strategyType: "grid", market: "crypto", category: "linear", allocationPct: 40, enabled: true },
+          { symbol: "SP500USDT", strategyType: "grid", market: "tradfi", category: "linear", allocationPct: 30, enabled: true },
+          // Scalping — XAU is king, all 4 assets active
           { symbol: "XAUUSDT", strategyType: "scalping", market: "tradfi", category: "linear", allocationPct: 50, enabled: true },
-          { symbol: "BTCUSDT", strategyType: "scalping", market: "crypto", category: "linear", allocationPct: 25, enabled: true },
-          { symbol: "ETHUSDT", strategyType: "scalping", market: "crypto", category: "linear", allocationPct: 25, enabled: true },
-          // Futures — XAU 30% + BTC/ETH 25% each
-          { symbol: "XAUUSDT", strategyType: "futures", market: "tradfi", category: "linear", allocationPct: 30, enabled: true, config: { leverage: 5, takeProfitPct: 1.5 } },
-          { symbol: "BTCUSDT", strategyType: "futures", market: "crypto", category: "linear", allocationPct: 25, enabled: true, config: { leverage: 5, takeProfitPct: 1.5 } },
-          { symbol: "ETHUSDT", strategyType: "futures", market: "crypto", category: "linear", allocationPct: 25, enabled: true, config: { leverage: 5, takeProfitPct: 1.5 } },
+          { symbol: "BTCUSDT", strategyType: "scalping", market: "crypto", category: "linear", allocationPct: 30, enabled: true },
+          { symbol: "ETHUSDT", strategyType: "scalping", market: "crypto", category: "linear", allocationPct: 30, enabled: true },
+          { symbol: "SP500USDT", strategyType: "scalping", market: "tradfi", category: "linear", allocationPct: 25, enabled: true },
+          // Futures — all 4 assets with aggressive leverage
+          { symbol: "XAUUSDT", strategyType: "futures", market: "tradfi", category: "linear", allocationPct: 35, enabled: true, config: { leverage: 5, takeProfitPct: 1.2 } },
+          { symbol: "BTCUSDT", strategyType: "futures", market: "crypto", category: "linear", allocationPct: 30, enabled: true, config: { leverage: 5, takeProfitPct: 1.2 } },
+          { symbol: "ETHUSDT", strategyType: "futures", market: "crypto", category: "linear", allocationPct: 30, enabled: true, config: { leverage: 5, takeProfitPct: 1.2 } },
+          { symbol: "SP500USDT", strategyType: "futures", market: "tradfi", category: "linear", allocationPct: 20, enabled: true, config: { leverage: 3, takeProfitPct: 1.5 } },
         ];
         // Disable ALL strategies not in the concentrated list
         const allowedKeys = new Set(defaultStrats.map(s => `${s.symbol}_${s.strategyType}`));

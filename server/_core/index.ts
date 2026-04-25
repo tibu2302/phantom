@@ -101,31 +101,37 @@ setTimeout(async () => {
           console.log(`[AutoStart] Forced LIVE mode (API keys found for owner ${owner.id})`);
         }
 
-        // v10.7: Seed concentrated strategies (XAU+BTC+ETH only) before starting
+        // v11.0: BEAST MODE — Seed 4 assets × 3 strategies = 12 strategies
         const { getUserStrategies, upsertStrategy } = await import("../db");
         const existingStrats = await getUserStrategies(owner.id);
         const concentratedStrats = [
-          { symbol: "BTCUSDT", strategyType: "grid", market: "crypto", category: "linear", allocationPct: 50, enabled: true },
-          { symbol: "ETHUSDT", strategyType: "grid", market: "crypto", category: "linear", allocationPct: 50, enabled: true },
+          // Grid: BTC, ETH, SP500
+          { symbol: "BTCUSDT", strategyType: "grid", market: "crypto", category: "linear", allocationPct: 40, enabled: true },
+          { symbol: "ETHUSDT", strategyType: "grid", market: "crypto", category: "linear", allocationPct: 40, enabled: true },
+          { symbol: "SP500USDT", strategyType: "grid", market: "tradfi", category: "linear", allocationPct: 30, enabled: true },
+          // Scalping: XAU, BTC, ETH, SP500
           { symbol: "XAUUSDT", strategyType: "scalping", market: "tradfi", category: "linear", allocationPct: 50, enabled: true },
-          { symbol: "BTCUSDT", strategyType: "scalping", market: "crypto", category: "linear", allocationPct: 25, enabled: true },
-          { symbol: "ETHUSDT", strategyType: "scalping", market: "crypto", category: "linear", allocationPct: 25, enabled: true },
-          { symbol: "XAUUSDT", strategyType: "futures", market: "tradfi", category: "linear", allocationPct: 30, enabled: true, config: { leverage: 5, takeProfitPct: 1.5 } },
-          { symbol: "BTCUSDT", strategyType: "futures", market: "crypto", category: "linear", allocationPct: 25, enabled: true, config: { leverage: 5, takeProfitPct: 1.5 } },
-          { symbol: "ETHUSDT", strategyType: "futures", market: "crypto", category: "linear", allocationPct: 25, enabled: true, config: { leverage: 5, takeProfitPct: 1.5 } },
+          { symbol: "BTCUSDT", strategyType: "scalping", market: "crypto", category: "linear", allocationPct: 30, enabled: true },
+          { symbol: "ETHUSDT", strategyType: "scalping", market: "crypto", category: "linear", allocationPct: 30, enabled: true },
+          { symbol: "SP500USDT", strategyType: "scalping", market: "tradfi", category: "linear", allocationPct: 25, enabled: true },
+          // Futures: XAU, BTC, ETH, SP500
+          { symbol: "XAUUSDT", strategyType: "futures", market: "tradfi", category: "linear", allocationPct: 35, enabled: true, config: { leverage: 5, takeProfitPct: 1.2 } },
+          { symbol: "BTCUSDT", strategyType: "futures", market: "crypto", category: "linear", allocationPct: 30, enabled: true, config: { leverage: 5, takeProfitPct: 1.2 } },
+          { symbol: "ETHUSDT", strategyType: "futures", market: "crypto", category: "linear", allocationPct: 30, enabled: true, config: { leverage: 5, takeProfitPct: 1.2 } },
+          { symbol: "SP500USDT", strategyType: "futures", market: "tradfi", category: "linear", allocationPct: 20, enabled: true, config: { leverage: 3, takeProfitPct: 1.5 } },
         ];
         const allowedKeys = new Set(concentratedStrats.map(s => `${s.symbol}_${s.strategyType}`));
         for (const existing of existingStrats) {
           const key = `${existing.symbol}_${existing.strategyType}`;
           if (!allowedKeys.has(key) && existing.enabled) {
             await upsertStrategy(owner.id, { ...existing, enabled: false } as any);
-            console.log(`[AutoStart] v10.7: DISABLED ${existing.strategyType} ${existing.symbol}`);
+            console.log(`[AutoStart] v11.0: DISABLED ${existing.strategyType} ${existing.symbol}`);
           }
         }
         for (const strat of concentratedStrats) {
           await upsertStrategy(owner.id, strat as any);
         }
-        console.log(`[AutoStart] v10.7: Synced ${concentratedStrats.length} concentrated strategies (XAU+BTC+ETH)`);
+        console.log(`[AutoStart] v11.0: Synced ${concentratedStrats.length} BEAST MODE strategies (XAU+BTC+ETH+SP500)`);
 
         console.log(`[AutoStart] Starting engine for owner (id=${owner.id})...`);
         const result = await startEngine(owner.id);
