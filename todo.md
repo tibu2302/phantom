@@ -924,9 +924,11 @@
 - [x] Push a GitHub y checkpoint — commit 4b450ad
 
 ## v11.1 — Fix autoConvert: vender TODAS las altcoins a USDT (25 Abril 2026)
-- [ ] Diagnosticar por qué autoConvert no vende ADA ($4,861), ARB ($2,189), XRP ($1,532), DOGE ($1,083), LINK ($698), SUI ($321), AVAX ($259), SOL ($54), BTC spot ($23)
-- [ ] Arreglar autoConvert para que use market sell en spot para cada altcoin
-- [ ] Asegurar que el mínimo de orden sea respetado (Bybit spot min order)
-- [ ] Verificar que el bot no re-compre altcoins después de venderlas
-- [ ] Verificar TypeScript y tests
-- [ ] Push a GitHub y checkpoint
+- [x] Diagnosticar: futures positions skip + qty decimals too long
+- [x] Arreglar autoConvert: proper lot sizes, roundToStepSize, fetchLotSize from API
+- [x] Asegurar mínimo de orden: hardcoded SPOT_LOT_SIZES + API fallback
+- [x] No re-compra: solo opera en linear, no spot (grid/scalp/futures all linear)
+- [x] Retry con baseCoin marketUnit si primera orden falla
+- [x] Telegram notification para ventas > $50
+- [x] Verificar TypeScript y tests — passing
+- [x] Push a GitHub y checkpoint — commit f37b51b

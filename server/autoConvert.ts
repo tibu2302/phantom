@@ -1,5 +1,5 @@
 // ─── Auto-Convert ALL Coins to USDT ───
-// v11.1: FIXED — properly handle lot sizes, don't skip coins with futures positions
+// v11.1.1: FIXED NaN qty bug — use walletBalance, validate everything, robust error handling
 // Sell ALL non-USDT coins immediately to free capital for linear trading
 
 import type { EngineState } from "./tradingEngine";
@@ -13,15 +13,15 @@ interface CoinBalance {
   walletBalance: string;
   usdValue: string;
   availableToWithdraw: string;
+  free?: string;
 }
 
 // Bybit spot minimum order sizes and step sizes for common pairs
-// These are approximate — the bot will try and handle errors gracefully
 const SPOT_LOT_SIZES: Record<string, { minQty: number; stepSize: number; minNotional: number }> = {
-  BTCUSDT:  { minQty: 0.000001, stepSize: 0.000001, minNotional: 1 },
-  ETHUSDT:  { minQty: 0.0001,   stepSize: 0.0001,   minNotional: 1 },
+  BTCUSDT:  { minQty: 0.000048, stepSize: 0.000001, minNotional: 1 },
+  ETHUSDT:  { minQty: 0.00006,  stepSize: 0.00001,  minNotional: 1 },
   SOLUSDT:  { minQty: 0.01,     stepSize: 0.01,      minNotional: 1 },
-  XRPUSDT:  { minQty: 0.01,     stepSize: 0.01,      minNotional: 1 },
+  XRPUSDT:  { minQty: 0.1,      stepSize: 0.1,       minNotional: 1 },
   DOGEUSDT: { minQty: 1,        stepSize: 1,         minNotional: 1 },
   ADAUSDT:  { minQty: 1,        stepSize: 1,         minNotional: 1 },
   AVAXUSDT: { minQty: 0.01,     stepSize: 0.01,      minNotional: 1 },
@@ -36,9 +36,19 @@ const SPOT_LOT_SIZES: Record<string, { minQty: number; stepSize: number; minNoti
 };
 
 /**
+ * Safe parse float — returns 0 if NaN/undefined/null/empty
+ */
+function safeFloat(val: string | number | undefined | null): number {
+  if (val === undefined || val === null || val === "") return 0;
+  const n = typeof val === "number" ? val : parseFloat(val);
+  return isNaN(n) || !isFinite(n) ? 0 : n;
+}
+
+/**
  * Round down qty to the nearest valid step size for Bybit spot
  */
 function roundToStepSize(qty: number, stepSize: number): number {
+  if (isNaN(qty) || isNaN(stepSize) || stepSize <= 0 || qty <= 0) return 0;
   const decimals = Math.max(0, -Math.floor(Math.log10(stepSize)));
   const factor = Math.pow(10, decimals);
   return Math.floor(qty * factor) / factor;
@@ -48,6 +58,7 @@ function roundToStepSize(qty: number, stepSize: number): number {
  * Get the number of decimal places for a step size
  */
 function getDecimals(stepSize: number): number {
+  if (isNaN(stepSize) || stepSize <= 0) return 2;
   return Math.max(0, -Math.floor(Math.log10(stepSize)));
 }
 
@@ -74,8 +85,7 @@ async function getAvgBuyPrice(userId: number, symbol: string): Promise<number> {
         )
       );
 
-    const avgPrice = parseFloat(result[0]?.avgPrice ?? "0");
-    return avgPrice;
+    return safeFloat(result[0]?.avgPrice);
   } catch (e) {
     console.log(`[AutoConvert] Cannot get avg buy price for ${symbol}: ${(e as Error).message}`);
     return 0;
@@ -92,10 +102,11 @@ async function fetchLotSize(client: any, pair: string): Promise<{ minQty: number
       const info = res.result.list[0];
       const lotFilter = info.lotSizeFilter;
       if (lotFilter) {
-        return {
-          minQty: parseFloat(lotFilter.minOrderQty ?? "0.0001"),
-          stepSize: parseFloat(lotFilter.basePrecision ?? lotFilter.minOrderQty ?? "0.0001"),
-        };
+        const minQty = safeFloat(lotFilter.minOrderQty);
+        const stepSize = safeFloat(lotFilter.basePrecision) || safeFloat(lotFilter.minOrderQty);
+        if (minQty > 0 && stepSize > 0) {
+          return { minQty, stepSize };
+        }
       }
     }
   } catch { /* use fallback */ }
@@ -116,24 +127,33 @@ export async function autoConvertCoinsToUSDT(engine: EngineState): Promise<void>
           const symbol = coin.coin;
           if (symbol === "USDT" || symbol === "USDC" || symbol === "USD") continue;
           
-          const available = parseFloat(coin.availableToWithdraw ?? "0");
-          const usdValue = parseFloat(coin.usdValue ?? "0");
+          // v11.1.1: Use walletBalance as primary (total coins held), 
+          // fall back to availableToWithdraw, then free
+          const walletBal = safeFloat(coin.walletBalance);
+          const availBal = safeFloat(coin.availableToWithdraw);
+          const freeBal = safeFloat(coin.free);
+          const usdValue = safeFloat(coin.usdValue);
+          
+          // Use the best available qty — prefer availableToWithdraw (what we can actually sell),
+          // but if it's 0 while walletBalance is positive, try walletBalance
+          let sellQty = availBal > 0 ? availBal : (freeBal > 0 ? freeBal : walletBal);
+          
+          // Debug log for diagnosis
+          console.log(`[AutoConvert] ${symbol}: walletBal=${walletBal}, availBal=${availBal}, free=${freeBal}, usdValue=${usdValue}, sellQty=${sellQty}`);
           
           // Skip dust (< $1) or zero balances
-          if (usdValue < 1 || available <= 0) continue;
+          if (usdValue < 1 || sellQty <= 0) {
+            continue;
+          }
           
           const pair = `${symbol}USDT`;
           
-          // v11.1: DO NOT skip coins with futures positions
-          // Futures use margin (USDT), not actual coins
-          // Spot balances are independent and should ALWAYS be sold
-          
           // Calculate profit/loss for logging only
           const avgBuyPrice = await getAvgBuyPrice(engine.userId, pair);
-          const currentPrice = usdValue / available;
+          const currentPrice = sellQty > 0 ? usdValue / sellQty : 0;
           let profitInfo = "";
           
-          if (avgBuyPrice > 0) {
+          if (avgBuyPrice > 0 && currentPrice > 0) {
             const profitPctNum = (currentPrice - avgBuyPrice) / avgBuyPrice;
             const pctStr = (profitPctNum * 100).toFixed(2);
             profitInfo = `${profitPctNum >= 0 ? "+" : ""}${pctStr}% (avg=$${avgBuyPrice.toFixed(4)})`;
@@ -141,20 +161,28 @@ export async function autoConvertCoinsToUSDT(engine: EngineState): Promise<void>
             profitInfo = "no buy history";
           }
           
-          // v11.1: Get proper lot size — try API first, then fallback to hardcoded
+          // v11.1.1: Get proper lot size — try hardcoded first (faster), then API
           let lotInfo = SPOT_LOT_SIZES[pair];
           if (!lotInfo) {
             const fetched = await fetchLotSize(engine.client, pair);
             if (fetched) {
               lotInfo = { ...fetched, minNotional: 1 };
+              console.log(`[AutoConvert] ${symbol}: fetched lot size from API — minQty=${fetched.minQty}, stepSize=${fetched.stepSize}`);
             } else {
-              // Conservative fallback: use 0.01 step size
+              // Conservative fallback
               lotInfo = { minQty: 0.01, stepSize: 0.01, minNotional: 1 };
+              console.log(`[AutoConvert] ${symbol}: using fallback lot size — minQty=0.01, stepSize=0.01`);
             }
           }
           
           // Round down to valid step size
-          const roundedQty = roundToStepSize(available, lotInfo.stepSize);
+          const roundedQty = roundToStepSize(sellQty, lotInfo.stepSize);
+          
+          // v11.1.1: Validate roundedQty is not NaN or 0
+          if (isNaN(roundedQty) || roundedQty <= 0) {
+            console.log(`[AutoConvert] Bybit: SKIP ${symbol} — roundedQty is ${roundedQty} (NaN or 0), sellQty=${sellQty}, stepSize=${lotInfo.stepSize}`);
+            continue;
+          }
           
           // Check minimum order size
           if (roundedQty < lotInfo.minQty) {
@@ -168,12 +196,18 @@ export async function autoConvertCoinsToUSDT(engine: EngineState): Promise<void>
             continue;
           }
           
-          // v11.1: FORCE SELL with properly formatted qty
+          // v11.1.1: FORCE SELL with properly formatted and validated qty
           try {
             const decimals = getDecimals(lotInfo.stepSize);
             const qtyStr = roundedQty.toFixed(decimals);
             
-            console.log(`[AutoConvert] Bybit: Attempting to sell ${qtyStr} ${symbol} (~$${usdValue.toFixed(2)}) — ${profitInfo}`);
+            // Final NaN check on the string
+            if (qtyStr === "NaN" || qtyStr === "Infinity" || qtyStr === "0") {
+              console.log(`[AutoConvert] Bybit: SKIP ${symbol} — qtyStr is "${qtyStr}" after formatting`);
+              continue;
+            }
+            
+            console.log(`[AutoConvert] Bybit: Selling ${qtyStr} ${symbol} (~$${usdValue.toFixed(2)}) — ${profitInfo}`);
             
             const sellRes = await withRetry(() => engine.client.submitOrder({
               category: "spot",
@@ -198,30 +232,56 @@ export async function autoConvertCoinsToUSDT(engine: EngineState): Promise<void>
                 } catch { /* silent */ }
               }
             } else {
-              // v11.1: If order fails, try with market order using quote qty (sell by USD value)
-              console.log(`[AutoConvert] Bybit: Standard sell failed for ${symbol} (retCode=${sellRes.retCode}, msg=${(sellRes as any).retMsg}), trying marketUnit=quoteCoin...`);
+              const retMsg = (sellRes as any).retMsg ?? "unknown";
+              console.log(`[AutoConvert] Bybit: Sell failed for ${symbol} (retCode=${sellRes.retCode}, msg=${retMsg})`);
               
-              try {
-                const sellRes2 = await withRetry(() => engine.client.submitOrder({
-                  category: "spot",
-                  symbol: pair,
-                  side: "Sell",
-                  orderType: "Market",
-                  qty: qtyStr,
-                  marketUnit: "baseCoin",
-                }), `AutoConvert Bybit sell ${symbol} (baseCoin)`);
-                
-                if (sellRes2.retCode === 0 && sellRes2.result?.orderId) {
-                  console.log(`[AutoConvert] ✅ Bybit: SOLD ${symbol} via baseCoin (~$${usdValue.toFixed(2)}) — orderId: ${sellRes2.result.orderId}`);
-                } else {
-                  console.log(`[AutoConvert] ❌ Bybit: All sell methods failed for ${symbol}: retCode=${sellRes2.retCode}, msg=${(sellRes2 as any).retMsg}`);
+              // v11.1.1: If standard sell fails, try with explicit marketUnit=baseCoin
+              if (sellRes.retCode === 170130 || sellRes.retCode === 170131) {
+                try {
+                  console.log(`[AutoConvert] Bybit: Retrying ${symbol} with marketUnit=baseCoin...`);
+                  const sellRes2 = await withRetry(() => engine.client.submitOrder({
+                    category: "spot",
+                    symbol: pair,
+                    side: "Sell",
+                    orderType: "Market",
+                    qty: qtyStr,
+                    marketUnit: "baseCoin",
+                  }), `AutoConvert Bybit sell ${symbol} (baseCoin)`);
+                  
+                  if (sellRes2.retCode === 0 && sellRes2.result?.orderId) {
+                    console.log(`[AutoConvert] ✅ Bybit: SOLD ${symbol} via baseCoin (~$${usdValue.toFixed(2)}) — orderId: ${sellRes2.result.orderId}`);
+                  } else {
+                    console.log(`[AutoConvert] ❌ Bybit: baseCoin also failed for ${symbol}: retCode=${sellRes2.retCode}, msg=${(sellRes2 as any).retMsg}`);
+                    
+                    // v11.1.1: Last resort — try selling by quoteCoin (USDT amount)
+                    try {
+                      const usdQty = Math.floor(usdValue * 0.98).toString(); // 2% buffer for slippage
+                      console.log(`[AutoConvert] Bybit: Last resort — selling ${symbol} by quoteCoin amount $${usdQty}...`);
+                      const sellRes3 = await withRetry(() => engine.client.submitOrder({
+                        category: "spot",
+                        symbol: pair,
+                        side: "Sell",
+                        orderType: "Market",
+                        qty: usdQty,
+                        marketUnit: "quoteCoin",
+                      }), `AutoConvert Bybit sell ${symbol} (quoteCoin)`);
+                      
+                      if (sellRes3.retCode === 0 && sellRes3.result?.orderId) {
+                        console.log(`[AutoConvert] ✅ Bybit: SOLD ${symbol} via quoteCoin (~$${usdQty}) — orderId: ${sellRes3.result.orderId}`);
+                      } else {
+                        console.log(`[AutoConvert] ❌ Bybit: ALL methods failed for ${symbol}: retCode=${sellRes3.retCode}, msg=${(sellRes3 as any).retMsg}`);
+                      }
+                    } catch (e3) {
+                      console.log(`[AutoConvert] ❌ Bybit: quoteCoin sell failed for ${symbol}: ${(e3 as Error).message}`);
+                    }
+                  }
+                } catch (e2) {
+                  console.log(`[AutoConvert] ❌ Bybit: baseCoin sell failed for ${symbol}: ${(e2 as Error).message}`);
                 }
-              } catch (e2) {
-                console.log(`[AutoConvert] ❌ Bybit: Cannot sell ${symbol} (both methods failed): ${(e2 as Error).message}`);
               }
             }
           } catch (e) {
-            console.log(`[AutoConvert] Bybit: Cannot sell ${symbol}: ${(e as Error).message}`);
+            console.log(`[AutoConvert] Bybit: Error selling ${symbol}: ${(e as Error).message}`);
           }
         }
       }
@@ -242,7 +302,7 @@ export async function autoConvertCoinsToUSDT(engine: EngineState): Promise<void>
           if (r.status !== "fulfilled" || r.value?.code !== "200000") return;
           for (const acc of (r.value.data as any[] ?? [])) {
             const cur = acc.currency;
-            const bal = parseFloat(acc.available ?? "0");
+            const bal = safeFloat(acc.available);
             if (cur === "USDT" || cur === "USDC" || cur === "USD") continue;
             
             const price = prices[`${cur}USDT`]?.lastPrice ?? 0;
@@ -261,7 +321,7 @@ export async function autoConvertCoinsToUSDT(engine: EngineState): Promise<void>
           const avgBuyPrice = await getAvgBuyPrice(engine.userId, pair);
           let profitInfo = "";
           
-          if (avgBuyPrice > 0) {
+          if (avgBuyPrice > 0 && currentPrice > 0) {
             const profitPctNum = (currentPrice - avgBuyPrice) / avgBuyPrice;
             profitInfo = `${profitPctNum >= 0 ? "+" : ""}${(profitPctNum * 100).toFixed(2)}%`;
           } else {
