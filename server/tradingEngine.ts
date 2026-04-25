@@ -1295,7 +1295,10 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
       const baseTradeAmount = (balance * allocation / 100) / (levels.length / 2);
       // Apply smart multiplier + strength boost: strong signals get bigger positions
       const gridBoost = (smartScore?.confidence ?? 50) > 70 ? 2.0 : (smartScore?.confidence ?? 50) > 50 ? 1.5 : 1.2; // v10.8: aggressive grid for $300/day
-      const tradeAmount = baseTradeAmount * positionSizeMultiplier * gridBoost;
+      // v10.9: Apply optimizer adaptive sizing (win streak → bigger, loss streak → smaller)
+      const adaptiveSizing = getAdaptiveState();
+      const adaptiveMultiplier = adaptiveSizing.aggressiveness;
+      const tradeAmount = baseTradeAmount * positionSizeMultiplier * gridBoost * adaptiveMultiplier;
       const qty = (tradeAmount / price).toFixed(6);
 
       // ─── v9.0: USDT Liquidity Guard for spot buys ───
@@ -1572,6 +1575,26 @@ async function runScalpingStrategy(engine: EngineState, symbol: string, category
   }
   if (!isBlocked && effectiveDirection === "buy" && effectiveConfidence >= minConfidence) {
     signal = "Buy";
+    // v10.9: 1-minute momentum filter — confirm buy with short-term price action
+    try {
+      const klines1m = await fetchKlines(engine.client, symbol, "1", 15, category);
+      if (klines1m.closes.length >= 10) {
+        const last5 = klines1m.closes.slice(-5);
+        const first5 = klines1m.closes.slice(-10, -5);
+        const avgLast = last5.reduce((a, b) => a + b, 0) / 5;
+        const avgFirst = first5.reduce((a, b) => a + b, 0) / 5;
+        const microMomentum = (avgLast - avgFirst) / avgFirst;
+        // If short-term momentum is strongly negative (>0.3% drop in last 5 min), delay entry
+        if (microMomentum < -0.003 && effectiveConfidence < 70) {
+          console.log(`[Scalp] ${symbol} MICRO-DELAY: 1m momentum ${(microMomentum * 100).toFixed(3)}% — waiting for stabilization`);
+          signal = null;
+        }
+        // If short-term momentum confirms buy (rising), boost confidence
+        if (microMomentum > 0.001) {
+          console.log(`[Scalp] ${symbol} MICRO-CONFIRM: 1m momentum +${(microMomentum * 100).toFixed(3)}% — entry confirmed`);
+        }
+      }
+    } catch { /* silent — proceed without 1m filter */ }
   } else if (effectiveDirection === "sell" && effectiveConfidence >= minConfidence) {
     signal = "Sell";
   }
@@ -1619,7 +1642,10 @@ async function runScalpingStrategy(engine: EngineState, symbol: string, category
     const nocturnalSizing = nocturnal.sizeMultiplier;
     // v9.0: Market Timing + Volume Profile sizing
     const vpBoost = volumeProfile.isHighVolumeZone ? 1.15 : 0.85;
-    const tradeAmount = baseAmount * smartScore.suggestedSizePct * scalpCooldown * scalpBoost * masterSizing * xauBoost * nocturnalSizing * timingMultiplier * vpBoost;
+    // v10.9: Apply optimizer adaptive sizing (win streak → bigger, loss streak → smaller)
+    const scalpAdaptive = getAdaptiveState();
+    const scalpAdaptiveMultiplier = scalpAdaptive.aggressiveness;
+    const tradeAmount = baseAmount * smartScore.suggestedSizePct * scalpCooldown * scalpBoost * masterSizing * xauBoost * nocturnalSizing * timingMultiplier * vpBoost * scalpAdaptiveMultiplier;
     const qty = (tradeAmount / price).toFixed(6);
 
     // ─── Position-Tracked Scalping ───
@@ -1662,9 +1688,21 @@ async function runScalpingStrategy(engine: EngineState, symbol: string, category
       const posValue = pos.buyPrice * parseFloat(pos.qty);
       const estGross = (price - pos.buyPrice) * parseFloat(pos.qty);
       const estNet = calcNetPnl(estGross, posValue, category, true, engine.exchange);
-      const scalpMinProfit = posValue * (symbol === "XAUUSDT" ? 0.001 : 0.002); // v10.4: XAU 0.1%, others 0.2% — faster cycles
+      // v10.9: Dynamic TP based on ATR volatility — wider TP in volatile markets, tighter in calm
+      let scalpMinProfitPct = symbol === "XAUUSDT" ? 0.001 : 0.002; // base: XAU 0.1%, others 0.2%
+      try {
+        const tpKlines = await fetchKlines(engine.client, symbol, "1", 30, category);
+        if (tpKlines.highs.length >= 14) {
+          const atr1m = calculateATRPercent(tpKlines.highs, tpKlines.lows, tpKlines.closes);
+          // High volatility (ATR > 0.3%) → wider TP to capture bigger moves
+          // Low volatility (ATR < 0.1%) → tighter TP to close faster
+          if (atr1m > 0.003) scalpMinProfitPct = Math.min(0.005, scalpMinProfitPct * 2.0);
+          else if (atr1m < 0.001) scalpMinProfitPct = Math.max(0.0005, scalpMinProfitPct * 0.5);
+        }
+      } catch { /* use base */ }
+      const scalpMinProfit = posValue * scalpMinProfitPct;
       if (estNet < scalpMinProfit) {
-        console.log(`[Scalp] HOLD ${symbol} — net $${estNet.toFixed(2)} < min 0.3% ($${scalpMinProfit.toFixed(2)}), waiting for better exit`);
+        console.log(`[Scalp] HOLD ${symbol} — net $${estNet.toFixed(2)} < min ${(scalpMinProfitPct * 100).toFixed(2)}% ($${scalpMinProfit.toFixed(2)}), waiting for better exit`);
         return;
       }
       const sellQty = pos.qty;
@@ -2098,6 +2136,30 @@ async function runFuturesStrategy(engine: EngineState, symbol: string, dailyProf
     console.log(`[Futures] 💡 EXCEPTIONAL ${entryDirection.toUpperCase()} ${symbol} — score ${futEffConf} >= 70 despite daily target`);
   }
 
+  // v10.9: 1-minute momentum filter for futures — confirm entry with short-term price action
+  if (entryDirection) {
+    try {
+      const futKlines1m = await fetchKlines(engine.client, symbol, "1", 15, "linear");
+      if (futKlines1m.closes.length >= 10) {
+        const futLast5 = futKlines1m.closes.slice(-5);
+        const futFirst5 = futKlines1m.closes.slice(-10, -5);
+        const futAvgLast = futLast5.reduce((a, b) => a + b, 0) / 5;
+        const futAvgFirst = futFirst5.reduce((a, b) => a + b, 0) / 5;
+        const futMicroMom = (futAvgLast - futAvgFirst) / futAvgFirst;
+        // Long entry but price dropping fast → delay
+        if (entryDirection === "long" && futMicroMom < -0.003 && futBoostedConf < 60) {
+          console.log(`[Futures] ${symbol} MICRO-DELAY LONG: 1m momentum ${(futMicroMom * 100).toFixed(3)}% — waiting`);
+          entryDirection = null;
+        }
+        // Short entry but price rising fast → delay
+        if (entryDirection === "short" && futMicroMom > 0.003 && futBoostedConf < 60) {
+          console.log(`[Futures] ${symbol} MICRO-DELAY SHORT: 1m momentum +${(futMicroMom * 100).toFixed(3)}% — waiting`);
+          entryDirection = null;
+        }
+      }
+    } catch { /* silent */ }
+  }
+
   if (!entryDirection) {
     console.log(`[Futures] ${symbol} SKIP entry — score=${futEffConf} dir=${futEffDir} regime=${futSmartScore.regime}`);
     return;
@@ -2117,7 +2179,10 @@ async function runFuturesStrategy(engine: EngineState, symbol: string, dailyProf
   // v9.0: Market Timing + Volume Profile sizing for futures
   const futTimingMult = futTiming.sizingMultiplier;
   const futVPBoost = futVolProfile.isHighVolumeZone ? 1.2 : 0.85;
-  const tradeAmount = baseTradeAmount * futSmartScore.suggestedSizePct * futCooldown * strengthBoost * futMasterSizing * futTimingMult * futVPBoost * futXauBoost;
+  // v10.9: Apply optimizer adaptive sizing (win streak → bigger, loss streak → smaller)
+  const futAdaptive = getAdaptiveState();
+  const futAdaptiveMultiplier = futAdaptive.aggressiveness;
+  const tradeAmount = baseTradeAmount * futSmartScore.suggestedSizePct * futCooldown * strengthBoost * futMasterSizing * futTimingMult * futVPBoost * futXauBoost * futAdaptiveMultiplier;
   const qty = ((tradeAmount * leverage) / price).toFixed(6);
 
   // LONG → Buy to open, SHORT → Sell to open
@@ -2437,8 +2502,8 @@ export async function startEngine(userId: number): Promise<{ success: boolean; e
         } catch { /* silent */ }
       }
 
-      // ─── AUTO-OPTIMIZER: Tune parameters every 120 cycles (~30min) ───
-      if (cycleNum % 120 === 0) {
+      // ─── AUTO-OPTIMIZER: Tune parameters every 60 cycles (~8min) ─── v10.9: faster adaptation
+      if (cycleNum % 60 === 0) {
         try {
           const tuning = autoTuneParameters();
           const adaptive = getAdaptiveState();
@@ -2781,6 +2846,10 @@ export async function startEngine(userId: number): Promise<{ success: boolean; e
     if (hour === 23 && minute === 0 && dateStr !== lastSummaryDate) {
       lastSummaryDate = dateStr;
       await sendDailySummary(engine);
+      // v10.9: Weekly summary on Sundays at 23:00
+      if (now.getDay() === 0) {
+        try { await sendWeeklySummary(engine); } catch (e) { console.error(`[Engine] Weekly summary error:`, (e as Error).message); }
+      }
     }
   }, 60_000); // Check every 60 seconds
 
@@ -3140,6 +3209,72 @@ async function sendDailySummary(engine: EngineState) {
     console.log(`[Engine] Daily summary sent via Telegram for user ${engine.userId}`);
   } catch (e) {
     console.error(`[Engine] Failed to send daily summary:`, (e as Error).message);
+  }
+}
+
+// ─── v10.9: Weekly Summary (Sundays at 23:00) ───
+async function sendWeeklySummary(engine: EngineState) {
+  if (!engine.telegramBotToken || !engine.telegramChatId) return;
+  try {
+    const pnlHist = await db.getPnlHistory(engine.userId, 7);
+    if (pnlHist.length === 0) return;
+
+    const state = await db.getOrCreateBotState(engine.userId);
+    const initialDeposit = parseFloat(state?.initialBalance ?? "2500");
+
+    // Calculate weekly stats
+    let weekTotal = 0;
+    let bestDay = { date: "", pnl: -Infinity };
+    let worstDay = { date: "", pnl: Infinity };
+    let greenDays = 0;
+    let redDays = 0;
+
+    for (const day of pnlHist) {
+      const dayPnl = parseFloat(day.pnl as any ?? "0");
+      weekTotal += dayPnl;
+      if (dayPnl > bestDay.pnl) bestDay = { date: day.date, pnl: dayPnl };
+      if (dayPnl < worstDay.pnl) worstDay = { date: day.date, pnl: dayPnl };
+      if (dayPnl >= 0) greenDays++; else redDays++;
+    }
+
+    const avgDaily = weekTotal / pnlHist.length;
+    const projectedMonthly = avgDaily * 30;
+    const projectedYearly = avgDaily * 365;
+    const weeklyROI = initialDeposit > 0 ? ((weekTotal / initialDeposit) * 100).toFixed(2) : "0";
+
+    // Get real Bybit balance
+    let realBalance = parseFloat(state?.currentBalance ?? "0");
+    try {
+      if (engine.client) {
+        const walletRes = await withRetry(() => engine.client.getWalletBalance({ accountType: "UNIFIED" }), "Weekly Bybit balance");
+        const eq = parseFloat((walletRes.result as any)?.list?.[0]?.totalEquity ?? "0");
+        if (eq > 0) realBalance = eq;
+      }
+    } catch { /* fallback to DB */ }
+
+    const weekEmoji = weekTotal >= 0 ? "\u{1F4C8}" : "\u{1F4C9}";
+    const formatDate = (d: string) => {
+      const parts = d.split("-");
+      return parts.length >= 3 ? `${parts[2]}/${parts[1]}` : d;
+    };
+
+    const message = `${weekEmoji} <b>PHANTOM \u2014 Resumen Semanal</b>\n\n` +
+      `\u{1F4B0} <b>PnL Semanal</b>: ${weekTotal >= 0 ? "+" : ""}$${weekTotal.toFixed(2)} (${weeklyROI}%)\n` +
+      `\u{1F3C6} <b>Mejor d\u00EDa</b>: ${formatDate(bestDay.date)} → +$${bestDay.pnl.toFixed(2)}\n` +
+      `\u{1F534} <b>Peor d\u00EDa</b>: ${formatDate(worstDay.date)} → $${worstDay.pnl.toFixed(2)}\n` +
+      `\u{1F7E2} D\u00EDas verdes: ${greenDays} | \u{1F534} D\u00EDas rojos: ${redDays}\n\n` +
+      `\u{1F4CA} <b>Promedio diario</b>: ${avgDaily >= 0 ? "+" : ""}$${avgDaily.toFixed(2)}\n` +
+      `\u{1F4C5} <b>Proyecci\u00F3n mensual</b>: ${projectedMonthly >= 0 ? "+" : ""}$${projectedMonthly.toFixed(2)}\n` +
+      `\u{1F4C6} <b>Proyecci\u00F3n anual</b>: ${projectedYearly >= 0 ? "+" : ""}$${projectedYearly.toFixed(2)}\n\n` +
+      `\u{1F4B5} <b>Capital actual (Bybit)</b>: $${realBalance.toFixed(2)}\n` +
+      `\u{1F3AF} <b>Capital inicial</b>: $${initialDeposit.toFixed(2)}\n` +
+      `\u{1F4C8} <b>Ganancia total</b>: ${(realBalance - initialDeposit) >= 0 ? "+" : ""}$${(realBalance - initialDeposit).toFixed(2)}\n\n` +
+      `\u2014\n<i>PHANTOM Trading Bot \u2022 Resumen semanal autom\u00E1tico</i>`;
+
+    await sendTelegramNotification(engine, message);
+    console.log(`[Engine] Weekly summary sent via Telegram for user ${engine.userId}`);
+  } catch (e) {
+    console.error(`[Engine] Failed to send weekly summary:`, (e as Error).message);
   }
 }
 

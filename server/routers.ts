@@ -535,6 +535,15 @@ export const appRouter = router({
         strategyBreakdown,
         topSymbols,
         pnlChart: filteredHistory.reverse(),
+        // v10.9: Cumulative balance chart — shows capital evolution day by day
+        balanceChart: (() => {
+          const sorted = [...filteredHistory].sort((a, b) => a.date.localeCompare(b.date));
+          let cumPnl = 0;
+          return sorted.map(h => {
+            cumPnl += parseFloat(h.pnl as any ?? "0");
+            return { date: h.date, balance: parseFloat(parseFloat(h.balance as any ?? "0").toFixed(2)), cumPnl: parseFloat(cumPnl.toFixed(2)), dailyPnl: parseFloat(parseFloat(h.pnl as any ?? "0").toFixed(2)) };
+          });
+        })(),
         strategyStats,
       };
     }),

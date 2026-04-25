@@ -894,5 +894,17 @@
 - [x] Corregir carácter ñ en label "Año" del dashboard (desktop y mobile) — commit b1517cf
 
 ## v10.8.1 — Fix alertas Telegram (24 Abril 2026)
-- [ ] Alerta Telegram: mostrar balance real de Bybit (API) en vez del balance interno del bot
-- [ ] Alerta Telegram: no repetir misma alerta por umbral en el mismo día (una vez por $100/$200/$300)
+- [x] Alerta Telegram: mostrar balance real de Bybit (API) en vez del balance interno del bot
+- [x] Alerta Telegram: no repetir misma alerta por umbral en el mismo día (una vez por $100/$200/$300) — commit aae739f
+
+## v10.9 — Resumen semanal, Gráfico PnL, Bot más inteligente (24 Abril 2026)
+- [ ] Resumen semanal Telegram: reporte automático cada domingo con mejor día, peor día, total semana, proyección mensual
+- [ ] Gráfico de PnL acumulado en dashboard: línea que muestre evolución del capital día a día
+- [ ] Bot más inteligente: análisis de tendencia multi-timeframe (1m, 5m, 15m)
+- [ ] Bot más inteligente: momentum scoring con RSI, MACD, volumen
+- [ ] Bot más inteligente: mejor timing de entrada — solo entrar con tendencia a favor
+- [ ] Bot más inteligente: mejor timing de salida — trailing profit dinámico basado en volatilidad
+- [ ] Bot más inteligente: evitar operar en rangos laterales (solo tendencias claras)
+- [ ] Bot más inteligente: ajuste dinámico de tamaño de posición según confianza de señal
+- [ ] Verificar TypeScript y tests
+- [ ] Push a GitHub y checkpoint

@@ -13,7 +13,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import {
-  AreaChart, Area, BarChart, Bar, XAxis, YAxis, Tooltip,
+  AreaChart, Area, BarChart, Bar, XAxis, YAxis, Tooltip, Line, ComposedChart,
   ResponsiveContainer, CartesianGrid, PieChart as RPieChart, Pie, Cell
 } from "recharts";
 import { toast } from "sonner";
@@ -207,6 +207,7 @@ export default function Home() {
   const stratBreakdown = as?.strategyBreakdown ?? {};
   const topSymbols = as?.topSymbols ?? [];
   const pnlChartData = as?.pnlChart ?? [];
+  const balanceChartData = (as as any)?.balanceChart ?? [];
 
   const pieData = Object.entries(stratBreakdown)
     .filter(([_, v]) => v.trades > 0)
@@ -698,6 +699,35 @@ export default function Home() {
                 <Tooltip contentStyle={{ background: 'oklch(0.14 0.005 260)', border: '1px solid oklch(1 0 0 / 10%)', borderRadius: 12, fontSize: 10, padding: '6px 10px' }} formatter={(v: any) => [fmt(parseFloat(v)), 'PnL']} />
                 <Area type="monotone" dataKey="pnl" stroke="oklch(0.72 0.19 160)" fill="url(#pnlGM)" strokeWidth={2} dot={false} />
               </AreaChart>
+            </ResponsiveContainer>
+          </div>
+        )}
+
+        {/* ── v10.9: Capital Evolution Chart ── */}
+        {balanceChartData.length > 1 && (
+          <div className="glass-card p-4 fade-in-up" style={{ animationDelay: '575ms' }}>
+            <div className="flex items-center gap-2 mb-3">
+              <Wallet className="h-3.5 w-3.5 text-[oklch(0.8_0.15_85)]" />
+              <h3 className="font-bold text-[11px]">Capital Acumulado ({periodLabels[selectedPeriod]})</h3>
+            </div>
+            <ResponsiveContainer width="100%" height={150}>
+              <ComposedChart data={balanceChartData} margin={{ top: 4, right: 4, left: -10, bottom: 0 }}>
+                <defs>
+                  <linearGradient id="balGrad" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="oklch(0.8 0.15 85)" stopOpacity={0.25} />
+                    <stop offset="95%" stopColor="oklch(0.8 0.15 85)" stopOpacity={0} />
+                  </linearGradient>
+                </defs>
+                <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.03)" />
+                <XAxis dataKey="date" tick={{ fontSize: 8, fill: 'rgba(255,255,255,0.2)' }} tickFormatter={(v: string) => v?.slice(5)} axisLine={false} tickLine={false} />
+                <YAxis yAxisId="left" tick={{ fontSize: 8, fill: 'rgba(255,255,255,0.2)' }} axisLine={false} tickLine={false} tickFormatter={(v: number) => `$${(v/1000).toFixed(1)}k`} />
+                <YAxis yAxisId="right" orientation="right" tick={{ fontSize: 8, fill: 'rgba(255,255,255,0.15)' }} axisLine={false} tickLine={false} tickFormatter={(v: number) => `$${v}`} />
+                <Tooltip contentStyle={{ background: 'oklch(0.14 0.005 260)', border: '1px solid oklch(1 0 0 / 10%)', borderRadius: 12, fontSize: 10, padding: '6px 10px' }} formatter={(v: any, name: string) => [name === 'balance' ? `$${parseFloat(v).toLocaleString()}` : `$${parseFloat(v).toFixed(2)}`, name === 'balance' ? 'Capital' : 'PnL Diario']} />
+                <Area yAxisId="left" type="monotone" dataKey="balance" stroke="oklch(0.8 0.15 85)" fill="url(#balGrad)" strokeWidth={2} dot={false} />
+                <Bar yAxisId="right" dataKey="dailyPnl" radius={[2, 2, 0, 0]} opacity={0.6}>
+                  {balanceChartData.map((_: any, idx: number) => <Cell key={idx} fill={(_?.dailyPnl ?? 0) >= 0 ? "oklch(0.72 0.19 160)" : "oklch(0.63 0.24 25)"} />)}
+                </Bar>
+              </ComposedChart>
             </ResponsiveContainer>
           </div>
         )}
