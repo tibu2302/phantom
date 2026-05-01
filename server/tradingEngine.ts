@@ -102,6 +102,97 @@ const MAX_HOLD_HOURS = 4; // Force close after 4 hours if underwater
 const EMERGENCY_STOP_THRESHOLD = -500;
 const WARNING_THRESHOLD = -300;
 
+// ─── AI Profitability Constants v12.1 ───
+const XAU_REAL_MODE_BLOCKED = false; // XAU enabled in real mode (profitable with correct sizing)
+const GRID_MAX_ALLOCATION_PCT = 30; // Cap grid allocation to prevent fee destruction
+const SCALPING_BOOST_MULTIPLIER = 1.5; // Boost scalping (best performer)
+const AI_MIN_CONFIDENCE_REAL = 40; // Higher confidence threshold for real trades
+const AI_MIN_CONFIDENCE_SIM = 20; // Lower threshold for simulation
+const DYNAMIC_STOP_LOSS_BASE = -0.015; // -1.5% base stop loss
+const DYNAMIC_STOP_LOSS_TIGHT = -0.008; // -0.8% tight stop (high volatility)
+const TRAILING_ACTIVATION_PCT = 0.003; // Activate trailing at +0.3% profit
+const TRAILING_DISTANCE_PCT = 0.002; // Trail 0.2% behind peak
+
+// ─── AI Performance Tracker (auto-adjusts allocations) ───
+interface StrategyPerformance {
+  wins: number;
+  losses: number;
+  totalPnl: number;
+  avgPnl: number;
+  lastUpdated: number;
+  consecutiveLosses: number;
+  consecutiveWins: number;
+  cooldownUntil: number; // timestamp - pause strategy if losing streak
+}
+const strategyPerformance = new Map<string, StrategyPerformance>();
+
+function updateStrategyPerformance(stratKey: string, pnl: number) {
+  const existing = strategyPerformance.get(stratKey) ?? {
+    wins: 0, losses: 0, totalPnl: 0, avgPnl: 0, lastUpdated: 0,
+    consecutiveLosses: 0, consecutiveWins: 0, cooldownUntil: 0,
+  };
+  if (pnl > 0) {
+    existing.wins++;
+    existing.consecutiveWins++;
+    existing.consecutiveLosses = 0;
+  } else {
+    existing.losses++;
+    existing.consecutiveLosses++;
+    existing.consecutiveWins = 0;
+    // Auto-cooldown: 3 consecutive losses = 30min pause
+    if (existing.consecutiveLosses >= 3) {
+      existing.cooldownUntil = Date.now() + 30 * 60 * 1000;
+      console.log(`[AI-Perf] ${stratKey} COOLDOWN 30min after ${existing.consecutiveLosses} consecutive losses`);
+    }
+  }
+  existing.totalPnl += pnl;
+  existing.avgPnl = existing.totalPnl / (existing.wins + existing.losses);
+  existing.lastUpdated = Date.now();
+  strategyPerformance.set(stratKey, existing);
+}
+
+function isStrategyCoolingDown(stratKey: string): boolean {
+  const perf = strategyPerformance.get(stratKey);
+  if (!perf) return false;
+  if (perf.cooldownUntil > Date.now()) {
+    console.log(`[AI-Perf] ${stratKey} still in cooldown (${Math.ceil((perf.cooldownUntil - Date.now()) / 60000)}min left)`);
+    return true;
+  }
+  return false;
+}
+
+function getAIPerformanceMultiplier(stratKey: string): number {
+  const perf = strategyPerformance.get(stratKey);
+  if (!perf || (perf.wins + perf.losses) < 5) return 1.0;
+  const winRate = perf.wins / (perf.wins + perf.losses);
+  // Reward winning strategies, punish losing ones
+  if (winRate > 0.75) return 1.4; // 75%+ WR = 40% bigger trades
+  if (winRate > 0.60) return 1.2; // 60%+ WR = 20% bigger
+  if (winRate > 0.45) return 1.0; // Normal
+  if (winRate > 0.35) return 0.7; // Losing = 30% smaller
+  return 0.4; // Heavy loser = 60% smaller
+}
+
+// ─── AI Dynamic Stop Loss Calculator ───
+function calculateDynamicStopLoss(symbol: string, atr: number, price: number, regime: string): number {
+  // ATR-based stop loss: adapts to current volatility
+  const atrPct = atr / price;
+  let stopPct = DYNAMIC_STOP_LOSS_BASE;
+  
+  // Tighter stops in high volatility (protect capital)
+  if (atrPct > 0.02) stopPct = DYNAMIC_STOP_LOSS_TIGHT;
+  else if (atrPct > 0.01) stopPct = -0.012;
+  
+  // Regime adjustments
+  if (regime === "strong_trend_up" || regime === "strong_trend_down") {
+    stopPct *= 1.3; // Wider stops in strong trends (more room)
+  } else if (regime === "ranging") {
+    stopPct *= 0.8; // Tighter stops in ranging (less room)
+  }
+  
+  return Math.max(-0.03, Math.min(-0.005, stopPct)); // Clamp between -3% and -0.5%
+}
+
 // ─── Bybit Linear Perpetual Lot Sizes (from official Trading Parameters) ───
 const LINEAR_LOT_SIZES: Record<string, { minQty: number; stepSize: number }> = {
   BTCUSDT:  { minQty: 0.001,  stepSize: 0.001 },
@@ -610,6 +701,29 @@ async function runAISuperGate(
   if (Math.abs(netScore) > 70) sizeMultiplier *= 1.3;
   else if (Math.abs(netScore) > 50) sizeMultiplier *= 1.1;
 
+  // v12.1: AI PERFORMANCE MULTIPLIER — auto-adjust based on strategy track record
+  const perfKey = `${strategy}_${symbol}`;
+  const perfMult = getAIPerformanceMultiplier(perfKey);
+  sizeMultiplier *= perfMult;
+  if (perfMult !== 1.0) {
+    reasons.push(`📊 AI-Perf: ${perfMult.toFixed(1)}x (track record adjustment)`);
+  }
+
+  // v12.1: SCALPING BOOST — scalping is the best performer, give it more capital
+  if (strategy === "scalping") {
+    sizeMultiplier *= SCALPING_BOOST_MULTIPLIER;
+    reasons.push(`⚡ Scalp Boost: ${SCALPING_BOOST_MULTIPLIER}x (top performer)`);
+  }
+
+  // v12.1: CONFIDENCE GATE — higher threshold for real trades
+  const minConfidence = engine.simulationMode ? AI_MIN_CONFIDENCE_SIM : AI_MIN_CONFIDENCE_REAL;
+  const totalConfidence = Math.abs(netScore) + confidenceBoost;
+  if (totalConfidence < minConfidence && !blocked) {
+    blocked = true;
+    blockReason = `Low AI confidence: ${totalConfidence.toFixed(0)} < ${minConfidence} (${engine.simulationMode ? "sim" : "REAL"} mode)`;
+    reasons.push(`🚫 BLOCKED: confidence ${totalConfidence.toFixed(0)} < min ${minConfidence}`);
+  }
+
   // Safety cap
   sizeMultiplier = Math.max(0.2, Math.min(3.0, sizeMultiplier));
 
@@ -918,6 +1032,7 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
       const grossPnl = (price - pos.buyPrice) * parseFloat(pos.qty);
       const pnl = calcNetPnl(grossPnl, pos.tradeAmount, category, true, "bybit");
       recordTradeResult(symbol, "grid", pnl > 0);
+      updateStrategyPerformance(`grid_${symbol}`, pnl);
 
       await db.insertTrade({
         userId: engine.userId, symbol, side: "sell", price: price.toString(),
@@ -1223,10 +1338,51 @@ async function runScalpingStrategy(engine: EngineState, symbol: string, category
     const profitPct = (price - pos.buyPrice) / pos.buyPrice;
     const holdMs = Date.now() - pos.openedAt;
 
-    // NO STOP-LOSS — HOLD until profit (philosophy: never sell at loss)
+    // v12.1: AI DYNAMIC STOP LOSS — cut losses based on ATR volatility
     if (profitPct < 0) {
-      if (holdMs > 1800000) {
-        console.log(`[Scalp] ${symbol} HOLD — ${((-profitPct) * 100).toFixed(2)}% loss, held ${(holdMs / 60000).toFixed(0)}m`);
+      // Calculate ATR-based dynamic stop
+      let dynamicStop = DYNAMIC_STOP_LOSS_BASE;
+      try {
+        const kl = await fetchKlines(engine.client, symbol, "5", 30, category);
+        if (kl.highs.length >= 14) {
+          let atrSum = 0;
+          for (let j = kl.highs.length - 14; j < kl.highs.length; j++) {
+            atrSum += kl.highs[j] - kl.lows[j];
+          }
+          const atr = atrSum / 14;
+          dynamicStop = calculateDynamicStopLoss(symbol, atr, price, marketRegime);
+        }
+      } catch { /* use default */ }
+
+      if (profitPct <= dynamicStop) {
+        // HIT STOP LOSS — close immediately
+        const qty = pos.qty;
+        const tradeAmount = pos.buyPrice * parseFloat(qty);
+        const grossPnl = (price - pos.buyPrice) * parseFloat(qty);
+        const pnl = calcNetPnl(grossPnl, tradeAmount, category, true, "bybit", holdMs);
+        const orderId = await placeOrder(engine, symbol, "Sell", qty, category);
+        if (orderId) {
+          positions.splice(i, 1);
+          recordTradeResult(symbol, "scalping", false);
+          updateStrategyPerformance(`scalping_${symbol}`, pnl);
+          await db.insertTrade({ userId: engine.userId, symbol, side: "sell", price: price.toString(), qty, pnl: pnl.toFixed(2), strategy: "scalping", orderId, simulated: engine.simulationMode });
+          const cs = await db.getOrCreateBotState(engine.userId);
+          if (cs) {
+            await db.updateBotState(engine.userId, {
+              totalPnl: (parseFloat(cs.totalPnl ?? "0") + pnl).toFixed(2),
+              todayPnl: (parseFloat(cs.todayPnl ?? "0") + pnl).toFixed(2),
+              currentBalance: (parseFloat(cs.currentBalance ?? "5000") + pnl).toFixed(2),
+              totalTrades: (cs.totalTrades ?? 0) + 1,
+            });
+          }
+          if (strat) await db.updateStrategyStats(strat.id, pnl, false);
+          console.log(`[Scalp] ⚠️ STOP LOSS ${symbol} @ ${price.toFixed(2)} loss=${(profitPct * 100).toFixed(2)}% stop=${(dynamicStop * 100).toFixed(2)}% pnl=$${pnl.toFixed(2)}`);
+          await sendTelegramNotification(engine, `⚠️ <b>PHANTOM Stop Loss</b>\nPar: ${symbol}\nPérdida: $${pnl.toFixed(2)}\nStop: ${(dynamicStop * 100).toFixed(1)}% (ATR-dinámico)`);
+        }
+      } else {
+        if (holdMs > 1800000) {
+          console.log(`[Scalp] ${symbol} HOLD — ${((-profitPct) * 100).toFixed(2)}% loss (stop=${(dynamicStop * 100).toFixed(1)}%), held ${(holdMs / 60000).toFixed(0)}m`);
+        }
       }
       continue;
     }
@@ -1253,6 +1409,7 @@ async function runScalpingStrategy(engine: EngineState, symbol: string, category
           if (orderId) {
             positions.splice(i, 1);
             recordTradeResult(symbol, "scalping", pnl > 0);
+            updateStrategyPerformance(`scalping_${symbol}`, pnl);
 
             await db.insertTrade({ userId: engine.userId, symbol, side: "sell", price: price.toString(), qty, pnl: pnl.toFixed(2), strategy: "scalping", orderId, simulated: engine.simulationMode });
             const cs = await db.getOrCreateBotState(engine.userId);
@@ -1295,6 +1452,7 @@ async function runScalpingStrategy(engine: EngineState, symbol: string, category
         if (orderId) {
           positions.splice(i, 1);
           recordTradeResult(symbol, "scalping", pnl > 0);
+          updateStrategyPerformance(`scalping_${symbol}`, pnl);
           await db.insertTrade({ userId: engine.userId, symbol, side: "sell", price: price.toString(), qty, pnl: pnl.toFixed(2), strategy: "scalping", orderId, simulated: engine.simulationMode });
           const cs = await db.getOrCreateBotState(engine.userId);
           if (cs) {
@@ -1449,6 +1607,7 @@ async function runShortScalpingStrategy(engine: EngineState, symbol: string, cat
         const idx = allShorts.findIndex(p => p.orderId === pos.orderId);
         if (idx >= 0) allShorts.splice(idx, 1);
         recordTradeResult(symbol, "short_scalping", false);
+        updateStrategyPerformance(`short_scalping_${symbol}`, pnl);
         await db.insertTrade({ userId: engine.userId, symbol, side: "buy", price: price.toString(), qty, pnl: pnl.toFixed(2), strategy: "short_scalping", orderId, simulated: engine.simulationMode });
         const cs = await db.getOrCreateBotState(engine.userId);
         if (cs) {
@@ -1488,6 +1647,7 @@ async function runShortScalpingStrategy(engine: EngineState, symbol: string, cat
             const idx = allShorts.findIndex(p => p.orderId === pos.orderId);
             if (idx >= 0) allShorts.splice(idx, 1);
             recordTradeResult(symbol, "short_scalping", pnl > 0);
+            updateStrategyPerformance(`short_scalping_${symbol}`, pnl);
             await db.insertTrade({ userId: engine.userId, symbol, side: "buy", price: price.toString(), qty, pnl: pnl.toFixed(2), strategy: "short_scalping", orderId, simulated: engine.simulationMode });
             const cs = await db.getOrCreateBotState(engine.userId);
             if (cs) {
@@ -1521,6 +1681,7 @@ async function runShortScalpingStrategy(engine: EngineState, symbol: string, cat
           const idx = allShorts.findIndex(p => p.orderId === pos.orderId);
           if (idx >= 0) allShorts.splice(idx, 1);
           recordTradeResult(symbol, "short_scalping", pnl > 0);
+          updateStrategyPerformance(`short_scalping_${symbol}`, pnl);
           await db.insertTrade({ userId: engine.userId, symbol, side: "buy", price: price.toString(), qty, pnl: pnl.toFixed(2), strategy: "short_scalping", orderId, simulated: engine.simulationMode });
           const cs = await db.getOrCreateBotState(engine.userId);
           if (cs) {
@@ -1635,6 +1796,7 @@ async function runMeanReversionStrategy(engine: EngineState, symbol: string, cat
           const idx = allScalps.findIndex(p => p.orderId === pos.orderId);
           if (idx >= 0) allScalps.splice(idx, 1);
           recordTradeResult(symbol, "mean_reversion", pnl > 0);
+          updateStrategyPerformance(`mean_reversion_${symbol}`, pnl);
           await db.insertTrade({ userId: engine.userId, symbol, side: "sell", price: price.toString(), qty, pnl: pnl.toFixed(2), strategy: "mean_reversion", orderId, simulated: engine.simulationMode });
           const cs = await db.getOrCreateBotState(engine.userId);
           if (cs) {
@@ -1677,6 +1839,7 @@ async function runMeanReversionStrategy(engine: EngineState, symbol: string, cat
           const idx = allShorts.findIndex(p => p.orderId === pos.orderId);
           if (idx >= 0) allShorts.splice(idx, 1);
           recordTradeResult(symbol, "mean_reversion", pnl > 0);
+          updateStrategyPerformance(`mean_reversion_${symbol}`, pnl);
           await db.insertTrade({ userId: engine.userId, symbol, side: "buy", price: price.toString(), qty, pnl: pnl.toFixed(2), strategy: "mean_reversion", orderId, simulated: engine.simulationMode });
           const cs = await db.getOrCreateBotState(engine.userId);
           if (cs) {
@@ -1862,6 +2025,7 @@ async function runBidirectionalGridStrategy(engine: EngineState, symbol: string,
           if (orderId) {
             longPositions.splice(i, 1);
             recordTradeResult(symbol, "bidirectional_grid", pnl > 0);
+            updateStrategyPerformance(`bidirectional_grid_${symbol}`, pnl);
             await db.insertTrade({ userId: engine.userId, symbol, side: "sell", price: price.toString(), qty, pnl: pnl.toFixed(2), strategy: "bidirectional_grid", orderId, simulated: engine.simulationMode });
             const cs = await db.getOrCreateBotState(engine.userId);
             if (cs) {
@@ -1905,6 +2069,7 @@ async function runBidirectionalGridStrategy(engine: EngineState, symbol: string,
             const idx = allShorts.findIndex(p => p.orderId === pos.orderId);
             if (idx >= 0) allShorts.splice(idx, 1);
             recordTradeResult(symbol, "bidirectional_grid", pnl > 0);
+            updateStrategyPerformance(`bidirectional_grid_${symbol}`, pnl);
             await db.insertTrade({ userId: engine.userId, symbol, side: "buy", price: price.toString(), qty, pnl: pnl.toFixed(2), strategy: "bidirectional_grid", orderId, simulated: engine.simulationMode });
             const cs = await db.getOrCreateBotState(engine.userId);
             if (cs) {
@@ -1937,6 +2102,7 @@ async function runBidirectionalGridStrategy(engine: EngineState, symbol: string,
         const idx = allShorts.findIndex(p => p.orderId === pos.orderId);
         if (idx >= 0) allShorts.splice(idx, 1);
         recordTradeResult(symbol, "bidirectional_grid", false);
+        updateStrategyPerformance(`bidirectional_grid_${symbol}`, pnl);
         await db.insertTrade({ userId: engine.userId, symbol, side: "buy", price: price.toString(), qty, pnl: pnl.toFixed(2), strategy: "bidirectional_grid", orderId, simulated: engine.simulationMode });
         const cs = await db.getOrCreateBotState(engine.userId);
         if (cs) {
@@ -2181,6 +2347,7 @@ async function closeStalePositions(engine: EngineState) {
       }
 
       recordTradeResult(item.symbol, item.strategy, pnl > 0);
+      updateStrategyPerformance(`${item.strategy}_${item.symbol}`, pnl);
       await db.insertTrade({ userId: engine.userId, symbol: item.symbol, side: "sell", price: price.toString(), qty, pnl: pnl.toFixed(2), strategy: item.strategy, orderId, simulated: engine.simulationMode });
       const cs = await db.getOrCreateBotState(engine.userId);
       if (cs) {
@@ -2365,6 +2532,20 @@ export async function startEngine(userId: number, options: {
 
       for (const strat of strats) {
         if (!strat.enabled) continue;
+
+        // v12.1: AI BLOCK — XAU only in simulation mode
+        if (XAU_REAL_MODE_BLOCKED && strat.symbol === "XAUUSDT" && !engine.simulationMode) {
+          continue; // Skip XAU in real mode (only profitable in simulation)
+        }
+
+        // v12.1: AI COOLDOWN — pause strategy after consecutive losses
+        const perfKey = `${strat.strategyType}_${strat.symbol}`;
+        if (isStrategyCoolingDown(perfKey)) continue;
+
+        // v12.1: Cap grid allocation to prevent fee destruction
+        if (strat.strategyType === "grid" && (strat.allocationPct ?? 50) > GRID_MAX_ALLOCATION_PCT) {
+          strat.allocationPct = GRID_MAX_ALLOCATION_PCT;
+        }
 
         console.log(`[Engine] Running ${strat.strategyType} for ${strat.symbol} on Bybit LINEAR`);
         if (strat.strategyType === "scalping") {
