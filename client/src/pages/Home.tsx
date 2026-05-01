@@ -41,9 +41,14 @@ const periodLabels: Record<Period, string> = { today: "Hoy", "7d": "7D", "30d": 
 // ─── Strategy config ───
 const strategyColors: Record<string, string> = {
   grid: "oklch(0.72 0.19 160)", scalping: "oklch(0.75 0.14 200)",
+  short_scalping: "oklch(0.7 0.2 25)", mean_reversion: "oklch(0.75 0.15 280)",
+  bidirectional_grid: "oklch(0.72 0.19 140)",
   futures: "oklch(0.65 0.2 300)", unknown: "oklch(0.6 0.01 260)",
 };
-const strategyLabels: Record<string, string> = { grid: "Grid", scalping: "Scalping", futures: "Futures" };
+const strategyLabels: Record<string, string> = {
+  grid: "Grid", scalping: "Scalping", short_scalping: "Short",
+  mean_reversion: "MeanRev", bidirectional_grid: "BiGrid", futures: "Futures",
+};
 
 // ─── AI Modules list ───
 const aiModules = [
@@ -131,15 +136,14 @@ export default function Home() {
   const unread = data?.unreadNotifications ?? 0;
   const notifications = data?.recentOpportunities ?? [];
   const selectedExchange = (state as any)?.selectedExchange ?? "bybit";
-  const openPositions = (data as any)?.openPositions ?? { grid: [], futures: [] };
-  const totalOpenPositions = (openPositions.grid?.length ?? 0) + (openPositions.futures?.length ?? 0);
+  const openPositions = (data as any)?.openPositions ?? { grid: [], futures: [], shorts: [] };
+  const totalOpenPositions = (openPositions.grid?.length ?? 0) + (openPositions.futures?.length ?? 0) + (openPositions.shorts?.length ?? 0);
 
   const eb = exchangeBalances.data;
   const bybitBal = parseFloat(eb?.bybit?.balance ?? "0");
   const bybitAvail = parseFloat(eb?.bybit?.available ?? "0");
   const bybitUnrealized = parseFloat(eb?.bybit?.unrealizedPnl ?? "0");
-  const kucoinBal = parseFloat(eb?.kucoin?.balance ?? "0");
-  const kucoinAvail = parseFloat(eb?.kucoin?.available ?? "0");
+  // v12.0: KuCoin removed — Bybit only
   const totalBalance = parseFloat(eb?.totalBalance ?? "0");
   const initialDeposit = parseFloat(eb?.initialDeposit ?? "2500");
   const realProfit = parseFloat(eb?.realProfit ?? "0");
@@ -155,7 +159,7 @@ export default function Home() {
   const openPosCount = eb?.openPositions?.count ?? totalOpenPositions;
 
   // USDT liquidity calculation
-  const totalUsdt = bybitAvail + kucoinAvail;
+  const totalUsdt = bybitAvail;
   const usdtPct = totalBalance > 0 ? (totalUsdt / totalBalance) * 100 : 0;
   const usdtHealthy = usdtPct >= 40;
 
@@ -173,7 +177,7 @@ export default function Home() {
     setEditDepositOpen(false);
     toast.success(`Capital invertido actualizado: ${fmtUsd(val)}`);
   };
-  const exchangeLabel = (ex: string) => ex === "kucoin" ? "KuCoin" : ex === "bybit" ? "Bybit" : "Ambos";
+  const exchangeLabel = (ex: string) => ex === "bybit" ? "Bybit" : ex;
   const handleExchangeChange = (exchange: string) => {
     if (typeof navigator !== "undefined" && "vibrate" in navigator) navigator.vibrate(15);
     if (isRunning) { toast.error("Detene el bot antes de cambiar de exchange"); return; }
@@ -294,7 +298,7 @@ export default function Home() {
         {/* ── Header ── */}
         <div className="flex items-center justify-between fade-in-up" style={{ animationDelay: '0ms' }}>
           <div className="flex gap-0.5 bg-[oklch(0.13_0.005_260)] rounded-xl p-0.5 border border-border/20">
-            {["bybit", "kucoin", "both"].map(ex => (
+            {["bybit"].map(ex => (
               <button key={ex} onClick={() => handleExchangeChange(ex)}
                 className={`px-3 py-1.5 rounded-lg text-[10px] font-bold tracking-wide transition-all duration-300 ${
                   selectedExchange === ex ? "bg-primary text-primary-foreground shadow-md shadow-primary/25" : "text-muted-foreground/60 hover:text-foreground"
@@ -519,8 +523,8 @@ export default function Home() {
               </div>
               <span className="text-[9px] font-bold tracking-wider text-muted-foreground/50 uppercase">KuCoin</span>
             </div>
-            <p className="text-[15px] font-black tabular-nums">{hideBalances ? "----" : fmtUsd(kucoinBal)}</p>
-            <p className="text-[8px] text-muted-foreground/30 tabular-nums mt-0.5">Libre: {hideBalances ? "--" : fmtUsd(kucoinAvail)}</p>
+            <p className="text-[15px] font-black tabular-nums">{hideBalances ? "----" : fmtUsd(0)}</p>
+            <p className="text-[8px] text-muted-foreground/30 tabular-nums mt-0.5">Libre: {hideBalances ? "--" : fmtUsd(0)}</p>
           </div>
         </div>
 
@@ -559,9 +563,10 @@ export default function Home() {
               <Badge variant="outline" className="text-[9px] font-bold border-border/30 h-5">{totalOpenPositions}</Badge>
             </div>
             <div className="divide-y divide-border/8">
-              {[...openPositions.grid, ...openPositions.futures].slice(0, 5).map((p: any, i: number) => (
+              {[...openPositions.grid.map((p: any) => ({ ...p, _side: 'LONG' })), ...openPositions.shorts.map((p: any) => ({ ...p, buyPrice: p.entryPrice, _side: 'SHORT' }))].slice(0, 6).map((p: any, i: number) => (
                 <div key={i} className="flex items-center justify-between px-4 py-2.5">
                   <div className="flex items-center gap-2">
+                    <span className={`text-[9px] font-bold px-1 py-0.5 rounded ${p._side === 'SHORT' ? 'bg-[oklch(0.7_0.2_25/0.15)] text-[oklch(0.7_0.2_25)]' : 'bg-[oklch(0.72_0.19_160/0.15)] text-[oklch(0.72_0.19_160)]'}`}>{p._side}</span>
                     <span className={`text-[12px] font-bold ${p.symbol?.includes('XAU') ? 'text-[oklch(0.8_0.15_85)]' : ''}`}>{p.symbol?.replace('USDT', '')}</span>
                     {p.symbol?.includes('XAU') && <Crown className="h-2.5 w-2.5 text-[oklch(0.8_0.15_85)]" />}
                     <span className="text-[9px] text-muted-foreground/40 tabular-nums">@ ${fmtPrice(p.buyPrice)}</span>
@@ -849,7 +854,7 @@ export default function Home() {
           <div className="flex items-center gap-4">
             <h1 className="text-2xl font-extrabold tracking-tight">Panel</h1>
             <div className="flex gap-0.5 bg-[oklch(0.13_0.005_260)] rounded-xl p-0.5 border border-border/20">
-              {["bybit", "kucoin", "both"].map(ex => (
+              {["bybit"].map(ex => (
                 <button key={ex} onClick={() => handleExchangeChange(ex)}
                   className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all duration-300 ${selectedExchange === ex ? "bg-primary/20 text-primary shadow-sm" : "text-muted-foreground/60 hover:text-foreground"}`}>{exchangeLabel(ex)}</button>
               ))}
@@ -942,7 +947,7 @@ export default function Home() {
             <div className="flex items-center gap-3"><div className="w-9 h-9 rounded-xl flex items-center justify-center" style={{ background: 'color-mix(in oklch, oklch(0.8 0.18 80) 10%, transparent)' }}><Wallet className="h-4 w-4" style={{ color: 'oklch(0.8 0.18 80)' }} /></div><div className="flex-1"><div className="flex items-center justify-between"><span className="text-xs text-muted-foreground/50">Bybit</span><span className="text-sm font-bold tabular-nums">{hideBalances ? "----" : fmtUsd(bybitBal)}</span></div><div className="flex items-center justify-between mt-0.5"><span className="text-[9px] text-muted-foreground/30">Libre</span><span className="text-[10px] text-muted-foreground/40 tabular-nums">{hideBalances ? "--" : fmtUsd(bybitAvail)}</span></div></div></div>
           </div>
           <div className="glass-card p-3.5 interactive-card">
-            <div className="flex items-center gap-3"><div className="w-9 h-9 rounded-xl flex items-center justify-center" style={{ background: 'color-mix(in oklch, oklch(0.75 0.14 170) 10%, transparent)' }}><Wallet className="h-4 w-4" style={{ color: 'oklch(0.75 0.14 170)' }} /></div><div className="flex-1"><div className="flex items-center justify-between"><span className="text-xs text-muted-foreground/50">KuCoin</span><span className="text-sm font-bold tabular-nums">{hideBalances ? "----" : fmtUsd(kucoinBal)}</span></div><div className="flex items-center justify-between mt-0.5"><span className="text-[9px] text-muted-foreground/30">Libre</span><span className="text-[10px] text-muted-foreground/40 tabular-nums">{hideBalances ? "--" : fmtUsd(kucoinAvail)}</span></div></div></div>
+            <div className="flex items-center gap-3"><div className="w-9 h-9 rounded-xl flex items-center justify-center" style={{ background: 'color-mix(in oklch, oklch(0.75 0.14 170) 10%, transparent)' }}><Wallet className="h-4 w-4" style={{ color: 'oklch(0.75 0.14 170)' }} /></div><div className="flex-1"><div className="flex items-center justify-between"><span className="text-xs text-muted-foreground/50">KuCoin</span><span className="text-sm font-bold tabular-nums">{hideBalances ? "----" : fmtUsd(0)}</span></div><div className="flex items-center justify-between mt-0.5"><span className="text-[9px] text-muted-foreground/30">Libre</span><span className="text-[10px] text-muted-foreground/40 tabular-nums">{hideBalances ? "--" : fmtUsd(0)}</span></div></div></div>
           </div>
           <div className={`glass-card p-3.5 interactive-card border ${usdtHealthy ? 'border-[oklch(0.72_0.19_160)]/10' : 'border-[oklch(0.8_0.15_85)]/15'}`}>
             <div className="flex items-center gap-3"><div className={`w-9 h-9 rounded-xl flex items-center justify-center ${usdtHealthy ? 'bg-[oklch(0.72_0.19_160)]/10' : 'bg-[oklch(0.8_0.15_85)]/10'}`}><CircleDollarSign className={`h-4 w-4 ${usdtHealthy ? 'text-[oklch(0.72_0.19_160)]' : 'text-[oklch(0.8_0.15_85)]'}`} /></div><div className="flex-1"><div className="flex items-center justify-between"><span className="text-xs text-muted-foreground/50">USDT Libre</span><span className="text-sm font-bold tabular-nums">{hideBalances ? "----" : fmtUsd(totalUsdt)}</span></div><div className="flex items-center gap-1.5 mt-1"><div className="flex-1 h-1.5 bg-[oklch(0.11_0.005_260)] rounded-full overflow-hidden"><div className={`h-full rounded-full transition-all duration-700 ${usdtHealthy ? 'bg-[oklch(0.72_0.19_160)]' : 'bg-[oklch(0.8_0.15_85)]'}`} style={{ width: `${Math.min(usdtPct, 100)}%` }} /></div><span className={`text-[9px] font-bold tabular-nums ${usdtHealthy ? 'text-[oklch(0.72_0.19_160)]' : 'text-[oklch(0.8_0.15_85)]'}`}>{usdtPct.toFixed(0)}%</span></div></div></div>

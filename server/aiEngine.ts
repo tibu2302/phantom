@@ -576,6 +576,52 @@ export function getRLMultiplier(
 /**
  * Get learning insights for Telegram reporting
  */
+/**
+ * v12.0: Get learned weights for a strategy+symbol combo
+ * Used by tradingEngine to adjust size and confidence based on historical performance
+ */
+export function getLearnedWeights(strategy: string, symbol: string): { sizeMultiplier: number; confidenceBoost: number } | null {
+  if (tradeHistory.length < 10) return null;
+
+  let sizeMultiplier = 1.0;
+  let confidenceBoost = 0;
+
+  // Strategy weight
+  const sw = strategyWeights.get(strategy);
+  if (sw && sw.totalTrades >= 5) {
+    sizeMultiplier *= sw.adjustedWeight;
+    if (sw.recentWinRate > 0.65) confidenceBoost += 5;
+    else if (sw.recentWinRate < 0.4) confidenceBoost -= 5;
+  }
+
+  // Symbol performance
+  const sp = symbolPerformance.get(symbol);
+  if (sp && (sp.wins + sp.losses) >= 5) {
+    const winRate = sp.wins / (sp.wins + sp.losses);
+    if (winRate > 0.7) { sizeMultiplier *= 1.2; confidenceBoost += 3; }
+    else if (winRate < 0.4) { sizeMultiplier *= 0.6; confidenceBoost -= 3; }
+
+    // Best hour boost
+    const currentHour = new Date().getUTCHours();
+    if (currentHour === sp.bestHour) { sizeMultiplier *= 1.15; confidenceBoost += 2; }
+  }
+
+  // Session-based adjustment
+  const hour = new Date().getUTCHours();
+  const session = hour >= 0 && hour < 8 ? "asia" : hour >= 8 && hour < 16 ? "europe" : "us";
+  const sessionScore = conditionScores.get(`session:${session}`);
+  if (sessionScore && sessionScore.total >= 5) {
+    const wr = sessionScore.wins / sessionScore.total;
+    if (wr > 0.65) sizeMultiplier *= 1.1;
+    else if (wr < 0.35) sizeMultiplier *= 0.7;
+  }
+
+  sizeMultiplier = Math.max(0.3, Math.min(2.0, sizeMultiplier));
+  confidenceBoost = Math.max(-10, Math.min(10, confidenceBoost));
+
+  return { sizeMultiplier, confidenceBoost };
+}
+
 export function getLearningInsights(): {
   totalTrades: number;
   bestStrategy: string;
@@ -630,10 +676,15 @@ export interface AnomalyResult {
   reason: string;
 }
 
-export function detectAnomaly(klines: FullKlineData, currentPrice: number): AnomalyResult {
-  const { opens, highs, lows, closes, volumes } = klines;
+export function detectAnomaly(klines: { opens?: number[]; highs?: number[]; lows?: number[]; closes: number[]; volumes: number[] }, currentPrice: number): { isAnomaly: boolean; reason: string; action: string } & AnomalyResult {
+  const { opens: _opens, highs: _highs, lows: _lows, closes, volumes } = klines;
   const len = closes.length;
-  if (len < 20) return { detected: false, type: "none", severity: "low", action: "normal", reason: "" };
+  if (len < 20) return { detected: false, isAnomaly: false, type: "none", severity: "low", action: "normal", reason: "" };
+
+  // Fallback arrays if not provided
+  const opens = _opens ?? closes;
+  const highs = _highs ?? closes;
+  const lows = _lows ?? closes;
 
   // Average metrics for baseline
   const avgVolume = volumes.slice(-20).reduce((s, v) => s + v, 0) / 20;
@@ -651,6 +702,7 @@ export function detectAnomaly(klines: FullKlineData, currentPrice: number): Anom
   if (Math.abs(priceChange5) > 8 && currentVolume > avgVolume * 5) {
     return {
       detected: true,
+      isAnomaly: true,
       type: "pump_dump",
       severity: "critical",
       action: "block",
@@ -662,6 +714,7 @@ export function detectAnomaly(klines: FullKlineData, currentPrice: number): Anom
   if (priceChange1 < -5) {
     return {
       detected: true,
+      isAnomaly: true,
       type: "flash_crash",
       severity: "high",
       action: "block",
@@ -674,6 +727,7 @@ export function detectAnomaly(klines: FullKlineData, currentPrice: number): Anom
   if (lastWickRatio > 5 && currentVolume > avgVolume * 3) {
     return {
       detected: true,
+      isAnomaly: true,
       type: "whale_manipulation",
       severity: "high",
       action: "block",
@@ -685,6 +739,7 @@ export function detectAnomaly(klines: FullKlineData, currentPrice: number): Anom
   if (currentVolume > avgVolume * 4 && Math.abs(priceChange1) < 0.5) {
     return {
       detected: true,
+      isAnomaly: true,
       type: "unusual_volume",
       severity: "medium",
       action: "reduce",
@@ -692,7 +747,7 @@ export function detectAnomaly(klines: FullKlineData, currentPrice: number): Anom
     };
   }
 
-  return { detected: false, type: "none", severity: "low", action: "normal", reason: "" };
+  return { detected: false, isAnomaly: false, type: "none", severity: "low", action: "normal", reason: "" };
 }
 
 function bodySize_fn(open: number, close: number): number {

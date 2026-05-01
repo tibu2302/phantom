@@ -6,9 +6,9 @@ import { z } from "zod";
 import * as db from "./db";
 import { invokeLLM } from "./_core/llm";
 import { startEngine, stopEngine, emergencyStopEngine, getLivePrices, isEngineRunning, getEngineCycles, getOpenPositions, withRetry } from "./tradingEngine";
-import { fetchFearGreedIndex, getFearGreedSignal, analyzeSentiment, detectCandlePatterns, getLearningInsights, getRLMultiplier } from "./aiEngine";
-import { getAdvancedDataSignal } from "./advancedData";
-import { autoTuneParameters, recordTradeForTuning, generatePerformanceReport } from "./autoOptimizer";
+import { fetchFearGreedIndex, getFearGreedSignal, analyzeSentiment, getLearningInsights } from "./aiEngine";
+// v12.0: advancedData removed (was never used in trading decisions)
+import { autoTuneParameters, generatePerformanceReport } from "./autoOptimizer";
 
 export const appRouter = router({
   system: systemRouter,
@@ -29,8 +29,8 @@ export const appRouter = router({
       const prices = getLivePrices();
       const engineRunning = isEngineRunning(ctx.user.id);
       const openPositions = getOpenPositions(ctx.user.id);
-      const totalUnrealizedPnl = [...openPositions.grid, ...openPositions.futures]
-        .reduce((sum, p) => sum + p.unrealizedPnl, 0);
+      const totalUnrealizedPnl = openPositions.grid
+        .reduce((sum: number, p: any) => sum + p.unrealizedPnl, 0);
       return {
         state,
         unreadNotifications: unread,
@@ -45,42 +45,54 @@ export const appRouter = router({
     start: protectedProcedure.mutation(async ({ ctx }) => {
       // Auto-seed default strategies if none exist
       const existingStrats = await db.getUserStrategies(ctx.user.id);
-      // v11.6: CONCENTRATED — Only BTC, ETH, SOL, XAU. Grid + Scalping only (no futures).
-      // Force-sync: ALWAYS upsert strategies with concentrated allocation
+      // v12.0: CONCENTRATED — BTC+ETH+SOL+XAU, Grid+Scalping only
       {
-        const defaultStrats: Array<{ symbol: string; strategyType: string; market: string; category: string; allocationPct: number; enabled: boolean; config?: any }> = [
-          // v11.6: CONCENTRATED — Only BTC, ETH, SOL, XAU. Grid + Scalping only (no futures).
-          // Grid strategies — BTC, ETH, SOL (spot via LINEAR/USDT-settled)
+        const v12Strats = [
+          // Grid (long only)
           { symbol: "BTCUSDT", strategyType: "grid", market: "crypto", category: "linear", allocationPct: 30, enabled: true },
           { symbol: "ETHUSDT", strategyType: "grid", market: "crypto", category: "linear", allocationPct: 25, enabled: true },
           { symbol: "SOLUSDT", strategyType: "grid", market: "crypto", category: "linear", allocationPct: 20, enabled: true },
-          // Scalping — XAU is king, BTC/ETH/SOL also active
-          { symbol: "XAUUSDT", strategyType: "scalping", market: "tradfi", category: "linear", allocationPct: 50, enabled: true },
-          { symbol: "BTCUSDT", strategyType: "scalping", market: "crypto", category: "linear", allocationPct: 25, enabled: true },
-          { symbol: "ETHUSDT", strategyType: "scalping", market: "crypto", category: "linear", allocationPct: 20, enabled: true },
+          // Scalping (long only)
+          { symbol: "XAUUSDT", strategyType: "scalping", market: "tradfi", category: "linear", allocationPct: 35, enabled: true },
+          { symbol: "BTCUSDT", strategyType: "scalping", market: "crypto", category: "linear", allocationPct: 20, enabled: true },
+          { symbol: "ETHUSDT", strategyType: "scalping", market: "crypto", category: "linear", allocationPct: 15, enabled: true },
           { symbol: "SOLUSDT", strategyType: "scalping", market: "crypto", category: "linear", allocationPct: 15, enabled: true },
+          // Short Scalping (profits in downtrends)
+          { symbol: "BTCUSDT", strategyType: "short_scalping", market: "crypto", category: "linear", allocationPct: 20, enabled: true },
+          { symbol: "ETHUSDT", strategyType: "short_scalping", market: "crypto", category: "linear", allocationPct: 15, enabled: true },
+          { symbol: "SOLUSDT", strategyType: "short_scalping", market: "crypto", category: "linear", allocationPct: 15, enabled: true },
+          // Mean Reversion (profits in any market)
+          { symbol: "BTCUSDT", strategyType: "mean_reversion", market: "crypto", category: "linear", allocationPct: 20, enabled: true },
+          { symbol: "ETHUSDT", strategyType: "mean_reversion", market: "crypto", category: "linear", allocationPct: 15, enabled: true },
+          { symbol: "XAUUSDT", strategyType: "mean_reversion", market: "tradfi", category: "linear", allocationPct: 20, enabled: true },
+          // Bidirectional Grid (profits in any direction)
+          { symbol: "BTCUSDT", strategyType: "bidirectional_grid", market: "crypto", category: "linear", allocationPct: 25, enabled: true },
+          { symbol: "ETHUSDT", strategyType: "bidirectional_grid", market: "crypto", category: "linear", allocationPct: 20, enabled: true },
         ];
-        // Disable ALL strategies not in the concentrated list
-        const allowedKeys = new Set(defaultStrats.map(s => `${s.symbol}_${s.strategyType}`));
+        const allowedKeys = new Set(v12Strats.map(s => `${s.symbol}_${s.strategyType}`));
         for (const existing of existingStrats) {
           const key = `${existing.symbol}_${existing.strategyType}`;
           if (!allowedKeys.has(key) && existing.enabled) {
             await db.upsertStrategy(ctx.user.id, { ...existing, enabled: false } as any);
-            console.log(`[Bot] v11.6: DISABLED ${existing.strategyType} ${existing.symbol}`);
           }
         }
-        let synced = 0;
-        for (const strat of defaultStrats) {
+        for (const strat of v12Strats) {
           await db.upsertStrategy(ctx.user.id, strat as any);
-          synced++;
         }
-        console.log(`[Bot] v11.6: Synced ${synced} CONCENTRATED strategies (BTC+ETH+SOL+XAU, Grid+Scalping only) for user ${ctx.user.id}`);
+        console.log(`[Bot] v12.0: Synced ${v12Strats.length} strategies for user ${ctx.user.id}`);
       }
-      const result = await startEngine(ctx.user.id);
-      if (!result.success) {
-        return { success: false, error: result.error };
-      }
-      return { success: true };
+      const bybitKeys = await db.getApiKey(ctx.user.id, "bybit");
+      const botState = await db.getOrCreateBotState(ctx.user.id);
+      const telegramKeys = await db.getApiKey(ctx.user.id, "telegram" as any);
+      const result = await startEngine(ctx.user.id, {
+        exchange: "bybit",
+        apiKey: bybitKeys?.apiKey ?? "",
+        apiSecret: bybitKeys?.apiSecret ?? "",
+        simulationMode: botState?.simulationMode ?? !bybitKeys,
+        telegramBotToken: telegramKeys?.apiKey ?? undefined,
+        telegramChatId: telegramKeys?.apiSecret ?? undefined,
+      });
+      return { success: result.success };
     }),
     stop: protectedProcedure.mutation(async ({ ctx }) => {
       await stopEngine(ctx.user.id);
@@ -115,7 +127,7 @@ export const appRouter = router({
     exchangeBalances: protectedProcedure.query(async ({ ctx }) => {
       const results: {
         bybit?: { balance: string; available?: string; unrealizedPnl?: string; error?: string };
-        kucoin?: { balance: string; available?: string; error?: string };
+
         totalBalance: string;
         initialDeposit: string;
         realProfit: string;
@@ -135,7 +147,7 @@ export const appRouter = router({
         openPositions: { count: 0, unrealizedPnl: "0" },
       };
 
-      let bybitBal = 0, kucoinBal = 0;
+      let bybitBal = 0;
 
       // Bybit balance (REAL from API)
       try {
@@ -162,57 +174,10 @@ export const appRouter = router({
         results.bybit = { balance: "0", error: e.message };
       }
 
-      // KuCoin balance (REAL from API — sum all account types)
-      try {
-        const kucoinKeys = await db.getApiKey(ctx.user.id, "kucoin");
-        if (kucoinKeys) {
-          const { SpotClient } = await import("kucoin-api");
-          const client = new SpotClient({ apiKey: kucoinKeys.apiKey, apiSecret: kucoinKeys.apiSecret, apiPassphrase: kucoinKeys.passphrase ?? "" });
-          // Query all account types: main, trade, trade_hf
-          const [mainRes, tradeRes, hfRes] = await Promise.allSettled([
-            withRetry(() => client.getBalances({ type: "main" }), "KuCoin getBalances main"),
-            withRetry(() => client.getBalances({ type: "trade" }), "KuCoin getBalances trade"),
-            withRetry(() => client.getBalances({ type: "trade_hf" as any }), "KuCoin getBalances trade_hf"),
-          ]);
-          let totalBal = 0;
-          let totalAvail = 0;
-          const allPrices = getLivePrices();
-          const processAccounts = (res: any) => {
-            if (res.status !== "fulfilled" || res.value?.code !== "200000") return;
-            const accounts = res.value.data as any[];
-            if (!Array.isArray(accounts)) return;
-            for (const acc of accounts) {
-              const cur = acc.currency;
-              const bal = parseFloat(acc.balance ?? "0");
-              const avail = parseFloat(acc.available ?? "0");
-              if (cur === "USDT" || cur === "USDC" || cur === "USD") {
-                totalBal += bal;
-                totalAvail += avail;
-              } else {
-                // Convert to USD using live prices (keys are like BTCUSDT, ETHUSDT)
-                const price = allPrices[`${cur}USDT`]?.lastPrice ?? allPrices[`${cur}-USDT`]?.lastPrice ?? 0;
-                if (price > 0) {
-                  totalBal += bal * price;
-                  totalAvail += avail * price;
-                }
-              }
-            }
-          };
-          processAccounts(mainRes);
-          processAccounts(tradeRes);
-          processAccounts(hfRes);
-          kucoinBal = totalBal;
-          results.kucoin = {
-            balance: kucoinBal.toFixed(2),
-            available: totalAvail.toFixed(2),
-          };
-        }
-      } catch (e: any) {
-        results.kucoin = { balance: "0", error: e.message };
-      }
+      // v12.0: KuCoin removed — Bybit only
 
-      // Total balance from exchanges
-      const totalBal = bybitBal + kucoinBal;
+      // Total balance from Bybit
+      const totalBal = bybitBal;
       results.totalBalance = totalBal.toFixed(2);
 
       // Initial deposit from DB (user-configurable)
@@ -264,12 +229,12 @@ export const appRouter = router({
       try {
         const positions = getOpenPositions(ctx.user.id);
         const gridCount = positions.grid.length;
-        const futCount = positions.futures.length;
-        const gridPnl = positions.grid.reduce((s, p) => s + p.unrealizedPnl, 0);
-        const futPnl = positions.futures.reduce((s, p) => s + p.unrealizedPnl, 0);
+        const shortCount = positions.shorts.length;
+        const gridPnl = positions.grid.reduce((s: number, p: any) => s + p.unrealizedPnl, 0);
+        const shortPnl = positions.shorts.reduce((s: number, p: any) => s + p.unrealizedPnl, 0);
         results.openPositions = {
-          count: gridCount + futCount,
-          unrealizedPnl: (gridPnl + futPnl).toFixed(2),
+          count: gridCount + shortCount,
+          unrealizedPnl: (gridPnl + shortPnl).toFixed(2),
         };
       } catch { /* engine not running */ }
 
@@ -325,27 +290,15 @@ export const appRouter = router({
       const keys = await db.getApiKey(ctx.user.id, exchange);
       if (!keys) return { success: false, error: `No API keys configured for ${exchange}` };
       try {
-        if (exchange === "kucoin") {
-          const { SpotClient } = await import("kucoin-api");
-          const client = new SpotClient({ apiKey: keys.apiKey, apiSecret: keys.apiSecret, apiPassphrase: keys.passphrase ?? "" });
-          const res = await client.getAccountSummary();
-          if (res.code === "200000") {
-            const summary = res.data as any;
-            const totalUsd = parseFloat(summary?.totalBalance ?? summary?.availableBalance ?? "0");
-            return { success: true, balance: totalUsd.toFixed(2), coins: 1 };
-          }
-          return { success: false, error: (res as any).msg || "Connection failed" };
-        } else {
-          const { RestClientV5 } = await import("bybit-api");
-          const client = new RestClientV5({ key: keys.apiKey, secret: keys.apiSecret });
-          const res = await withRetry(() => client.getWalletBalance({ accountType: "UNIFIED" }), "Bybit testConnection");
-          if (res.retCode === 0) {
-            const coins = (res.result as any)?.list?.[0]?.coin ?? [];
-            const totalUsd = (res.result as any)?.list?.[0]?.totalEquity ?? "0";
-            return { success: true, balance: totalUsd, coins: coins.length };
-          }
-          return { success: false, error: res.retMsg || "Connection failed" };
+        const { RestClientV5 } = await import("bybit-api");
+        const client = new RestClientV5({ key: keys.apiKey, secret: keys.apiSecret });
+        const res = await withRetry(() => client.getWalletBalance({ accountType: "UNIFIED" }), "Bybit testConnection");
+        if (res.retCode === 0) {
+          const coins = (res.result as any)?.list?.[0]?.coin ?? [];
+          const totalUsd = (res.result as any)?.list?.[0]?.totalEquity ?? "0";
+          return { success: true, balance: totalUsd, coins: coins.length };
         }
+        return { success: false, error: res.retMsg || "Connection failed" };
       } catch (e: any) {
         return { success: false, error: e.message || "Connection failed" };
       }
@@ -619,7 +572,7 @@ export const appRouter = router({
     })).mutation(async ({ ctx, input }) => {
       const prompts: Record<string, string> = {
         market_overview: "You are PHANTOM, an elite AI trading analyst. Provide a concise market overview covering: 1) Overall crypto market sentiment (bullish/bearish/neutral), 2) Key BTC and ETH price levels, 3) SP500 outlook, 4) Top 3 market-moving events today. Be specific with numbers and actionable. Format with markdown headers and bullet points. End with a SENTIMENT: bullish/bearish/neutral line.",
-        asset_analysis: "You are PHANTOM, an elite AI trading analyst. Provide deep analysis of BTC/USDT, ETH/USDT, and SP500: 1) Current trend direction and strength, 2) Key support/resistance levels, 3) RSI and MACD signals, 4) Volume analysis, 5) Short-term price targets. Be specific. Format with markdown. End with SENTIMENT: bullish/bearish/neutral.",
+        asset_analysis: "You are PHANTOM, an elite AI trading analyst. Provide deep analysis of BTC/USDT, ETH/USDT, SOL/USDT, and XAU/USDT: 1) Current trend direction and strength, 2) Key support/resistance levels, 3) RSI and MACD signals, 4) Volume analysis, 5) Short-term price targets. Be specific. Format with markdown. End with SENTIMENT: bullish/bearish/neutral.",
         risk_assessment: "You are PHANTOM, an elite AI risk analyst. Evaluate current portfolio risks: 1) Market volatility assessment, 2) Correlation risks between BTC, ETH, SP500, 3) Liquidity risks, 4) Recommended position sizing, 5) Stop-loss recommendations. Format with markdown. End with SENTIMENT: bullish/bearish/neutral.",
         smart_opportunities: "You are PHANTOM, an elite AI opportunity scanner. Identify the top 5 trading opportunities right now across crypto and TradFi: 1) Symbol and direction (LONG/SHORT), 2) Entry price range, 3) Target price, 4) Stop loss, 5) Risk/reward ratio, 6) Confidence percentage. Focus on high-probability setups. Format with markdown. End with SENTIMENT: bullish/bearish/neutral.",
       };

@@ -1,395 +1,237 @@
-import { autoConvertCoinsToUSDT } from "./autoConvert";
-/**
- * PHANTOM Trading Engine — Multi-Exchange (Bybit + KuCoin)
- * Grid Trading, Scalping, Futures Long-Only
- * Full feature set: Trailing Stop, DCA, Multi-Timeframe, Volume Filter,
- * Trading Hours, Dynamic Grid, Auto-Reinvestment, Telegram Notifications
- *
- * v5.0 — Complete Upgrade:
- *  - Trailing Stop on Grid sells (follow price up, sell on reversal)
- *  - Reinvestment: profits increase order sizes automatically
- *  - Dynamic Grid: spread adjusts based on market volatility
- *  - Scalping on BTC, ETH, SOL (in addition to XAU)
- *  - Telegram notifications on completed cycles
- *  - Trading hours filter (9am-5pm NY = high volume)
- *  - Volume filter (skip low-liquidity periods)
- *  - Futures Long-Only with Take Profit (no stop loss)
- *  - DCA: accumulate on dips, sell on recovery
- *  - Multi-Timeframe Analysis (1m, 15m, 1h alignment)
- *  - New coins: SOL, XRP, DOGE, ADA, AVAX, LINK, ARB, SUI
- */
+// ─── PHANTOM Trading Engine v12.0 — Autonomous Intelligence ───
+// Bybit-only, Grid + Scalping, 5x leverage, AI-connected, zero dead code
 import { RestClientV5 } from "bybit-api";
+import WebSocket from "ws";
 import * as db from "./db";
-import { WebSocket } from "ws";
+import { autoConvertCoinsToUSDT } from "./autoConvert";
 import {
-  calculateSignalScore, calculateATR, calculateATRPercent, calculateADX,
-  detectMarketRegime, findSupportResistance, recordTradeResult, getLossCooldownMultiplier,
-  type MarketRegime, type SignalScore
+  calculateSignalScore, calculateATRPercent,
+  findSupportResistance,
+  type SignalScore, type MarketRegime,
 } from "./smartAnalysis";
 import {
-  updateBTCState, getBTCCorrelationFilter, detectVolumeSpike,
-  getOrderBookImbalance, getFundingRateSignal, detectSqueeze,
-  detectMeanReversion, detectBreakout, detectManipulation,
-  calculateAdaptiveGrid, getCurrentSession, getIntradayMomentumBoost,
-  updateDrawdownState, getDrawdownMultiplier, resetDailyDrawdown,
-  checkDiversification, updateSymbolExposure, clearSymbolExposure,
-  recordStrategyPerformance, getCapitalAllocation, kellyOptimalSize,
-  scanArbitrage, updateArbPrice, aggregateMasterSignal,
-  type MasterSignal, type MarketSession
+  aggregateMasterSignal, getOrderBookImbalance, detectManipulation,
+  updateBTCState, getCurrentSession, getIntradayMomentumBoost,
+  updateDrawdownState, getDrawdownMultiplier,
+  updateArbPrice, type MasterSignal,
+  detectMeanReversion as detectMeanReversionMI, detectBreakout as detectBreakoutMI,
 } from "./marketIntelligence";
 import {
-  analyzeSentiment, getFearGreedSignal, fetchFearGreedIndex,
-  detectCandlePatterns, detectAnomaly, recordTradeForLearning,
-  getRLMultiplier, getLearningInsights, getAISignal,
-  type AISignal, type SentimentResult, type PatternResult, type AnomalyResult
-} from "./aiEngine";
-import {
-  getAdvancedDataSignal, getOnChainSignal, getOpenInterestSignal,
-  detectWhaleActivity, getCrossExchangeSignal,
-  type AdvancedDataSignal
-} from "./advancedData";
-import {
-  getAdvancedStrategySignal, updatePairPrice, updateMomentumData,
-  calculateSmartExit, type AdvancedStrategySignal
-} from "./advancedStrategies";
-import {
-  autoTuneParameters, recordTradeForTuning, getAdaptiveState,
-  recordTradeResult as recordTradeResultOptimizer, getOptimizerSignal,
-  recordDailyReturn, generatePerformanceReport,
-  type OptimizerSignal
+  recordTradeForTuning, getAdaptiveState, recordTradeResult as recordTradeResultOptimizer,
+  generatePerformanceReport, autoTuneParameters,
 } from "./autoOptimizer";
 import {
-  analyzeStrategyPerformance, rebalanceCapital, checkAutoReinvest,
-  calculateDynamicTrailingStop, getXAUBoostMultiplier, getTrendingGridAdjustment,
-  buildOpportunityAlert, buildStatsReport, isNocturnalHours, getNocturnalMultiplier,
-  VOLATILE_SCALPING_PAIRS, type AllocatorState, type StrategyPerformance
-} from "./capitalAllocator";
-import {
-  detectBreakoutSignal, detectMeanReversion as detectMeanReversionPM,
-  analyzeFundingArbitrage, detectLiquidationOpportunity,
-  analyzeVolumeProfile, detectCorrelationArbitrage,
-  getMarketTimingSignal, analyzeMultiTFAlignment,
-  analyzeStalePosition, analyzeLiquidity,
-  getProfitMaximizerSignal, recordTradeForTiming,
-  type ProfitMaximizerSignal
+  getMarketTimingSignal, analyzeVolumeProfile, detectBreakoutSignal,
+  detectMeanReversion as detectMeanReversionPM, recordTradeForTiming,
 } from "./profitMaximizer";
-
-// ─── Fee Constants (per exchange) ───
-const FEES: Record<string, { spot: number; linear: number }> = {
-  bybit:  { spot: 0.001,   linear: 0.00055 },  // 0.1% / 0.055%
-  kucoin: { spot: 0.001,   linear: 0.0006  },  // 0.1% / 0.06%
-};
-const SPOT_FEE_RATE = 0.001;
-const LINEAR_FEE_RATE = 0.00055;
+import {
+  analyzeStrategyPerformance, rebalanceCapital, checkAutoReinvest,
+  getXAUBoostMultiplier, calculateDynamicTrailingStop, getTrendingGridAdjustment,
+} from "./capitalAllocator";
+import { analyzeStalePosition } from "./profitMaximizer";
+import {
+  fetchFearGreedIndex, getFearGreedSignal,
+  recordTradeForLearning, getLearnedWeights,
+  detectAnomaly,
+} from "./aiEngine";
+import { updatePairPrice } from "./advancedStrategies";
+import { kellyOptimalSize } from "./marketIntelligence";
 
 // ─── Types ───
 interface TickerData {
-  symbol: string;
-  lastPrice: number;
-  bid1Price: number;
-  ask1Price: number;
-  price24hPcnt: number;
-  highPrice24h: number;
-  lowPrice24h: number;
-  volume24h: number;
-  turnover24h: number;
-}
-
-interface ScalpPosition {
-  symbol: string;
-  buyPrice: number;
-  qty: string;
-  orderId: string;
-  exchange: string; // "bybit" | "kucoin"
-  category: "spot" | "linear";
-  openedAt: number;
-  highestPrice?: number; // for dynamic trailing stop
-  trailingActivated?: boolean; // trailing stop active
-}
-
-interface GridLevel {
-  price: number;
-  side: "Buy" | "Sell";
-  filled: boolean;
-  orderId?: string;
-  filledPrice?: number;
-  qty?: string;
+  symbol: string; lastPrice: number; bid1Price: number; ask1Price: number;
+  price24hPcnt: number; highPrice24h: number; lowPrice24h: number;
+  volume24h: number; turnover24h: number;
 }
 
 interface OpenBuyPosition {
-  symbol: string;
-  buyPrice: number;
-  qty: string;
-  tradeAmount: number;
-  category: "spot" | "linear";
-  gridLevelPrice: number;
-  // Trailing stop fields
-  highestPrice?: number; // highest price since buy (for trailing)
-  // Stop-loss fields
-  openedAt: number; // timestamp when position was opened
-  stopLossPct?: number; // custom stop-loss % (default from config)
+  symbol: string; buyPrice: number; qty: string; tradeAmount: number;
+  category: "spot" | "linear"; gridLevelPrice: number;
+  highestPrice?: number; openedAt: number;
 }
 
-interface FuturesPosition {
-  symbol: string;
-  entryPrice: number;
-  qty: string;
-  leverage: number;
-  takeProfitPct: number;
-  tradeAmount: number;
-  openedAt: number;
-  direction: "long" | "short";
-  highestPrice?: number;  // for long trailing stop
-  lowestPrice?: number;   // for short trailing stop
+interface ScalpPosition {
+  symbol: string; buyPrice: number; qty: string; orderId: string;
+  exchange: string; category: "spot" | "linear";
+  openedAt: number; highestPrice?: number;
 }
 
-export interface EngineState {
-  userId: number;
-  exchange: string; // "bybit" | "kucoin" | "both"
-  client: RestClientV5;
-  kucoinClient: any | null;
-  isRunning: boolean;
-  simulationMode: boolean;
+interface ShortPosition {
+  symbol: string; entryPrice: number; qty: string; orderId: string;
+  exchange: string; category: "linear";
+  openedAt: number; lowestPrice?: number; strategy: "short_scalping" | "bidirectional_grid" | "mean_reversion";
+}
+
+interface GridLevel {
+  price: number; side: "Buy" | "Sell"; filled: boolean;
+  orderId?: string; filledPrice?: number; qty?: string;
+}
+
+interface DCAState {
+  avgPrice: number; totalQty: number; totalCost: number; entries: number;
+}
+
+interface EngineState {
+  userId: number; exchange: string; client: RestClientV5;
+  isRunning: boolean; simulationMode: boolean;
   gridLevels: Record<string, GridLevel[]>;
   lastPrices: Record<string, number>;
   openBuyPositions: Record<string, OpenBuyPosition[]>;
-  futuresPositions: Record<string, FuturesPosition[]>;
-  dcaPositions: Record<string, { avgPrice: number; totalQty: number; totalCost: number; entries: number }>;
+  dcaPositions: Record<string, DCAState>;
   scalpPositions: Record<string, ScalpPosition[]>;
+  shortPositions: Record<string, ShortPosition[]>;
+  telegramBotToken?: string; telegramChatId?: string;
   intervalId?: ReturnType<typeof setInterval>;
   scannerIntervalId?: ReturnType<typeof setInterval>;
   priceIntervalId?: ReturnType<typeof setInterval>;
   dailySummaryId?: ReturnType<typeof setInterval>;
   telegramPollingId?: ReturnType<typeof setInterval>;
-  autoReinvestId?: ReturnType<typeof setInterval>;
   telegramPollingOffset?: number;
-  lastDrawdownAlertDate?: string; // YYYY-MM-DD to avoid spam
-  lastReinvestDate?: string; // YYYY-MM-DD to avoid double reinvest
-  telegramChatId?: string;
-  telegramBotToken?: string;
-  pnlAlertsSentToday?: Set<string>; // v10.8.1: track which threshold alerts were sent today
+  autoReinvestId?: ReturnType<typeof setInterval>;
+  lastDrawdownAlertDate?: string;
+  pnlAlertsSentToday?: Set<string>;
 }
 
-// ─── Global State ───
-const engines: Map<number, EngineState> = new Map();
-const livePrices: Map<string, TickerData> = new Map();
-const engineCycles: Map<number, number> = new Map();
-// Anti-spam: track last error notification per symbol+side to avoid flooding Telegram
-const lastErrorNotif: Map<string, number> = new Map();
-const ERROR_NOTIF_COOLDOWN = 1_800_000; // 30 minutes between same error notifications
-// Balance errors: only notify ONCE per bot session (these are persistent, won't resolve on their own)
-const balanceErrorNotified: Set<string> = new Set();
+// ─── Constants ───
+const LEVERAGE = 5; // v12.0: Fixed 5x leverage for all linear positions
+const MIN_PROFIT_PCT = 0.001; // 0.1% minimum net profit
+const EMERGENCY_STOP_THRESHOLD = -500;
+const WARNING_THRESHOLD = -300;
 
-function shouldNotifyError(key: string, isBalanceError = false): boolean {
-  // Balance errors: NEVER notify via Telegram (only logged to console)
-  // These are persistent issues that won't resolve on their own
-  if (isBalanceError) return false;
-  // Other errors: 30 min cooldown
-  const now = Date.now();
-  const last = lastErrorNotif.get(key) ?? 0;
-  if (now - last < ERROR_NOTIF_COOLDOWN) return false;
-  lastErrorNotif.set(key, now);
-  return true;
-}
+// ─── Bybit Linear Perpetual Lot Sizes (from official Trading Parameters) ───
+const LINEAR_LOT_SIZES: Record<string, { minQty: number; stepSize: number }> = {
+  BTCUSDT:  { minQty: 0.001,  stepSize: 0.001 },
+  ETHUSDT:  { minQty: 0.01,   stepSize: 0.01 },
+  SOLUSDT:  { minQty: 0.1,    stepSize: 0.1 },
+  XAUUSDT:  { minQty: 0.01,   stepSize: 0.01 },
+  XRPUSDT:  { minQty: 0.1,    stepSize: 0.1 },
+  DOGEUSDT: { minQty: 1,      stepSize: 1 },
+  ADAUSDT:  { minQty: 1,      stepSize: 1 },
+  AVAXUSDT: { minQty: 0.01,   stepSize: 0.01 },
+  LINKUSDT: { minQty: 0.01,   stepSize: 0.01 },
+  ARBUSDT:  { minQty: 0.1,    stepSize: 0.1 },
+  SUIUSDT:  { minQty: 0.01,   stepSize: 0.01 },
+  APTUSDT:  { minQty: 0.01,   stepSize: 0.01 },
+  NEARUSDT: { minQty: 0.1,    stepSize: 0.1 },
+  OPUSDT:   { minQty: 0.1,    stepSize: 0.1 },
+  DOTUSDT:  { minQty: 0.1,    stepSize: 0.1 },
+  MATICUSDT:{ minQty: 0.1,    stepSize: 0.1 },
+};
 
-// ─── Network Error Detection & Retry ───
-const NETWORK_ERROR_CODES = ["EAI_AGAIN", "ECONNRESET", "ETIMEDOUT", "ENOTFOUND", "ECONNREFUSED", "EPIPE", "EHOSTUNREACH", "ENETUNREACH", "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_SOCKET"];
-
-function isNetworkError(err: unknown): boolean {
-  const msg = (err as any)?.message ?? String(err);
-  const code = (err as any)?.code ?? "";
-  return NETWORK_ERROR_CODES.some(c => msg.includes(c) || code === c) || msg.includes("fetch failed") || msg.includes("network");
-}
-
-export async function withRetry<T>(fn: () => Promise<T>, label: string, maxRetries = 3): Promise<T> {
-  let lastErr: unknown;
-  for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    try {
-      return await fn();
-    } catch (e) {
-      lastErr = e;
-      if (!isNetworkError(e) || attempt === maxRetries) throw e;
-      const delayMs = 1000 * Math.pow(2, attempt - 1); // 1s, 2s, 4s
-      console.warn(`[Retry] ${label} attempt ${attempt}/${maxRetries} failed (${(e as Error).message}), retrying in ${delayMs}ms...`);
-      await new Promise(r => setTimeout(r, delayMs));
-    }
+// Normalize qty to Bybit linear lot size: floor to stepSize, enforce minQty
+function normalizeLinearQty(symbol: string, rawQty: number): { qty: string; valid: boolean } {
+  const lot = LINEAR_LOT_SIZES[symbol];
+  if (!lot) {
+    // Unknown symbol: use conservative defaults (0.01 step, 2 decimals)
+    const rounded = Math.floor(rawQty * 100) / 100;
+    return { qty: rounded.toFixed(2), valid: rounded >= 0.01 };
   }
-  throw lastErr;
+  const decimals = Math.max(0, -Math.floor(Math.log10(lot.stepSize)));
+  const factor = Math.pow(10, decimals);
+  const rounded = Math.floor(rawQty * factor) / factor;
+  return { qty: rounded.toFixed(decimals), valid: rounded >= lot.minQty };
 }
 
-export function getEngineCycles(userId: number): number {
-  return engineCycles.get(userId) ?? 0;
-}
-
-// Coins to scan for opportunities
-// v11.0: BEAST MODE — 4 core assets: XAU, BTC, ETH, SP500
-// v11.6: Concentrated — only BTC, ETH, SOL, XAU
+// Scanner coins for opportunity detection
 const SCANNER_COINS = [
-  "XAUUSDT", "BTCUSDT", "ETHUSDT", "SOLUSDT",
+  "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "DOGEUSDT",
+  "AVAXUSDT", "ADAUSDT", "DOTUSDT", "LINKUSDT", "MATICUSDT",
+  "NEARUSDT", "ARBUSDT", "OPUSDT", "SUIUSDT", "APTUSDT",
 ];
 
-// ─── Trading Hours Filter ───
-// High volume hours: 9am-5pm New York (EST/EDT)
-function isHighVolumeHours(): boolean {
-  const now = new Date();
-  // Get NY time (UTC-5 in winter, UTC-4 in summer)
-  const nyOffset = isDST(now) ? -4 : -5;
-  const nyHour = (now.getUTCHours() + nyOffset + 24) % 24;
-  return nyHour >= 9 && nyHour < 17;
+// ─── State ───
+const engines = new Map<number, EngineState>();
+const engineCycles = new Map<number, number>();
+const livePrices = new Map<string, TickerData>();
+const klineCache = new Map<string, { data: any; ts: number }>();
+const CACHE_TTL = 5 * 60 * 1000; // 5 min
+const lastErrorNotif = new Map<string, number>();
+
+// ─── Loss Cooldown System ───
+const tradeResults = new Map<string, { wins: number; losses: number; lastResults: boolean[] }>();
+
+function recordTradeResult(symbol: string, strategy: string, isWin: boolean) {
+  const key = `${symbol}_${strategy}`;
+  const data = tradeResults.get(key) ?? { wins: 0, losses: 0, lastResults: [] };
+  if (isWin) data.wins++; else data.losses++;
+  data.lastResults.push(isWin);
+  if (data.lastResults.length > 20) data.lastResults.shift();
+  tradeResults.set(key, data);
 }
 
-function isDST(date: Date): boolean {
-  const jan = new Date(date.getFullYear(), 0, 1).getTimezoneOffset();
-  const jul = new Date(date.getFullYear(), 6, 1).getTimezoneOffset();
-  return Math.max(jan, jul) !== date.getTimezoneOffset();
+function getLossCooldownMultiplier(symbol: string, strategy: string): number {
+  const key = `${symbol}_${strategy}`;
+  const data = tradeResults.get(key);
+  if (!data || data.lastResults.length < 3) return 1.0;
+  const last5 = data.lastResults.slice(-5);
+  const losses = last5.filter(r => !r).length;
+  if (losses >= 4) return 0.3;
+  if (losses >= 3) return 0.5;
+  if (losses >= 2) return 0.7;
+  return 1.0;
+}
+
+// ─── Nocturnal Mode ───
+function getNocturnalMultiplier(): { confidenceReduction: number; sizeMultiplier: number } {
+  const hour = new Date().getUTCHours();
+  if (hour >= 2 && hour < 6) return { confidenceReduction: 0.2, sizeMultiplier: 1.3 };
+  return { confidenceReduction: 0, sizeMultiplier: 1.0 };
 }
 
 // ─── Volume Filter ───
 function hasAdequateVolume(symbol: string): boolean {
   const ticker = livePrices.get(symbol);
-  if (!ticker) return true; // allow if no data
-  // Minimum 24h turnover thresholds (in USDT)
-  // v11.2: BEAST MODE — drastically lower volume thresholds to maximize entries
-  const minTurnover: Record<string, number> = {
-    BTCUSDT: 5_000_000,
-    ETHUSDT: 2_000_000,
-    SOLUSDT: 1_000_000,
-    XAUUSDT: 500_000,
-    default: 100_000,
+  if (!ticker) return true;
+  const minVolume = symbol === "XAUUSDT" ? 500_000 : 1_000_000;
+  return ticker.turnover24h >= minVolume || ticker.volume24h > 0;
+}
+
+// ─── Opportunity Alert Builder ───
+function buildOpportunityAlert(symbol: string, confidence: number, direction: string, regime: string, trailing: number, sizing: number, strategy: string): string {
+  return `🔔 <b>PHANTOM Oportunidad</b>\nPar: ${symbol}\nDirección: ${direction.toUpperCase()}\nConfianza: ${confidence}%\nRégimen: ${regime}\nEstrategia: ${strategy}`;
+}
+
+// ─── Fee Calculator ───
+function calcNetPnl(grossPnl: number, tradeAmount: number, category: "spot" | "linear", isSell: boolean, exchange: string = "bybit", holdTimeMs: number = 0): number {
+  const feeRate = category === "linear" ? 0.00055 : 0.001;
+  const fee = tradeAmount * feeRate * (isSell ? 2 : 1);
+  let fundingCost = 0;
+  if (category === "linear" && holdTimeMs > 0) {
+    const fundingPeriods = Math.floor(holdTimeMs / (8 * 60 * 60 * 1000));
+    fundingCost = tradeAmount * 0.0001 * fundingPeriods;
+  }
+  return grossPnl - fee - fundingCost;
+}
+
+// ─── Kline Fetcher with Cache ───
+async function fetchKlines(client: RestClientV5 | null, symbol: string, interval: string, limit: number, category: "spot" | "linear" = "linear"): Promise<{ opens: number[]; highs: number[]; lows: number[]; closes: number[]; volumes: number[] }> {
+  const cacheKey = `${symbol}_${interval}`;
+  const cached = klineCache.get(cacheKey);
+  if (cached && Date.now() - cached.ts < CACHE_TTL) return cached.data;
+
+  const cl = client ?? new RestClientV5({});
+  const res = await cl.getKline({ category, symbol, interval: interval as any, limit });
+  const list = (res.result?.list ?? []) as any[];
+  list.reverse();
+  const data = {
+    opens: list.map(k => parseFloat(k[1])),
+    highs: list.map(k => parseFloat(k[2])),
+    lows: list.map(k => parseFloat(k[3])),
+    closes: list.map(k => parseFloat(k[4])),
+    volumes: list.map(k => parseFloat(k[5])),
   };
-  const threshold = minTurnover[symbol] ?? minTurnover.default;
-  return ticker.turnover24h >= threshold;
+  klineCache.set(cacheKey, { data, ts: Date.now() });
+  return data;
 }
 
-// ─── Telegram Notifications ───
-async function sendTelegramNotification(engine: EngineState, message: string) {
-  if (!engine.telegramBotToken || !engine.telegramChatId) return;
+// ─── Ticker Fetcher ───
+async function fetchTicker(client: RestClientV5, symbol: string, category: "spot" | "linear" = "linear"): Promise<TickerData | null> {
   try {
-    const url = `https://api.telegram.org/bot${engine.telegramBotToken}/sendMessage`;
-    await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        chat_id: engine.telegramChatId,
-        text: message,
-        parse_mode: "HTML",
-      }),
-    });
-  } catch (e) {
-    console.error("[Telegram] Failed to send notification:", (e as Error).message);
-  }
-}
-
-// ─── Technical Indicators ───
-function calculateRSI(closes: number[], period = 14): number {
-  if (closes.length < period + 1) return 50;
-  let gains = 0, losses = 0;
-  for (let i = closes.length - period; i < closes.length; i++) {
-    const diff = closes[i] - closes[i - 1];
-    if (diff > 0) gains += diff;
-    else losses += Math.abs(diff);
-  }
-  const avgGain = gains / period;
-  const avgLoss = losses / period;
-  if (avgLoss === 0) return 100;
-  const rs = avgGain / avgLoss;
-  return 100 - (100 / (1 + rs));
-}
-
-function calculateEMA(data: number[], period: number): number[] {
-  const k = 2 / (period + 1);
-  const ema: number[] = [data[0]];
-  for (let i = 1; i < data.length; i++) {
-    ema.push(data[i] * k + ema[i - 1] * (1 - k));
-  }
-  return ema;
-}
-
-function calculateBollingerBands(closes: number[], period = 20, stdDev = 2) {
-  if (closes.length < period) return { upper: 0, middle: 0, lower: 0 };
-  const slice = closes.slice(-period);
-  const mean = slice.reduce((a, b) => a + b, 0) / period;
-  const variance = slice.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / period;
-  const std = Math.sqrt(variance);
-  return { upper: mean + stdDev * std, middle: mean, lower: mean - stdDev * std };
-}
-
-function calculateMACD(closes: number[]) {
-  if (closes.length < 26) return { macd: 0, signal: 0, histogram: 0 };
-  const ema12 = calculateEMA(closes, 12);
-  const ema26 = calculateEMA(closes, 26);
-  const macdLine = ema12.map((v, i) => v - ema26[i]);
-  const signalLine = calculateEMA(macdLine.slice(-9), 9);
-  const macd = macdLine[macdLine.length - 1];
-  const signal = signalLine[signalLine.length - 1];
-  return { macd, signal, histogram: macd - signal };
-}
-
-// ─── Volatility Calculator (for Dynamic Grid) ───
-function calculateVolatility(closes: number[]): number {
-  if (closes.length < 10) return 0.01; // default 1%
-  const returns: number[] = [];
-  for (let i = 1; i < closes.length; i++) {
-    returns.push(Math.abs(closes[i] - closes[i - 1]) / closes[i - 1]);
-  }
-  const avg = returns.reduce((a, b) => a + b, 0) / returns.length;
-  return avg;
-}
-
-// ─── Multi-Timeframe Analysis ───
-// Returns true if all timeframes agree on direction
-async function multiTimeframeCheck(client: RestClientV5 | null, symbol: string, category: "spot" | "linear"): Promise<{ aligned: boolean; direction: "bullish" | "bearish" | "mixed" }> {
-  try {
-    // Use cached klines at different intervals
-    const klines15m = await fetchKlines(client, symbol, "15", 60, category);
-    const klines1h = await fetchKlines(client, symbol, "60", 60, category);
-    
-    if (klines15m.closes.length < 50 || klines1h.closes.length < 30) {
-      return { aligned: true, direction: "mixed" }; // allow trading if data insufficient
-    }
-
-    // Check trend on each timeframe using EMA 20/50
-    const check = (closes: number[]) => {
-      const ema20 = calculateEMA(closes, 20);
-      const ema50 = calculateEMA(closes, Math.min(50, closes.length));
-      const e20 = ema20[ema20.length - 1];
-      const e50 = ema50[ema50.length - 1];
-      if (e20 > e50 * 1.001) return "bullish";
-      if (e20 < e50 * 0.999) return "bearish";
-      return "neutral";
-    };
-
-    const tf15m = check(klines15m.closes);
-    const tf1h = check(klines1h.closes);
-
-    // Aligned if both non-bearish (bullish or neutral)
-    if (tf15m !== "bearish" && tf1h !== "bearish") {
-      return { aligned: true, direction: "bullish" };
-    }
-    // Both bearish
-    if (tf15m === "bearish" && tf1h === "bearish") {
-      return { aligned: true, direction: "bearish" };
-    }
-    return { aligned: false, direction: "mixed" };
-  } catch {
-    return { aligned: true, direction: "mixed" }; // allow on error
-  }
-}
-
-// ─── Bybit API Helpers ───
-async function fetchTicker(_client: RestClientV5 | null, symbol: string, category: "spot" | "linear" = "spot"): Promise<TickerData | null> {
-  const cached = livePrices.get(symbol);
-  if (cached) return cached;
-  try {
-    const url = `https://api.bybit.com/v5/market/tickers?category=${category}&symbol=${symbol}`;
-    const res = await withRetry(() => fetch(url, { signal: AbortSignal.timeout(5000) }), `fetchTicker ${symbol}`);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = await res.json() as any;
-    const t = data?.result?.list?.[0];
+    const res = await client.getTickers({ category, symbol } as any);
+    const t = (res.result?.list ?? [])[0] as any;
     if (!t) return null;
-    const ticker: TickerData = {
-      symbol: t.symbol,
-      lastPrice: parseFloat(t.lastPrice),
+    return {
+      symbol, lastPrice: parseFloat(t.lastPrice),
       bid1Price: parseFloat(t.bid1Price ?? t.lastPrice),
       ask1Price: parseFloat(t.ask1Price ?? t.lastPrice),
       price24hPcnt: parseFloat(t.price24hPcnt ?? "0"),
@@ -398,435 +240,180 @@ async function fetchTicker(_client: RestClientV5 | null, symbol: string, categor
       volume24h: parseFloat(t.volume24h ?? "0"),
       turnover24h: parseFloat(t.turnover24h ?? "0"),
     };
-    livePrices.set(symbol, ticker);
-    return ticker;
   } catch (e) {
-    console.error(`[Engine] Failed to fetch ticker ${symbol}:`, (e as Error).message);
+    console.error(`[Ticker] ${symbol} fetch error:`, (e as Error).message);
     return null;
   }
 }
 
-interface KlineData {
-  opens: number[];
-  highs: number[];
-  lows: number[];
-  closes: number[];
-  volumes: number[];
-}
-
-// ─── CoinGecko Cache (5-minute TTL) ───
-interface CacheEntry {
-  data: KlineData;
-  expiresAt: number;
-}
-const klineCache: Map<string, CacheEntry> = new Map();
-const CACHE_TTL_MS = 5 * 60 * 1000;
-
-const COINGECKO_IDS: Record<string, string> = {
-  BTCUSDT: "bitcoin", ETHUSDT: "ethereum", SOLUSDT: "solana",
-  BNBUSDT: "binancecoin", ADAUSDT: "cardano", DOGEUSDT: "dogecoin",
-  XRPUSDT: "ripple", AVAXUSDT: "avalanche-2", DOTUSDT: "polkadot",
-  MATICUSDT: "matic-network", LINKUSDT: "chainlink", LTCUSDT: "litecoin",
-  UNIUSDT: "uniswap", ATOMUSDT: "cosmos", NEARUSDT: "near",
-  FTMUSDT: "fantom", AAVEUSDT: "aave", ALGOUSDT: "algorand",
-  ICPUSDT: "internet-computer", FILUSDT: "filecoin", XLMUSDT: "stellar",
-  VETUSDT: "vechain", TRXUSDT: "tron", EOSUSDT: "eos",
-  SANDUSDT: "the-sandbox", MANAUSDT: "decentraland", AXSUSDT: "axie-infinity",
-  GALAUSDT: "gala", CHZUSDT: "chiliz", APEUSDT: "apecoin",
-  OPUSDT: "optimism", ARBUSDT: "arbitrum", SHIBUSDT: "shiba-inu",
-  APTUSDT: "aptos", SUIUSDT: "sui", SEIUSDT: "sei-network",
-  TIAUSDT: "celestia", INJUSDT: "injective-protocol", FETUSDT: "fetch-ai",
-  RENDERUSDT: "render-token", WIFUSDT: "dogwifcoin", PEPEUSDT: "pepe",
-  FLOKIUSDT: "floki", BONKUSDT: "bonk", JUPUSDT: "jupiter-exchange-solana",
-  MKRUSDT: "maker",
-};
-const YAHOO_TICKERS: Record<string, string> = {
-  XAUUSDT: "GC=F",
-  XAGUSD: "SI=F",
-  SPXUSDT: "%5EGSPC",
-};
-
-// Bybit klines API as fallback for linear symbols
-// v10.7: CONCENTRATED — only XAU, BTC, ETH
-const BYBIT_KLINE_SYMBOLS = new Set(["XAUUSDT", "BTCUSDT", "ETHUSDT", "SOLUSDT"]); // v11.6: concentrated
-
-async function fetchKlines(_client: RestClientV5 | null, symbol: string, _interval: any = "15", limit: number = 50, _category: "spot" | "linear" = "spot"): Promise<KlineData> {
-  // Check cache first
-  const cacheKey = `${symbol}_${_interval}_${limit}`;
-  const cached = klineCache.get(cacheKey);
-  if (cached && Date.now() < cached.expiresAt) {
-    return cached.data;
+// ─── Retry Helper ───
+export async function withRetry<T>(fn: () => Promise<T>, label: string, retries = 3): Promise<T> {
+  for (let i = 0; i < retries; i++) {
+    try { return await fn(); } catch (e: any) {
+      if (i === retries - 1) throw e;
+      const delay = Math.min(1000 * Math.pow(2, i), 5000);
+      console.warn(`[Retry] ${label} attempt ${i + 1} failed: ${e.message}, retrying in ${delay}ms`);
+      await new Promise(r => setTimeout(r, delay));
+    }
   }
+  throw new Error(`${label} failed after ${retries} retries`);
+}
 
-  // ─── Source 1: Bybit REST API (PREFERRED — works on VPS, no rate limits) ───
-  const bybitCategory = _category === "linear" ? "linear" : "spot";
+// ─── Telegram Notification ───
+async function sendTelegramNotification(engine: EngineState, message: string) {
+  if (!engine.telegramBotToken || !engine.telegramChatId) return;
   try {
-    const intervalMap: Record<string, string> = { "1": "1", "5": "5", "15": "15", "60": "60", "240": "240" };
-    const bybitInterval = intervalMap[_interval] ?? "15";
-    const bybitUrl = `https://api.bybit.com/v5/market/kline?category=${bybitCategory}&symbol=${symbol}&interval=${bybitInterval}&limit=${limit}`;
-    const res = await withRetry(() => fetch(bybitUrl, { signal: AbortSignal.timeout(8000) }), `fetchKlines ${symbol}`);
-    if (res.ok) {
-      const data = await res.json() as any;
-      const klines = data?.result?.list;
-      if (klines && klines.length > 0) {
-        const reversed = [...klines].reverse();
-        const result: KlineData = {
-          opens: reversed.map((k: string[]) => parseFloat(k[1])),
-          highs: reversed.map((k: string[]) => parseFloat(k[2])),
-          lows: reversed.map((k: string[]) => parseFloat(k[3])),
-          closes: reversed.map((k: string[]) => parseFloat(k[4])),
-          volumes: reversed.map((k: string[]) => parseFloat(k[5])),
-        };
-        klineCache.set(cacheKey, { data: result, expiresAt: Date.now() + CACHE_TTL_MS });
-        return result;
-      }
-    }
-  } catch (e) {
-    console.warn(`[Engine] Bybit klines ${symbol}:`, (e as Error).message);
-  }
-
-  // ─── Source 2: Yahoo Finance (for TradFi symbols) ───
-  const yahooTicker = YAHOO_TICKERS[symbol];
-  if (yahooTicker) {
-    try {
-      const url = `https://query1.finance.yahoo.com/v8/finance/chart/${yahooTicker}?interval=30m&range=5d`;
-      const res = await fetch(url, { signal: AbortSignal.timeout(10000), headers: { "User-Agent": "Mozilla/5.0" } });
-      if (!res.ok) throw new Error(`Yahoo HTTP ${res.status}`);
-      const data = await res.json() as any;
-      const result = data?.chart?.result?.[0];
-      const quote = result?.indicators?.quote?.[0] ?? {};
-      const closes = (quote.close ?? []).filter((c: any) => c != null);
-      const opens = (quote.open ?? []).filter((c: any) => c != null);
-      const yahooHighs = (quote.high ?? []).filter((c: any) => c != null);
-      const yahooLows = (quote.low ?? []).filter((c: any) => c != null);
-      const volumes = (quote.volume ?? []).filter((v: any) => v != null);
-      if (closes.length > 0) {
-        const klineResult: KlineData = {
-          opens: opens.slice(-limit).length > 0 ? opens.slice(-limit) : closes.slice(-limit),
-          highs: yahooHighs.slice(-limit).length > 0 ? yahooHighs.slice(-limit) : closes.slice(-limit),
-          lows: yahooLows.slice(-limit).length > 0 ? yahooLows.slice(-limit) : closes.slice(-limit),
-          closes: closes.slice(-limit),
-          volumes: volumes.slice(-limit),
-        };
-        klineCache.set(cacheKey, { data: klineResult, expiresAt: Date.now() + CACHE_TTL_MS });
-        return klineResult;
-      }
-    } catch (e) {
-      console.warn(`[Engine] Yahoo klines ${symbol}:`, (e as Error).message);
-    }
-  }
-
-  // ─── Source 3: CoinGecko (LAST RESORT — has aggressive rate limits) ───
-  const geckoId = COINGECKO_IDS[symbol];
-  if (geckoId) {
-    const days = limit <= 48 ? 1 : limit <= 96 ? 2 : 7;
-    const url = `https://api.coingecko.com/api/v3/coins/${geckoId}/ohlc?vs_currency=usd&days=${days}`;
-    try {
-      const res = await fetch(url, { signal: AbortSignal.timeout(10000) });
-      if (res.ok) {
-        const data = await res.json() as number[][];
-        const sliced = data.slice(-limit);
-        const result: KlineData = {
-          opens: sliced.map(k => k[1]),
-          highs: sliced.map(k => k[2]),
-          lows: sliced.map(k => k[3]),
-          closes: sliced.map(k => k[4]),
-          volumes: sliced.map(() => 1000),
-        };
-        klineCache.set(cacheKey, { data: result, expiresAt: Date.now() + CACHE_TTL_MS });
-        return result;
-      }
-      if (res.status === 429) {
-        console.warn(`[Engine] CoinGecko 429 for ${symbol} — using Bybit/synthetic fallback`);
-      }
-    } catch (e) {
-      console.warn(`[Engine] CoinGecko klines ${symbol}:`, (e as Error).message);
-    }
-  }
-
-  // ─── Source 4: Synthetic klines from WebSocket price ───
-  const cachedPrice = livePrices.get(symbol);
-  if (cachedPrice) {
-    const base = cachedPrice.lastPrice;
-    const synCloses = Array.from({ length: limit }, () => base * (1 + (Math.random() - 0.5) * 0.002));
-    return {
-      opens: synCloses.map(c => c * (1 + (Math.random() - 0.5) * 0.001)),
-      highs: synCloses.map(c => c * (1 + Math.random() * 0.002)),
-      lows: synCloses.map(c => c * (1 - Math.random() * 0.002)),
-      closes: synCloses,
-      volumes: Array(limit).fill(1000),
-    };
-  }
-  return { opens: [], highs: [], lows: [], closes: [], volumes: [] };
-}
-
-// ─── v9.0: USDT LIQUIDITY MANAGEMENT ───
-// Rule: maintain minimum 60% of capital in USDT available
-// Don't buy more altcoins if USDT < threshold
-// For big opportunities → use futures (USDT-settled) instead of spot
-const USDT_MIN_RESERVE_PCT = 0.0; // v10.1: NO RESERVE — deploy 100% of capital
-const USDT_CHECK_CACHE: { lastCheck: number; bybitUsdt: number; kucoinUsdt: number; totalBalance: number } = {
-  lastCheck: 0, bybitUsdt: 0, kucoinUsdt: 0, totalBalance: 0
-};
-
-async function getUsdtAvailable(engine: EngineState): Promise<{ bybitUsdt: number; kucoinUsdt: number; totalUsdt: number; totalBalance: number; usdtPct: number }> {
-  // Cache for 30 seconds to avoid hammering APIs
-  if (Date.now() - USDT_CHECK_CACHE.lastCheck < 30_000 && USDT_CHECK_CACHE.totalBalance > 0) {
-    const totalUsdt = USDT_CHECK_CACHE.bybitUsdt + USDT_CHECK_CACHE.kucoinUsdt;
-    return {
-      bybitUsdt: USDT_CHECK_CACHE.bybitUsdt,
-      kucoinUsdt: USDT_CHECK_CACHE.kucoinUsdt,
-      totalUsdt,
-      totalBalance: USDT_CHECK_CACHE.totalBalance,
-      usdtPct: USDT_CHECK_CACHE.totalBalance > 0 ? totalUsdt / USDT_CHECK_CACHE.totalBalance : 1,
-    };
-  }
-  let bybitUsdt = 0, kucoinUsdt = 0, totalBal = 0;
-  try {
-    if (engine.client) {
-      const res = await withRetry(() => engine.client.getWalletBalance({ accountType: "UNIFIED" }), "USDT check Bybit");
-      if (res.retCode === 0) {
-        const coins = (res.result as any)?.list?.[0]?.coin ?? [];
-        for (const c of coins) {
-          if (c.coin === "USDT") bybitUsdt = parseFloat(c.availableToWithdraw ?? c.walletBalance ?? "0");
-        }
-        totalBal += parseFloat((res.result as any)?.list?.[0]?.totalEquity ?? "0");
-      }
-    }
-  } catch { /* silent */ }
-  try {
-    if (engine.kucoinClient) {
-      const tradeRes = await withRetry(() => engine.kucoinClient!.getBalances({ type: "trade" }), "USDT check KuCoin");
-      if ((tradeRes as any)?.code === "200000") {
-        const prices = getLivePrices();
-        for (const acc of ((tradeRes as any).data as any[] ?? [])) {
-          const cur = acc.currency;
-          const bal = parseFloat(acc.available ?? "0");
-          if (cur === "USDT") kucoinUsdt += bal;
-          const p = cur === "USDT" ? 1 : (prices[`${cur}USDT`]?.lastPrice ?? 0);
-          totalBal += bal * p;
-        }
-      }
-    }
-  } catch { /* silent */ }
-  USDT_CHECK_CACHE.lastCheck = Date.now();
-  USDT_CHECK_CACHE.bybitUsdt = bybitUsdt;
-  USDT_CHECK_CACHE.kucoinUsdt = kucoinUsdt;
-  USDT_CHECK_CACHE.totalBalance = totalBal;
-  const totalUsdt = bybitUsdt + kucoinUsdt;
-  return {
-    bybitUsdt, kucoinUsdt, totalUsdt, totalBalance: totalBal,
-    usdtPct: totalBal > 0 ? totalUsdt / totalBal : 1,
-  };
-}
-
-/** v10.1: USDT guard disabled — deploy 100% of capital. Always returns true. */
-async function hasUsdtLiquidity(engine: EngineState, tradeAmount: number, strategy: string): Promise<boolean> {
-  // v10.1: NO RESERVE — use all capital, always allow trades
-  return true;
-}
-
-/** v10.1: No longer redirect to futures — trade directly wherever signal appears */
-function shouldUseFuturesForOpportunity(confidence: number, category: "spot" | "linear"): boolean {
-  // v10.1: DISABLED — trade directly, don't redirect
-  return false;
-}
-
-async function placeOrder(engine: EngineState, symbol: string, side: "Buy" | "Sell", qty: string, category: "spot" | "linear" = "spot"): Promise<string | null> {
-  if (engine.simulationMode) {
-    return `SIM_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-  }
-  try {
-    if (engine.exchange === "both") {
-      const orderIds: string[] = [];
-      // KuCoin (skip XAUUSDT and XAGUSD — not supported)
-      // KuCoin minimum order sizes (in base currency)
-      const KC_MIN_SIZE: Record<string, number> = {
-        "BTC-USDT": 0.00001, "ETH-USDT": 0.0001, "SOL-USDT": 0.01,
-        "XRP-USDT": 0.1, "ADA-USDT": 1, "DOGE-USDT": 1,
-        "AVAX-USDT": 0.01, "LINK-USDT": 0.01, "ARB-USDT": 0.1,
-        "SUI-USDT": 0.1, "OP-USDT": 0.1, "APT-USDT": 0.01,
-        "SEI-USDT": 1, "SHIB-USDT": 1,
-      };
-      if (engine.kucoinClient && symbol !== "XAUUSDT" && symbol !== "XAGUSD" && symbol !== "SPXUSDT" && symbol !== "SP500USDT" && category === "spot") {
-        try {
-          const kucoinSymbol = symbol.replace("USDT", "-USDT");
-          const minSize = KC_MIN_SIZE[kucoinSymbol] ?? 0.1;
-          const qtyNum = parseFloat(qty);
-          if (qtyNum < minSize) {
-            console.log(`[Engine] SKIP KuCoin ${side} ${symbol} — qty ${qty} below min ${minSize}`);
-          } else {
-            // KuCoin market orders use 'funds' (USDT amount) instead of 'size' for buys
-            const orderParams: any = {
-              clientOid: `phantom_kc_${Date.now()}`,
-              side: side.toLowerCase(),
-              symbol: kucoinSymbol,
-              type: "market",
-            };
-            if (side === "Buy") {
-              // For market buys, use 'funds' (USDT amount) — more reliable than 'size'
-              const price = engine.lastPrices[symbol] ?? 0;
-              const funds = (qtyNum * price).toFixed(2);
-              if (parseFloat(funds) < 1) {
-                console.log(`[Engine] SKIP KuCoin ${side} ${symbol} — funds $${funds} below $1 minimum`);
-              } else {
-                orderParams.funds = funds;
-                const res: any = await withRetry(() => engine.kucoinClient.submitOrder(orderParams), `KuCoin Buy ${symbol}`);
-                const kcId = res?.data?.orderId;
-                if (kcId) { orderIds.push(`KC:${kcId}`); console.log(`[Engine] BOTH/KuCoin order: ${side} ${symbol} funds=$${funds} id=${kcId}`); }
-                else {
-                  const errDetail = JSON.stringify(res?.data ?? res);
-                  console.log(`[Engine] KuCoin order no ID: ${errDetail}`);
-                  const isBal = true; // KuCoin no-ID = balance/rejection issue
-                  if (shouldNotifyError(`kc_${symbol}_${side}_noId`, isBal)) {
-                    await sendTelegramNotification(engine, `⚠️ <b>Orden Rechazada</b>\nExchange: KuCoin\nPar: ${symbol}\nLado: ${side}\nFunds: $${funds}\nError: ${errDetail}`);
-                  }
-                }
-              }
-            } else {
-              orderParams.size = qty;
-              const res: any = await withRetry(() => engine.kucoinClient.submitOrder(orderParams), `KuCoin Sell ${symbol}`);
-              const kcId = res?.data?.orderId;
-              if (kcId) { orderIds.push(`KC:${kcId}`); console.log(`[Engine] BOTH/KuCoin order: ${side} ${symbol} qty=${qty} id=${kcId}`); }
-              else {
-                const errDetail = JSON.stringify(res?.data ?? res);
-                console.log(`[Engine] KuCoin order no ID: ${errDetail}`);
-                const isBal2 = true; // KuCoin no-ID = balance/rejection issue
-                if (shouldNotifyError(`kc_${symbol}_${side}_noId2`, isBal2)) {
-                  await sendTelegramNotification(engine, `⚠️ <b>Orden Rechazada</b>\nExchange: KuCoin\nPar: ${symbol}\nLado: ${side}\nQty: ${qty}\nError: ${errDetail}`);
-                }
-              }
-            }
-          }
-        } catch (e) {
-          const errMsg = (e as Error).message;
-          console.error(`[Engine] BOTH/KuCoin order failed:`, errMsg);
-          const isBalanceErr = errMsg === "OK" || errMsg.includes("Balance insufficient") || errMsg.includes("balance");
-          const isNetErr = isNetworkError(e);
-          const nKey = `kc_${symbol}_${side}`;
-          if (!isNetErr && shouldNotifyError(nKey, isBalanceErr)) {
-            const reason = isBalanceErr ? "Balance insuficiente en KuCoin" : errMsg;
-            await sendTelegramNotification(engine, `❌ <b>Orden Fallida</b>\nExchange: KuCoin\nPar: ${symbol}\nLado: ${side}\nQty: ${qty}\nRazón: ${reason}`);
-          }
-        }
-      }
-      // Bybit
-      try {
-        const res = await withRetry(() => engine.client.submitOrder({ category, symbol, side, orderType: "Market", qty }), `Bybit ${side} ${symbol}`);
-        const bybitId = res.result?.orderId;
-        if (bybitId) { orderIds.push(`BY:${bybitId}`); console.log(`[Engine] BOTH/Bybit order: ${side} ${symbol} qty=${qty} id=${bybitId}`); }
-      } catch (e) {
-        const errMsg = (e as Error).message;
-        console.error(`[Engine] BOTH/Bybit order failed:`, errMsg);
-        const isBalanceErr2 = errMsg.includes("Balance insufficient") || errMsg.includes("balance") || errMsg.includes("Insufficient");
-        const isNetErr = isNetworkError(e);
-        const nKey = `by_${symbol}_${side}`;
-        if (!isNetErr && shouldNotifyError(nKey, isBalanceErr2)) {
-          await sendTelegramNotification(engine, `❌ <b>Orden Fallida</b>\nExchange: Bybit\nPar: ${symbol}\nLado: ${side}\nQty: ${qty}\nError: ${errMsg}`);
-        }
-      }
-      return orderIds.length > 0 ? orderIds.join(",") : null;
-    } else if (engine.exchange === "kucoin" && engine.kucoinClient) {
-      const kucoinSymbol = symbol.replace("USDT", "-USDT");
-      // KuCoin minimum order sizes (in base currency)
-      const KC_MIN_SIZE_KC: Record<string, number> = {
-        "BTC-USDT": 0.00001, "ETH-USDT": 0.0001, "SOL-USDT": 0.01,
-        "XRP-USDT": 0.1, "ADA-USDT": 1, "DOGE-USDT": 1,
-        "AVAX-USDT": 0.01, "LINK-USDT": 0.01, "ARB-USDT": 0.1,
-        "SUI-USDT": 0.1, "OP-USDT": 0.1, "APT-USDT": 0.01,
-        "SEI-USDT": 1, "SHIB-USDT": 1,
-      };
-      const minSize = KC_MIN_SIZE_KC[kucoinSymbol] ?? 0.1;
-      const qtyNum = parseFloat(qty);
-      if (qtyNum < minSize) {
-        console.log(`[Engine] SKIP KuCoin-only ${side} ${symbol} — qty ${qty} below min ${minSize}`);
-        return null;
-      }
-      const orderParams: any = {
-        clientOid: `phantom_${Date.now()}`,
-        side: side.toLowerCase(),
-        symbol: kucoinSymbol,
-        type: "market",
-      };
-      // KuCoin market buys MUST use 'funds' (USDT amount), sells use 'size' (crypto qty)
-      if (side === "Buy") {
-        const price = engine.lastPrices[symbol] ?? 0;
-        const funds = (qtyNum * price).toFixed(2);
-        if (parseFloat(funds) < 1) {
-          console.log(`[Engine] SKIP KuCoin-only ${side} ${symbol} — funds $${funds} below $1 minimum`);
-          return null;
-        }
-        orderParams.funds = funds;
-      } else {
-        orderParams.size = qty;
-      }
-      const res: any = await withRetry(() => engine.kucoinClient.submitOrder(orderParams), `KuCoin-only ${side} ${symbol}`);
-      const kcOrderId = res?.data?.orderId;
-      if (kcOrderId) {
-        console.log(`[Engine] KuCoin order OK: ${side} ${symbol} ${side === "Buy" ? `funds=$${orderParams.funds}` : `qty=${qty}`} id=${kcOrderId}`);
-        return kcOrderId;
-      } else {
-        // KuCoin returned success HTTP but no orderId (insufficient balance, min size, etc.)
-        const errMsg = res?.msg || res?.code || JSON.stringify(res?.data ?? res);
-        console.log(`[Engine] KuCoin order rejected ${side} ${symbol}: ${errMsg}`);
-        const isBalRej = errMsg === "OK" || errMsg.includes("Balance") || errMsg.includes("balance") || errMsg.includes("insufficient");
-        const nKey = `kc_${symbol}_${side}_rej`;
-        if (shouldNotifyError(nKey, isBalRej)) {
-          const reason = errMsg === "OK" ? "Balance insuficiente o par no disponible" : errMsg;
-          await sendTelegramNotification(engine, `⚠️ <b>Orden Rechazada</b>\nExchange: KuCoin\nPar: ${symbol}\nLado: ${side}\nRazón: ${reason}`);
-        }
-        return null;
-      }
-    } else {
-      const res = await withRetry(() => engine.client.submitOrder({ category, symbol, side, orderType: "Market", qty }), `Bybit-only ${side} ${symbol}`);
-      return res.result?.orderId ?? null;
-    }
-  } catch (e) {
-    const errMsg = (e as Error).message;
-    console.error(`[Engine] Order failed ${side} ${symbol} (${engine.exchange}):`, errMsg);
-    const isBalanceErr = errMsg === "OK" || errMsg.includes("Balance insufficient") || errMsg.includes("balance") || errMsg.includes("Insufficient");
-    const isNetErr = isNetworkError(e);
-    const nKey = `${engine.exchange}_${symbol}_${side}`;
-    // Network errors: suppress from Telegram (transient, already retried 3x)
-    if (!isNetErr && shouldNotifyError(nKey, isBalanceErr)) {
-      const reason = isBalanceErr ? `Balance insuficiente en ${engine.exchange}` : errMsg;
-      await sendTelegramNotification(engine, `❌ <b>Orden Fallida</b>\nExchange: ${engine.exchange}\nPar: ${symbol}\nLado: ${side}\nQty: ${qty}\nRazón: ${reason}`);
-    }
-    return null;
-  }
-}
-
-function calcNetPnl(grossPnl: number, tradeAmount: number, category: "spot" | "linear", roundTrip = true, exchange = "bybit", holdTimeMs = 0): number {
-  const exchangeFees = FEES[exchange] ?? FEES.bybit;
-  const feeRate = category === "linear" ? exchangeFees.linear : exchangeFees.spot;
-  const feeLegs = roundTrip ? 2 : 1;
-  const tradingFees = tradeAmount * feeRate * feeLegs;
-  // Estimate funding rate cost for perpetual futures (charged every 8h, ~0.01% avg)
-  let fundingCost = 0;
-  if (category === "linear" && holdTimeMs > 0) {
-    const FUNDING_RATE_PER_8H = 0.0001; // 0.01% average
-    const fundingPeriods = Math.floor(holdTimeMs / (8 * 3600 * 1000));
-    fundingCost = tradeAmount * FUNDING_RATE_PER_8H * fundingPeriods;
-  }
-  return grossPnl - tradingFees - fundingCost;
-}
-
-// ─── Grid Trading Strategy (with Trailing Stop, Dynamic Spread, DCA, MTF, Volume Filter, Hours) ───
-function generateGridLevels(currentPrice: number, gridCount: number = 10, gridSpread: number = 0.005): GridLevel[] {
-  const levels: GridLevel[] = [];
-  const step = currentPrice * gridSpread / (gridCount / 2);
-  for (let i = -gridCount / 2; i <= gridCount / 2; i++) {
-    if (i === 0) continue;
-    levels.push({
-      price: currentPrice + step * i,
-      side: i < 0 ? "Buy" : "Sell",
-      filled: false,
+    await fetch(`https://api.telegram.org/bot${engine.telegramBotToken}/sendMessage`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chat_id: engine.telegramChatId, text: message, parse_mode: "HTML" }),
     });
+  } catch { /* silent */ }
+}
+
+// ─── Place Order (Bybit only) ───
+async function placeOrder(engine: EngineState, symbol: string, side: "Buy" | "Sell", qty: string, category: "spot" | "linear" = "linear", options?: { reduceOnly?: boolean; isOpenShort?: boolean }): Promise<string | null> {
+  // v12.0 fix: Normalize qty to Bybit lot size before sending
+  if (category === "linear") {
+    const normalized = normalizeLinearQty(symbol, parseFloat(qty));
+    if (!normalized.valid) {
+      console.warn(`[Order] ${side} ${symbol} SKIPPED: qty=${qty} → normalized=${normalized.qty} below minQty`);
+      return null;
+    }
+    qty = normalized.qty;
+  }
+
+  if (engine.simulationMode) {
+    const simId = `SIM_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    console.log(`[Order] SIMULATED ${side} ${symbol} qty=${qty} cat=${category} → ${simId}`);
+    return simId;
+  }
+
+  try {
+    const orderParams: any = {
+      category, symbol, side, orderType: "Market", qty,
+      timeInForce: "GTC",
+    };
+    // v12.0: reduceOnly logic
+    // - Sell orders closing longs: reduceOnly=true (default for Sell)
+    // - Sell orders opening shorts (isOpenShort=true): reduceOnly=false
+    // - Buy orders closing shorts (reduceOnly explicitly passed): reduceOnly=true
+    if (options?.reduceOnly === true) {
+      orderParams.reduceOnly = true;
+    } else if (category === "linear" && side === "Sell" && !options?.isOpenShort) {
+      orderParams.reduceOnly = true;
+    }
+    // For opening shorts, do NOT set reduceOnly (defaults to false)
+    const res = await withRetry(() => engine.client.submitOrder(orderParams), `${side} ${symbol}`);
+    if (res.retCode === 0) {
+      const orderId = res.result?.orderId ?? `BYBIT_${Date.now()}`;
+      console.log(`[Order] ${side} ${symbol} qty=${qty} cat=${category} short=${options?.isOpenShort ?? false} → ${orderId}`);
+      return orderId;
+    }
+    console.error(`[Order] ${side} ${symbol} failed: ${res.retMsg} (code=${res.retCode})`);
+    return null;
+  } catch (e) {
+    console.error(`[Order] ${side} ${symbol} error:`, (e as Error).message);
+    return null;
+  }
+}
+
+// ─── Force Leverage ───
+async function ensureLeverage(client: RestClientV5, symbol: string, leverage: number = LEVERAGE) {
+  try {
+    await client.setLeverage({
+      category: "linear", symbol,
+      buyLeverage: String(leverage), sellLeverage: String(leverage),
+    });
+    console.log(`[Leverage] Set ${symbol} to ${leverage}x`);
+  } catch (e: any) {
+    // 110043 = leverage not modified (already set) — safe to ignore
+    if (!e?.message?.includes("110043") && !e?.message?.includes("not modified")) {
+      console.warn(`[Leverage] ${symbol} error: ${e?.message}`);
+    }
+  }
+}
+
+// ─── AI Intelligence Layer ───
+// v12.0: Connect Fear&Greed, Kelly Criterion, and learned weights to actual trading decisions
+function getAIMultipliers(symbol: string, strategy: string, confidence: number, tradeAmount: number, balance: number): { sizeMultiplier: number; confidenceBoost: number; reasons: string[] } {
+  const reasons: string[] = [];
+  let sizeMultiplier = 1.0;
+  let confidenceBoost = 0;
+
+  // 1. Fear & Greed Index influence
+  try {
+    const fgSignal = getFearGreedSignal(null); // uses cached value
+    if (fgSignal.strength > 30) {
+      if (fgSignal.direction === "buy") {
+        sizeMultiplier *= 1.15;
+        confidenceBoost += 5;
+        reasons.push(`F&G: greed → +15% size, +5 conf`);
+      } else if (fgSignal.direction === "sell") {
+        sizeMultiplier *= 0.8;
+        confidenceBoost -= 5;
+        reasons.push(`F&G: fear → -20% size, -5 conf`);
+      }
+    }
+  } catch { /* silent */ }
+
+  // 2. Kelly Criterion for position sizing
+  try {
+    const key = `${symbol}_${strategy}`;
+    const data = tradeResults.get(key);
+    if (data && data.lastResults.length >= 10) {
+      const winRate = data.wins / (data.wins + data.losses);
+      const avgWin = 0.005; // estimated 0.5% avg win
+      const avgLoss = 0.003; // estimated 0.3% avg loss
+      const kellyFraction = kellyOptimalSize(winRate, avgWin, avgLoss);
+      const kellyMultiplier = Math.max(0.5, Math.min(2.0, kellyFraction / (tradeAmount / balance)));
+      sizeMultiplier *= kellyMultiplier;
+      reasons.push(`Kelly: ${kellyMultiplier.toFixed(2)}x (WR=${(winRate * 100).toFixed(0)}%)`);
+    }
+  } catch { /* silent */ }
+
+  // 3. Learned weights from AI engine (hour-of-day, session patterns)
+  try {
+    const weights = getLearnedWeights(strategy, symbol);
+    if (weights) {
+      sizeMultiplier *= weights.sizeMultiplier;
+      confidenceBoost += weights.confidenceBoost;
+      if (weights.sizeMultiplier !== 1.0 || weights.confidenceBoost !== 0) {
+        reasons.push(`AI-Learn: size=${weights.sizeMultiplier.toFixed(2)}x conf=${weights.confidenceBoost > 0 ? "+" : ""}${weights.confidenceBoost}`);
+      }
+    }
+  } catch { /* silent */ }
+
+  return { sizeMultiplier, confidenceBoost, reasons };
+}
+
+// ─── Calculate Real Today PnL from Trades ───
+async function getRealTodayPnl(userId: number): Promise<number> {
+  try {
+    const allTrades = await db.getUserTrades(userId, 5000);
+    const now = new Date();
+    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const todaySells = allTrades.filter(t => new Date(t.createdAt) >= todayStart && t.side === "sell");
+    return todaySells.reduce((sum, t) => sum + parseFloat(t.pnl ?? "0"), 0);
+  } catch { return 0; }
+}
+
+// ─── Grid Level Generator ───
+function generateGridLevels(currentPrice: number, numLevels: number, spreadPct: number): GridLevel[] {
+  const levels: GridLevel[] = [];
+  const step = currentPrice * spreadPct;
+  const halfLevels = Math.floor(numLevels / 2);
+  for (let i = -halfLevels; i <= halfLevels; i++) {
+    if (i === 0) continue;
+    levels.push({ price: currentPrice + step * i, side: i < 0 ? "Buy" : "Sell", filled: false });
   }
   return levels;
 }
 
-async function runGridStrategy(engine: EngineState, symbol: string, category: "spot" | "linear" = "spot", dailyProfitMode: "normal" | "cautious" | "stopped" = "normal") {
+// ═══════════════════════════════════════════════════════════════
+// ─── GRID STRATEGY v12.0 ───
+// ═══════════════════════════════════════════════════════════════
+async function runGridStrategy(engine: EngineState, symbol: string, category: "spot" | "linear" = "linear", dailyProfitMode: "normal" | "cautious" | "stopped" = "normal") {
   const ticker = await fetchTicker(engine.client, symbol, category);
   if (!ticker) return;
 
@@ -834,51 +421,37 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
   engine.lastPrices[symbol] = price;
   livePrices.set(symbol, ticker);
 
-  // ─── Trading Hours Filter (configurable, default: always trade crypto) ───
-  // Crypto markets are 24/7 but volume is highest during NY hours
-  // Only apply strict hours filter for non-crypto (commodities)
-  // Crypto markets are 24/7 — removed strict hours filter
-  // Grid operates at all hours, protection system handles risk
-
-  // ─── Volume Filter ───
   if (!hasAdequateVolume(symbol)) {
     console.log(`[Grid] ${symbol} SKIP — insufficient volume/liquidity`);
     return;
   }
 
-  // ─── Daily Profit Target Guard ───
-  // In "stopped" mode: skip new buys entirely (existing positions still close normally)
-  // In "cautious" mode: only buy if smart score >= 75 (exceptional opportunity)
   if (dailyProfitMode === "stopped") {
-    // Still allow sells/trailing stops to close existing positions
-    // But skip the entire buy logic below
+    // Still allow sells to close existing positions, but skip buy logic
   }
 
-  // ─── SMART ANALYSIS v6.0: Multi-indicator scoring + Market Regime ───
+  // ─── SMART ANALYSIS v12.0: Multi-indicator scoring + Market Regime ───
   let trendAllowsBuy = true;
   let trendLabel = "neutral";
   let smartScore: SignalScore | null = null;
   let marketRegime: MarketRegime = "ranging";
-  let dynamicTrailingPct = 0.005; // default 0.5%
+  let dynamicTrailingPct = 0.005;
   let positionSizeMultiplier = 1.0;
+
   try {
     const klines = await fetchKlines(engine.client, symbol, "15", 60, category);
     if (klines.closes.length >= 30) {
-      // Full smart analysis
       smartScore = calculateSignalScore(klines, price);
       marketRegime = smartScore.regime;
       dynamicTrailingPct = smartScore.suggestedTrailingPct / 100;
       positionSizeMultiplier = smartScore.suggestedSizePct;
 
-      // Loss cooldown: reduce size after consecutive losses
-      const cooldownMult = getLossCooldownMultiplier(symbol, "grid");
-      positionSizeMultiplier *= cooldownMult;
+      // Loss cooldown
+      positionSizeMultiplier *= getLossCooldownMultiplier(symbol, "grid");
 
-      // v11.2: RELAXED regime guards — only block on EXTREME bearish with HIGH confidence
-      // v11.2: Only block on EXTREME bearish with very high confidence
+      // Regime-based adjustments
       if (smartScore.regime === "strong_trend_down" && smartScore.confidence > 85) {
         trendLabel = "bearish-extreme";
-        // v11.2: Don't block buys — just reduce size via positionSizeMultiplier
         positionSizeMultiplier *= 0.5;
       } else if (smartScore.regime === "strong_trend_up") {
         trendLabel = "bullish-strong";
@@ -886,102 +459,82 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
         trendLabel = "bullish";
       } else if (smartScore.regime === "volatile") {
         trendLabel = "volatile";
-        // v11.2: Allow buys in volatile markets — more opportunities
+        positionSizeMultiplier *= 0.7;
       } else if (smartScore.regime === "trend_down") {
-        trendLabel = "bearish-mild"; // v11.2: don't block, just label
+        trendLabel = "bearish-mild";
       } else {
         trendLabel = "ranging";
-      }
-
-      // Regime-based spread adjustment
-      if (marketRegime === "volatile") {
-        // Wider spread in volatile markets
-        positionSizeMultiplier *= 0.7; // smaller positions
-      } else if (marketRegime === "ranging") {
-        // Tighter spread in ranging — more cycles
         positionSizeMultiplier *= 1.1;
       }
 
       // Support/Resistance awareness
       const sr = findSupportResistance(klines.highs, klines.lows, klines.closes, klines.volumes, price);
-      // If price is near strong resistance, reduce buy confidence
       if (sr.nearestResistance && (sr.nearestResistance - price) / price < 0.003) {
         if (smartScore.direction === "buy") positionSizeMultiplier *= 0.7;
       }
-      // If price is near strong support, boost buy confidence
       if (sr.nearestSupport && (price - sr.nearestSupport) / price < 0.003) {
         if (smartScore.direction === "buy") positionSizeMultiplier *= 1.2;
       }
 
-      console.log(`[Grid] ${symbol} SMART: score=${smartScore.confidence} dir=${smartScore.direction} regime=${marketRegime} size=${positionSizeMultiplier.toFixed(2)}x trailing=${(dynamicTrailingPct * 100).toFixed(2)}% reasons=${smartScore.reasons.length}`);
+      console.log(`[Grid] ${symbol} SMART: score=${smartScore.confidence} dir=${smartScore.direction} regime=${marketRegime} size=${positionSizeMultiplier.toFixed(2)}x trailing=${(dynamicTrailingPct * 100).toFixed(2)}%`);
     } else {
-      // v11.2: EMA fallback only labels, never blocks buys
-      const ema20 = calculateEMA(klines.closes, 20);
-      const ema50 = calculateEMA(klines.closes, Math.min(50, klines.closes.length));
-      if (ema20.length > 0 && ema50.length > 0) {
-        if (ema20[ema20.length - 1] < ema50[ema50.length - 1]) { trendLabel = "bearish"; }
-        else trendLabel = "bullish";
-      }
+      // Simple EMA calculation inline (smartAnalysis doesn't export calculateEMA)
+      const emaCalc = (data: number[], period: number) => {
+        if (data.length < period) return data.length > 0 ? data[data.length - 1] : 0;
+        const k = 2 / (period + 1);
+        let ema = data.slice(0, period).reduce((a, b) => a + b, 0) / period;
+        for (let i = period; i < data.length; i++) ema = data[i] * k + ema * (1 - k);
+        return ema;
+      };
+      const ema20 = emaCalc(klines.closes, 20);
+      const ema50 = emaCalc(klines.closes, Math.min(50, klines.closes.length));
+      trendLabel = ema20 < ema50 ? "bearish" : "bullish";
     }
   } catch { /* keep trendAllowsBuy = true on error */ }
 
-  // ─── MARKET INTELLIGENCE v7.0: Master Signal Integration ───
+  // ─── MASTER SIGNAL ───
   let masterSignal: MasterSignal | null = null;
   try {
-    // Fetch multi-timeframe klines for MTA
     const klines5m = await fetchKlines(engine.client, symbol, "5", 60, category);
     const klines15m_mta = await fetchKlines(engine.client, symbol, "15", 60, category);
     const klines1h = await fetchKlines(engine.client, symbol, "60", 60, category);
-    
-    // Get order book imbalance
     let orderBookData;
     try { orderBookData = await getOrderBookImbalance(engine.client, symbol, category); } catch { /* silent */ }
-    
-    // Get bot state for capital info
     const miState = await db.getOrCreateBotState(engine.userId);
     const miCapital = parseFloat(miState?.currentBalance ?? "5000");
     const miTodayPnl = parseFloat(miState?.todayPnl ?? "0");
-    
     masterSignal = aggregateMasterSignal({
-      symbol,
-      currentPrice: price,
-      klines5m,
-      klines15m: klines15m_mta,
-      klines1h,
+      symbol, currentPrice: price, klines5m, klines15m: klines15m_mta, klines1h,
       orderBookImbalance: orderBookData,
-      totalCapital: miCapital,
-      proposedAmount: miCapital * 0.05,
-      todayPnl: miTodayPnl,
-      currentBalance: miCapital,
-      strategy: "grid",
+      totalCapital: miCapital, proposedAmount: miCapital * 0.05,
+      todayPnl: miTodayPnl, currentBalance: miCapital, strategy: "grid",
     });
-    
-    // v11.2: RELAXED master signal — never block buys, just reduce size
     if (masterSignal.blocked && masterSignal.confidence > 80) {
       trendLabel = `BLOCKED: ${masterSignal.blockReason}`;
-      positionSizeMultiplier *= 0.3; // reduce size but don't block
+      positionSizeMultiplier *= 0.3;
     } else if (masterSignal.direction === "sell" && masterSignal.confidence > 70) {
-      trendLabel = `master-sell-${masterSignal.confidence}`;
-      positionSizeMultiplier *= 0.5; // reduce size but don't block
+      positionSizeMultiplier *= 0.5;
     }
-    
-    // Apply master sizing multiplier
     positionSizeMultiplier *= masterSignal.sizingMultiplier;
-    
-    // Anti-manipulation check
+
     const manipulation = detectManipulation(klines15m_mta);
     if (manipulation.isFakeWick) {
       console.log(`[Grid] ${symbol} MANIPULATION: ${manipulation.reason}`);
       positionSizeMultiplier *= 0.3;
     }
-    
-    console.log(`[Grid] ${symbol} MASTER: dir=${masterSignal.direction} conf=${masterSignal.confidence} sizing=${masterSignal.sizingMultiplier.toFixed(2)}x blocked=${masterSignal.blocked} reasons=${masterSignal.reasons.length}`);
+    console.log(`[Grid] ${symbol} MASTER: dir=${masterSignal.direction} conf=${masterSignal.confidence} sizing=${masterSignal.sizingMultiplier.toFixed(2)}x blocked=${masterSignal.blocked}`);
   } catch (e) {
     console.warn(`[Grid] ${symbol} Master signal error: ${(e as Error).message}`);
   }
-  
-  // v11.2: REMOVED legacy MTA fallback — was too conservative and blocking entries
-  // Master signal already handles multi-timeframe analysis
+
+  // ─── v12.0: AI Intelligence Layer ───
+  const state0 = await db.getOrCreateBotState(engine.userId);
+  const balance0 = parseFloat(state0?.currentBalance ?? "5000");
+  const aiMult = getAIMultipliers(symbol, "grid", smartScore?.confidence ?? 50, balance0 * 0.05, balance0);
+  positionSizeMultiplier *= aiMult.sizeMultiplier;
+  if (aiMult.reasons.length > 0) {
+    console.log(`[Grid] ${symbol} AI: ${aiMult.reasons.join(" | ")}`);
+  }
 
   // Read strategy config
   const strats = await db.getUserStrategies(engine.userId);
@@ -995,146 +548,95 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
   try {
     const klines = await fetchKlines(engine.client, symbol, "15", 30, category);
     if (klines.closes.length >= 10 && klines.highs.length >= 10) {
-      // Use ATR for more accurate volatility measurement
       const atrPct = calculateATRPercent(klines.highs, klines.lows, klines.closes);
-      // Scale spread: ATR 0.5% → base, ATR 2% → 2x base
       const volMultiplier = Math.max(1, Math.min(2.5, atrPct / 0.5));
       effectiveSpread = baseGridSpread * volMultiplier;
-      // v8.2: AI Trending Grid Adjustment — tighter spread + more levels in trending
       const trendAdj = getTrendingGridAdjustment(marketRegime);
       effectiveSpread *= trendAdj.spreadMultiplier;
       gridLevels = Math.round(gridLevels * trendAdj.levelsMultiplier);
-      if (trendAdj.spreadMultiplier !== 1.0) {
-        console.log(`[Grid] ${symbol} TRENDING ADJ: spread×${trendAdj.spreadMultiplier} levels×${trendAdj.levelsMultiplier} regime=${marketRegime}`);
-      }
-      // Additional ranging tightening for max cycles
       if (marketRegime === "ranging") effectiveSpread *= 0.65;
     }
   } catch { /* use base spread */ }
-
-  // Minimum profitable spread (lower = more cycles = more USDT gains)
-  const minProfitableSpread = 0.0015; // v10.4: 0.15% minimum — ultra-aggressive for fast cycles
-  effectiveSpread = Math.max(effectiveSpread, minProfitableSpread);
+  effectiveSpread = Math.max(effectiveSpread, 0.0015);
 
   // Initialize grid if not exists
   const isNewGrid = !engine.gridLevels[symbol] || engine.gridLevels[symbol].length === 0;
   if (isNewGrid) {
     engine.gridLevels[symbol] = generateGridLevels(price, gridLevels, effectiveSpread);
-    console.log(`[Grid] ${symbol} initialized ${engine.gridLevels[symbol].length} levels around ${price} (spread=${(effectiveSpread * 100).toFixed(2)}%, levels=${gridLevels}, trend=${trendLabel})`);
+    console.log(`[Grid] ${symbol} initialized ${engine.gridLevels[symbol].length} levels around ${price} (spread=${(effectiveSpread * 100).toFixed(2)}%)`);
   }
 
-  // ─── Smart Regeneration ───
+  // Smart Regeneration
   const levels = engine.gridLevels[symbol];
   const gridPrices = levels.map(l => l.price);
   const gridCentre = (Math.max(...gridPrices) + Math.min(...gridPrices)) / 2;
   const driftPct = Math.abs(price - gridCentre) / gridCentre;
-  const driftThreshold = effectiveSpread * 1.5;
-  if (driftPct > driftThreshold && !isNewGrid) {
+  if (driftPct > effectiveSpread * 1.5 && !isNewGrid) {
     engine.gridLevels[symbol] = generateGridLevels(price, gridLevels, effectiveSpread);
-    // IMPORTANT: Do NOT clear openBuyPositions on recentering!
-    // Clearing them causes the bot to lose track of real positions and sell at a loss.
-    // Open positions are managed by the protection system (trailing stop, stop-loss).
-    console.log(`[Grid] ${symbol} RECENTRED grid around ${price.toFixed(2)} (drift=${(driftPct * 100).toFixed(2)}%, spread=${(effectiveSpread * 100).toFixed(2)}%, trend=${trendLabel}, keeping ${(engine.openBuyPositions[symbol] ?? []).length} open positions)`);
+    console.log(`[Grid] ${symbol} RECENTRED grid around ${price.toFixed(2)} (drift=${(driftPct * 100).toFixed(2)}%, keeping ${(engine.openBuyPositions[symbol] ?? []).length} open positions)`);
   }
 
   let traded = false;
-
-  // Log grid status
-  const unfilledBuys = levels.filter(l => !l.filled && l.side === "Buy");
-  const unfilledSells = levels.filter(l => !l.filled && l.side === "Sell");
-  if (unfilledBuys.length > 0 || unfilledSells.length > 0) {
-    const nearestBuy = unfilledBuys.sort((a, b) => b.price - a.price)[0];
-    const nearestSell = unfilledSells.sort((a, b) => a.price - b.price)[0];
-    console.log(`[Grid] ${symbol} price=${price.toFixed(2)} nearestBuy=${nearestBuy?.price?.toFixed(2) ?? 'none'} nearestSell=${nearestSell?.price?.toFixed(2) ?? 'none'} unfilled=${unfilledBuys.length}B/${unfilledSells.length}S trend=${trendLabel}`);
-  }
-
   const openPositions = engine.openBuyPositions[symbol] ?? [];
 
   // ─── Protection System: Trailing Stop (profit only) + Time-Profit ───
-  // Philosophy: NEVER sell at a loss. Smart entries + patience = always win.
   const stratConfig = config ?? {};
-  // stopLossPct is IGNORED — no stop-loss philosophy: HOLD until profit
-  // const stopLossPct = (stratConfig.stopLossPct ?? 0) / 100;
-  // Dynamic trailing: use ATR-based trailing from smart analysis, fallback to config
   const configTrailingPct = (stratConfig.trailingStopPct ?? 0.5) / 100;
-  const trailingPct = dynamicTrailingPct > 0 ? dynamicTrailingPct : configTrailingPct; // ATR-based trailing
+  const trailingPct = dynamicTrailingPct > 0 ? dynamicTrailingPct : configTrailingPct;
   const trailingActivation = (stratConfig.trailingActivationPct ?? 0.5) / 100;
-  const maxHoldTimeMs = (stratConfig.maxHoldHours ?? 2) * 60 * 60 * 1000; // v11.3: 2 hours default (was 4) — faster capital rotation
-  const maxOpenPositions = stratConfig.maxOpenPositions ?? 15; // v11.3: increased from 5 to 15 — more positions = more capital deployed
-  // Minimum 0.5% net profit on ALL sells — NEVER sell below this threshold
-  const MIN_PROFIT_PCT = 0.001; // v11.0: BEAST MODE 0.1% minimum net profit — ultra-fast capital rotation for $300-$500/day
+  const maxHoldTimeMs = (stratConfig.maxHoldHours ?? 2) * 60 * 60 * 1000;
+  const maxOpenPositions = stratConfig.maxOpenPositions ?? 15;
   const positionsToSell: { pos: OpenBuyPosition; reason: string }[] = [];
 
   for (let i = openPositions.length - 1; i >= 0; i--) {
     const pos = openPositions[i];
-    const lossPct = (pos.buyPrice - price) / pos.buyPrice;
     const profitPct = (price - pos.buyPrice) / pos.buyPrice;
     const holdTimeMs = Date.now() - (pos.openedAt ?? Date.now());
 
-    // 1. NO STOP-LOSS — NUNCA vender a pérdida. HOLD hasta que recupere.
-    // La inteligencia del bot está en ENTRAR bien, no en cortar pérdidas.
-    if (profitPct < 0) {
-      // Log only every ~50 cycles to avoid spam
-      if (holdTimeMs > 3600000) { // Only log if held > 1h
-        console.log(`[Grid] ${symbol} HOLD — ${(lossPct * 100).toFixed(2)}% loss, held ${(holdTimeMs / 3600000).toFixed(1)}h, waiting for recovery`);
-      }
+    // NO STOP-LOSS — HOLD until profit
+    if (profitPct < 0 && holdTimeMs > 3600000) {
+      console.log(`[Grid] ${symbol} HOLD — ${((-profitPct) * 100).toFixed(2)}% loss, held ${(holdTimeMs / 3600000).toFixed(1)}h`);
     }
 
-    // 2. TIME-PROFIT: If held long AND net profit >= 0.5%, close to rotate capital
+    // TIME-PROFIT
     if (maxHoldTimeMs > 0 && holdTimeMs > maxHoldTimeMs && profitPct > 0) {
       const estGrossPnl = (price - pos.buyPrice) * parseFloat(pos.qty);
-      const estNetPnl = calcNetPnl(estGrossPnl, pos.tradeAmount, category, true, engine.exchange);
-      const minProfitForPos = pos.tradeAmount * MIN_PROFIT_PCT;
-      if (estNetPnl >= minProfitForPos) {
-        positionsToSell.push({ pos, reason: `TIME-PROFIT (held ${(holdTimeMs / 3600000).toFixed(1)}h, profit $${estNetPnl.toFixed(2)} >= ${(MIN_PROFIT_PCT * 100).toFixed(1)}%)` });
+      const estNetPnl = calcNetPnl(estGrossPnl, pos.tradeAmount, category, true, "bybit");
+      if (estNetPnl >= pos.tradeAmount * MIN_PROFIT_PCT) {
+        positionsToSell.push({ pos, reason: `TIME-PROFIT (held ${(holdTimeMs / 3600000).toFixed(1)}h, profit $${estNetPnl.toFixed(2)})` });
         openPositions.splice(i, 1);
         continue;
-      } else if (estNetPnl > 0) {
-        console.log(`[Grid] ${symbol} HOLD — time-profit $${estNetPnl.toFixed(2)} < min ${(MIN_PROFIT_PCT * 100).toFixed(1)}% ($${minProfitForPos.toFixed(2)}), waiting`);
       }
     }
 
-    // 3. TRAILING STOP: Lock in profits (only if net profit >= 0.5%)
-    if (!pos.highestPrice || price > pos.highestPrice) {
-      pos.highestPrice = price;
-    }
+    // TRAILING STOP
+    if (!pos.highestPrice || price > pos.highestPrice) pos.highestPrice = price;
     if (pos.highestPrice && pos.highestPrice > pos.buyPrice * (1 + trailingActivation)) {
       const dropFromHigh = (pos.highestPrice - price) / pos.highestPrice;
       if (dropFromHigh >= trailingPct) {
         const estGrossPnl = (price - pos.buyPrice) * parseFloat(pos.qty);
-        const estNetPnl = calcNetPnl(estGrossPnl, pos.tradeAmount, category, true, engine.exchange);
-        const minProfitForPos = pos.tradeAmount * MIN_PROFIT_PCT;
-        if (estNetPnl >= minProfitForPos) {
-          positionsToSell.push({ pos, reason: `TRAILING-STOP (high=${pos.highestPrice.toFixed(2)}, drop=${(dropFromHigh * 100).toFixed(2)}%, net=$${estNetPnl.toFixed(2)} >= ${(MIN_PROFIT_PCT * 100).toFixed(1)}%)` });
+        const estNetPnl = calcNetPnl(estGrossPnl, pos.tradeAmount, category, true, "bybit");
+        if (estNetPnl >= pos.tradeAmount * MIN_PROFIT_PCT) {
+          positionsToSell.push({ pos, reason: `TRAILING-STOP (high=${pos.highestPrice.toFixed(2)}, drop=${(dropFromHigh * 100).toFixed(2)}%, net=$${estNetPnl.toFixed(2)})` });
           openPositions.splice(i, 1);
           continue;
-        } else if (estNetPnl <= 0) {
-          console.log(`[Grid] ${symbol} BLOCK SELL — trailing triggered but net PnL $${estNetPnl.toFixed(2)} is NEGATIVE, holding`);
-        } else {
-          console.log(`[Grid] ${symbol} HOLD — trailing profit $${estNetPnl.toFixed(2)} < min ${(MIN_PROFIT_PCT * 100).toFixed(1)}% ($${minProfitForPos.toFixed(2)})`);
         }
       }
     }
   }
 
+  // Execute sells
   for (const { pos, reason } of positionsToSell) {
     const orderId = await placeOrder(engine, symbol, "Sell", pos.qty, category);
     if (!orderId && !engine.simulationMode) {
-      // Sell failed (likely insufficient balance) — remove phantom position from memory AND DB
       const idx = engine.openBuyPositions[symbol]?.findIndex(p => p.buyPrice === pos.buyPrice && p.qty === pos.qty);
-      if (idx !== undefined && idx >= 0) {
-        engine.openBuyPositions[symbol]!.splice(idx, 1);
-        console.log(`[Grid] Removed phantom position ${symbol} buyPrice=${pos.buyPrice} qty=${pos.qty} — sell failed, likely no balance`);
-      }
-      // Also delete from DB so it doesn't come back on restart
-      await db.deleteOpenPosition(engine.userId, symbol, pos.buyPrice, pos.qty, engine.exchange === "both" ? "bybit" : engine.exchange);
-      await db.deleteOpenPosition(engine.userId, symbol, pos.buyPrice, pos.qty, "kucoin");
+      if (idx !== undefined && idx >= 0) engine.openBuyPositions[symbol]!.splice(idx, 1);
+      await db.deleteOpenPosition(engine.userId, symbol, pos.buyPrice, pos.qty, "bybit");
       continue;
     }
     if (orderId) {
       const grossPnl = (price - pos.buyPrice) * parseFloat(pos.qty);
-      const pnl = calcNetPnl(grossPnl, pos.tradeAmount, category, true, engine.exchange);
-      // Track win/loss for cooldown system
+      const pnl = calcNetPnl(grossPnl, pos.tradeAmount, category, true, "bybit");
       recordTradeResult(symbol, "grid", pnl > 0);
 
       await db.insertTrade({
@@ -1157,35 +659,25 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
       if (updatedState) {
         await db.upsertDailyPnl(engine.userId, parseFloat(updatedState.totalPnl ?? "0"), parseFloat(updatedState.currentBalance ?? "5000"), updatedState.totalTrades ?? 0);
       }
-
-      // Track max drawdown
       if (pnl < 0) {
-        const state = await db.getOrCreateBotState(engine.userId);
-        const currentDrawdown = Math.abs(pnl);
-        const maxDrawdown = parseFloat(state?.maxDrawdown ?? "0");
-        if (currentDrawdown > maxDrawdown) {
-          await db.updateBotState(engine.userId, { maxDrawdown: currentDrawdown.toFixed(2) });
-        }
+        const ddState = await db.getOrCreateBotState(engine.userId);
+        const maxDrawdown = parseFloat(ddState?.maxDrawdown ?? "0");
+        if (Math.abs(pnl) > maxDrawdown) await db.updateBotState(engine.userId, { maxDrawdown: Math.abs(pnl).toFixed(2) });
       }
 
-      console.log(`[Grid] ${reason} ${symbol} @ ${price.toFixed(2)} buyPrice=${pos.buyPrice.toFixed(2)} high=${pos.highestPrice?.toFixed(2)} pnl=${pnl.toFixed(2)} order=${orderId}`);
+      console.log(`[Grid] ${reason} ${symbol} @ ${price.toFixed(2)} buyPrice=${pos.buyPrice.toFixed(2)} pnl=${pnl.toFixed(2)}`);
 
-      // AI + Optimizer feedback: record trade for learning
+      // AI feedback
       try {
         recordTradeForTuning("grid", pnl, (pnl / pos.tradeAmount) * 100);
         recordTradeResultOptimizer(pnl);
-        recordTradeForTiming(pnl); // v9.0: Market Timing learning
-        recordTradeForLearning({ strategy: "grid", symbol, entryScore: smartScore?.confidence ?? 50, entryRegime: "unknown", entrySession: "unknown", entryFearGreed: 50, entryPatterns: [], pnlPercent: (pnl / pos.tradeAmount) * 100, holdTimeMinutes: 0, timestamp: Date.now() });
+        recordTradeForTiming(pnl);
+        recordTradeForLearning({ strategy: "grid", symbol, entryScore: smartScore?.confidence ?? 50, entryRegime: marketRegime, entrySession: getCurrentSession().session, entryFearGreed: 50, entryPatterns: smartScore?.reasons ?? [], pnlPercent: (pnl / pos.tradeAmount) * 100, holdTimeMinutes: (Date.now() - pos.openedAt) / 60000, timestamp: Date.now() });
       } catch { /* silent */ }
 
-      // Telegram notification — only send for profitable exits
       if (pnl > 0) {
         await sendTelegramNotification(engine,
-          `✅ <b>PHANTOM Grid Profit</b>\n` +
-          `Par: ${symbol}\n` +
-          `Compra: $${pos.buyPrice.toFixed(2)}\n` +
-          `Venta: $${price.toFixed(2)} (${reason.split(" ")[0]})\n` +
-          `Ganancia: <b>$${pnl.toFixed(2)}</b>`
+          `✅ <b>PHANTOM Grid Profit</b>\nPar: ${symbol}\nCompra: $${pos.buyPrice.toFixed(2)}\nVenta: $${price.toFixed(2)} (${reason.split(" ")[0]})\nGanancia: <b>$${pnl.toFixed(2)}</b>`
         );
       }
       traded = true;
@@ -1203,10 +695,9 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
       const qty = (tradeAmount / price).toFixed(6);
       const orderId = await placeOrder(engine, symbol, "Buy", qty, category);
       if (orderId) {
-        level.filled = true;
-        level.orderId = orderId;
+        level.filled = true; level.orderId = orderId;
         const grossPnl = (Math.random() * 0.008 - 0.002) * tradeAmount;
-        const pnl = calcNetPnl(grossPnl, tradeAmount, category, false, engine.exchange);
+        const pnl = calcNetPnl(grossPnl, tradeAmount, category, false, "bybit");
         await db.insertTrade({ userId: engine.userId, symbol, side: "buy", price: level.price.toFixed(2), qty, pnl: pnl.toFixed(2), strategy: "grid", orderId, simulated: true });
         const cs = await db.getOrCreateBotState(engine.userId);
         if (cs) {
@@ -1219,7 +710,6 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
           });
         }
         if (strat) await db.updateStrategyStats(strat.id, pnl, pnl > 0);
-        console.log(`[Grid] Initial BUY ${symbol} @ ${level.price.toFixed(2)} qty=${qty} pnl=${pnl.toFixed(2)}`);
         traded = true;
       }
     }
@@ -1228,150 +718,63 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
   // ─── Main Grid Loop ───
   for (const level of levels) {
     if (level.filled) continue;
-
     const tolerance = engine.simulationMode ? 0.0005 : 0.0002;
-    const shouldFill = level.side === "Buy"
-      ? price <= level.price * (1 + tolerance)
-      : price >= level.price * (1 - tolerance);
+    const shouldFill = level.side === "Buy" ? price <= level.price * (1 + tolerance) : price >= level.price * (1 - tolerance);
 
     if (shouldFill) {
-      // ─── Daily Profit Target Guard for BUY ───
-      if (level.side === "Buy" && dailyProfitMode === "stopped") {
-        console.log(`[Grid] SKIP BUY ${symbol} @ ${level.price.toFixed(2)} — DAILY TARGET 5%+ HIT, no new trades`);
-        continue;
-      }
-      if (level.side === "Buy" && dailyProfitMode === "cautious") {
-        // Only allow exceptional opportunities (score >= 75)
-        if (!smartScore || smartScore.confidence < 75 || smartScore.direction !== "buy") {
-          console.log(`[Grid] SKIP BUY ${symbol} @ ${level.price.toFixed(2)} — DAILY 2%+ mode, score ${smartScore?.confidence ?? 0} < 75`);
-          continue;
-        }
-        console.log(`[Grid] 💡 EXCEPTIONAL BUY ${symbol} @ ${level.price.toFixed(2)} — score ${smartScore.confidence} >= 75 despite daily target`);
-      }
+      if (level.side === "Buy" && dailyProfitMode === "stopped") continue;
+      if (level.side === "Buy" && dailyProfitMode === "cautious" && (!smartScore || smartScore.confidence < 75 || smartScore.direction !== "buy")) continue;
+      if (level.side === "Buy" && !trendAllowsBuy) continue;
+      if (level.side === "Buy" && smartScore && smartScore.direction === "sell" && smartScore.confidence >= 70) continue;
+      if (level.side === "Buy" && (engine.openBuyPositions[symbol]?.length ?? 0) >= maxOpenPositions) continue;
 
-      // ─── Smart Score guard: skip BUY if analysis says sell or low confidence ───
-      if (level.side === "Buy" && !trendAllowsBuy) {
-        console.log(`[Grid] SKIP BUY ${symbol} @ ${level.price.toFixed(2)} — ${trendLabel} trend (regime=${marketRegime})`);
-        continue;
-      }
-      // v11.2: RELAXED smart score guards — only block on very strong sell signals
-      if (level.side === "Buy" && smartScore) {
-        // Only block if analysis says STRONG sell (confidence >= 70)
-        if (smartScore.direction === "sell" && smartScore.confidence >= 70) {
-          console.log(`[Grid] SKIP BUY ${symbol} @ ${level.price.toFixed(2)} — STRONG sell signal conf=${smartScore.confidence}`);
-          continue;
-        }
-      }
-
-      // ─── Max open positions guard: don't accumulate too many buys ───
-      if (level.side === "Buy" && (engine.openBuyPositions[symbol]?.length ?? 0) >= maxOpenPositions) {
-        console.log(`[Grid] SKIP BUY ${symbol} @ ${level.price.toFixed(2)} — max open positions (${maxOpenPositions})`);
-        continue;
-      }
-
-      // ─── Profitability guard ───
+      // Profitability guard
       if (level.side === "Buy") {
-        const feeRoundTrip = 0.002;
-        const requiredSellPrice = level.price * (1 + feeRoundTrip + 0.001);
-        const hasProfit = levels.some(l => l.side === "Sell" && !l.filled && l.price >= requiredSellPrice);
-        if (!hasProfit) {
-          console.log(`[Grid] SKIP BUY ${symbol} @ ${level.price.toFixed(2)} — no profitable sell level`);
-          continue;
-        }
+        const requiredSellPrice = level.price * (1 + 0.002 + 0.001);
+        if (!levels.some(l => l.side === "Sell" && !l.filled && l.price >= requiredSellPrice)) continue;
       }
 
-      // ─── Smart Sizing: confidence-weighted position sizing ───
+      // Smart Sizing with AI
       const allocation = strat?.allocationPct ?? 50;
       const state = await db.getOrCreateBotState(engine.userId);
       const balance = parseFloat(state?.currentBalance ?? "5000");
       const baseTradeAmount = (balance * allocation / 100) / (levels.length / 2);
-      // Apply smart multiplier + strength boost: strong signals get bigger positions
-      const gridBoost = (smartScore?.confidence ?? 50) > 70 ? 2.0 : (smartScore?.confidence ?? 50) > 50 ? 1.5 : 1.2; // v10.8: aggressive grid for $300/day
-      // v10.9: Apply optimizer adaptive sizing (win streak → bigger, loss streak → smaller)
+      const gridBoost = (smartScore?.confidence ?? 50) > 70 ? 2.0 : (smartScore?.confidence ?? 50) > 50 ? 1.5 : 1.2;
       const adaptiveSizing = getAdaptiveState();
-      const adaptiveMultiplier = adaptiveSizing.aggressiveness;
-      const tradeAmount = baseTradeAmount * positionSizeMultiplier * gridBoost * adaptiveMultiplier;
+      const tradeAmount = baseTradeAmount * positionSizeMultiplier * gridBoost * adaptiveSizing.aggressiveness;
       const qty = (tradeAmount / price).toFixed(6);
-
-      // ─── v9.0: USDT Liquidity Guard for spot buys ───
-      if (level.side === "Buy" && category === "spot") {
-        const hasLiquidity = await hasUsdtLiquidity(engine, tradeAmount, `grid-${symbol}`);
-        if (!hasLiquidity) {
-          console.log(`[Grid] SKIP BUY ${symbol} @ ${level.price.toFixed(2)} — USDT reserve too low`);
-          continue;
-        }
-        // v9.0: Big opportunity → suggest futures instead of spot
-        if (shouldUseFuturesForOpportunity(smartScore?.confidence ?? 0, category)) {
-          console.log(`[Grid] ${symbol} HIGH CONF ${smartScore?.confidence}% — futures preferred over spot (USDT stays liquid)`);
-        }
-      }
 
       const orderId = await placeOrder(engine, symbol, level.side, qty, category);
       if (orderId) {
-        level.filled = true;
-        level.orderId = orderId;
-        level.filledPrice = price;
-        level.qty = qty;
-
+        level.filled = true; level.orderId = orderId; level.filledPrice = price; level.qty = qty;
         let pnl = 0;
 
         if (level.side === "Buy") {
-          // BUY: $0 PnL, track open position with trailing stop
           if (!engine.openBuyPositions[symbol]) engine.openBuyPositions[symbol] = [];
           engine.openBuyPositions[symbol].push({
             symbol, buyPrice: price, qty, tradeAmount, category,
-            gridLevelPrice: level.price, highestPrice: price,
-            openedAt: Date.now(),
+            gridLevelPrice: level.price, highestPrice: price, openedAt: Date.now(),
           });
-          pnl = 0;
-          console.log(`[Grid] BUY ${symbol} @ ${price.toFixed(2)} qty=${qty} pnl=$0.00 (trailing stop active) order=${orderId}`);
+          console.log(`[Grid] BUY ${symbol} @ ${price.toFixed(2)} qty=${qty} order=${orderId}`);
         } else {
-          // SELL: pair with oldest open buy (FIFO)
           const openPos = engine.openBuyPositions[symbol] ?? [];
-          const pairedBuy = openPos[0]; // peek, don't shift yet
+          const pairedBuy = openPos[0];
           if (pairedBuy) {
-            const sellQty = parseFloat(qty);
-            const grossPnl = (price - pairedBuy.buyPrice) * sellQty;
-            pnl = calcNetPnl(grossPnl, pairedBuy.tradeAmount, category, true, engine.exchange);
-            // Minimum 0.5% net profit required on ALL sells
-            const minProfitForSell = pairedBuy.tradeAmount * MIN_PROFIT_PCT;
-            if (pnl < minProfitForSell) {
-              console.log(`[Grid] HOLD ${symbol} — grid sell net $${pnl.toFixed(2)} < min ${(MIN_PROFIT_PCT * 100).toFixed(1)}% ($${minProfitForSell.toFixed(2)}), waiting`);
-              level.filled = false;
-              continue;
-            }
-            openPos.shift(); // now actually remove from queue
-            console.log(`[Grid] SELL ${symbol} @ ${price.toFixed(2)} buyPrice=${pairedBuy.buyPrice.toFixed(2)} net=${pnl.toFixed(2)} order=${orderId}`);
-
-            // Telegram notification
-            if (pnl > 0) {
-              await sendTelegramNotification(engine,
-                `✅ <b>PHANTOM Grid Profit</b>\n` +
-                `Par: ${symbol}\nCompra: $${pairedBuy.buyPrice.toFixed(2)}\nVenta: $${price.toFixed(2)}\n` +
-                `Ganancia: <b>$${pnl.toFixed(2)}</b>`
-              );
-            }
+            const grossPnl = (price - pairedBuy.buyPrice) * parseFloat(qty);
+            pnl = calcNetPnl(grossPnl, pairedBuy.tradeAmount, category, true, "bybit");
+            if (pnl < pairedBuy.tradeAmount * MIN_PROFIT_PCT) { level.filled = false; continue; }
+            openPos.shift();
           } else {
-            // No paired buy — estimate PnL from grid level price
             const grossPnl = (price - level.price) * parseFloat(qty);
-            pnl = calcNetPnl(grossPnl, tradeAmount, category, true, engine.exchange);
-            // Minimum 0.5% net profit required
-            const minProfitNoPair = tradeAmount * MIN_PROFIT_PCT;
-            if (pnl < minProfitNoPair) {
-              console.log(`[Grid] HOLD ${symbol} — no-paired sell net $${pnl.toFixed(2)} < min ${(MIN_PROFIT_PCT * 100).toFixed(1)}% ($${minProfitNoPair.toFixed(2)}), skipping`);
-              level.filled = false;
-              continue;
-            }
-            console.log(`[Grid] SELL ${symbol} @ ${price.toFixed(2)} (no paired buy) net=${pnl.toFixed(2)} order=${orderId}`);
+            pnl = calcNetPnl(grossPnl, tradeAmount, category, true, "bybit");
+            if (pnl < tradeAmount * MIN_PROFIT_PCT) { level.filled = false; continue; }
+          }
+          if (pnl > 0) {
+            await sendTelegramNotification(engine, `✅ <b>PHANTOM Grid Profit</b>\nPar: ${symbol}\nVenta: $${price.toFixed(2)}\nGanancia: <b>$${pnl.toFixed(2)}</b>`);
           }
         }
 
-        await db.insertTrade({
-          userId: engine.userId, symbol, side: level.side.toLowerCase(),
-          price: price.toString(), qty, pnl: pnl.toFixed(2),
-          strategy: "grid", orderId, simulated: engine.simulationMode,
-        });
-
+        await db.insertTrade({ userId: engine.userId, symbol, side: level.side.toLowerCase() as any, price: price.toString(), qty, pnl: pnl.toFixed(2), strategy: "grid", orderId, simulated: engine.simulationMode });
         const currentState = await db.getOrCreateBotState(engine.userId);
         if (currentState) {
           await db.updateBotState(engine.userId, {
@@ -1383,101 +786,58 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
           });
         }
         if (strat) await db.updateStrategyStats(strat.id, pnl, pnl > 0);
-        const updatedState = await db.getOrCreateBotState(engine.userId);
-        if (updatedState) {
-          await db.upsertDailyPnl(engine.userId, parseFloat(updatedState.totalPnl ?? "0"), parseFloat(updatedState.currentBalance ?? "5000"), updatedState.totalTrades ?? 0);
-        }
-
-        // AI + Optimizer feedback for grid level trades
         if (level.side === "Sell" && pnl !== 0) {
           try {
             recordTradeForTuning("grid", pnl, (pnl / tradeAmount) * 100);
             recordTradeResultOptimizer(pnl);
-            recordTradeForLearning({ strategy: "grid", symbol, entryScore: smartScore?.confidence ?? 50, entryRegime: "unknown", entrySession: "unknown", entryFearGreed: 50, entryPatterns: [], pnlPercent: (pnl / tradeAmount) * 100, holdTimeMinutes: 0, timestamp: Date.now() });
+            recordTradeForLearning({ strategy: "grid", symbol, entryScore: smartScore?.confidence ?? 50, entryRegime: marketRegime, entrySession: getCurrentSession().session, entryFearGreed: 50, entryPatterns: [], pnlPercent: (pnl / tradeAmount) * 100, holdTimeMinutes: 0, timestamp: Date.now() });
           } catch { /* silent */ }
         }
-
         traded = true;
       }
     }
   }
 
-  // ─── DCA: if price dropped significantly and trend is turning, accumulate more ───
-  const dcaThreshold = 0.02; // 2% below average entry
-  if (!engine.dcaPositions[symbol]) {
-    engine.dcaPositions[symbol] = { avgPrice: 0, totalQty: 0, totalCost: 0, entries: 0 };
-  }
+  // ─── DCA ───
+  const dcaThreshold = 0.02;
+  if (!engine.dcaPositions[symbol]) engine.dcaPositions[symbol] = { avgPrice: 0, totalQty: 0, totalCost: 0, entries: 0 };
   const dca = engine.dcaPositions[symbol];
-  if (dca.entries > 0 && price < dca.avgPrice * (1 - dcaThreshold) && trendLabel !== "bearish" && trendLabel !== "bearish-mtf") {
-    // DCA: buy more to lower average
+  if (dca.entries > 0 && price < dca.avgPrice * (1 - dcaThreshold) && trendLabel !== "bearish") {
     const allocation = strat?.allocationPct ?? 50;
     const state = await db.getOrCreateBotState(engine.userId);
     const balance = parseFloat(state?.currentBalance ?? "5000");
-    const dcaAmount = (balance * allocation / 100) * 0.05; // 5% of allocation per DCA
+    const dcaAmount = (balance * allocation / 100) * 0.05;
     const dcaQty = (dcaAmount / price).toFixed(6);
-    const maxDcaEntries = 5;
-
-    if (dca.entries < maxDcaEntries) {
-      // v9.0: USDT Liquidity Guard for DCA buys
-      if (category === "spot") {
-        const dcaLiq = await hasUsdtLiquidity(engine, dcaAmount, `dca-${symbol}`);
-        if (!dcaLiq) {
-          console.log(`[DCA] SKIP ${symbol} — USDT reserve too low for DCA`);
-          return;
-        }
-      }
+    if (dca.entries < 5) {
       const orderId = await placeOrder(engine, symbol, "Buy", dcaQty, category);
       if (orderId) {
-        dca.totalCost += dcaAmount;
-        dca.totalQty += parseFloat(dcaQty);
-        dca.entries += 1;
+        dca.totalCost += dcaAmount; dca.totalQty += parseFloat(dcaQty); dca.entries += 1;
         dca.avgPrice = dca.totalCost / dca.totalQty;
-
-        await db.insertTrade({
-          userId: engine.userId, symbol, side: "buy", price: price.toString(),
-          qty: dcaQty, pnl: "0.00", strategy: "grid", orderId, simulated: engine.simulationMode,
-        });
-        console.log(`[Grid] DCA BUY ${symbol} @ ${price.toFixed(2)} qty=${dcaQty} avgPrice=${dca.avgPrice.toFixed(2)} entries=${dca.entries}/${maxDcaEntries}`);
-
-        // Track as open position for trailing sell
+        await db.insertTrade({ userId: engine.userId, symbol, side: "buy", price: price.toString(), qty: dcaQty, pnl: "0.00", strategy: "grid", orderId, simulated: engine.simulationMode });
         if (!engine.openBuyPositions[symbol]) engine.openBuyPositions[symbol] = [];
-        engine.openBuyPositions[symbol].push({
-          symbol, buyPrice: price, qty: dcaQty, tradeAmount: dcaAmount,
-          category, gridLevelPrice: price, highestPrice: price,
-          openedAt: Date.now(),
-        });
+        engine.openBuyPositions[symbol].push({ symbol, buyPrice: price, qty: dcaQty, tradeAmount: dcaAmount, category, gridLevelPrice: price, highestPrice: price, openedAt: Date.now() });
+        console.log(`[Grid] DCA BUY ${symbol} @ ${price.toFixed(2)} entries=${dca.entries}/5`);
       }
     }
   }
-  // Update DCA tracking from grid buys
   if (traded && openPositions.length > 0) {
     const lastBuy = openPositions[openPositions.length - 1];
-    if (lastBuy) {
-      dca.totalCost += lastBuy.tradeAmount;
-      dca.totalQty += parseFloat(lastBuy.qty);
-      dca.entries = Math.max(dca.entries, 1);
-      dca.avgPrice = dca.totalCost / dca.totalQty;
-    }
+    if (lastBuy) { dca.totalCost += lastBuy.tradeAmount; dca.totalQty += parseFloat(lastBuy.qty); dca.entries = Math.max(dca.entries, 1); dca.avgPrice = dca.totalCost / dca.totalQty; }
   }
-  // DCA sell: if price recovered above average + profit margin
-  if (dca.entries > 0 && price > dca.avgPrice * 1.005) {
-    // Reset DCA tracking (positions will be sold by trailing stop or grid sell)
-    dca.entries = 0;
-    dca.totalCost = 0;
-    dca.totalQty = 0;
-    dca.avgPrice = 0;
-  }
+  if (dca.entries > 0 && price > dca.avgPrice * 1.005) { dca.entries = 0; dca.totalCost = 0; dca.totalQty = 0; dca.avgPrice = 0; }
 
   // Regenerate grid if >60% filled
   const filledCount = levels.filter(l => l.filled).length;
   if (filledCount > levels.length * 0.6) {
     engine.gridLevels[symbol] = generateGridLevels(price, gridLevels, effectiveSpread);
     engine.openBuyPositions[symbol] = [];
-    console.log(`[Grid] ${symbol} regenerated grid (>60% filled) around ${price.toFixed(2)} (spread=${(effectiveSpread * 100).toFixed(2)}%)`);
+    console.log(`[Grid] ${symbol} regenerated grid (>60% filled)`);
   }
 }
 
-// ─── Scalping Strategy ───
+// ═══════════════════════════════════════════════════════════════
+// ─── SCALPING STRATEGY v12.0 ───
+// ═══════════════════════════════════════════════════════════════
 async function runScalpingStrategy(engine: EngineState, symbol: string, category: "spot" | "linear" = "linear", dailyProfitMode: "normal" | "cautious" | "stopped" = "normal") {
   const ticker = await fetchTicker(engine.client, symbol, category);
   if (!ticker) return;
@@ -1486,1383 +846,1231 @@ async function runScalpingStrategy(engine: EngineState, symbol: string, category
   engine.lastPrices[symbol] = price;
   livePrices.set(symbol, ticker);
 
-  // Volume filter
-  if (!hasAdequateVolume(symbol)) {
-    console.log(`[Scalp] ${symbol} SKIP — insufficient volume`);
-    return;
-  }
+  if (!hasAdequateVolume(symbol)) return;
 
-  // ─── SMART ANALYSIS v6.0 + MARKET INTELLIGENCE v7.0 + PROFIT MAXIMIZER v9.0 for Scalping ───
-  const klines = await fetchKlines(engine.client, symbol, "15", 50, category);
-  if (klines.closes.length < 26) return;
+  // ─── SMART ANALYSIS ───
+  let smartScore: SignalScore | null = null;
+  let marketRegime: MarketRegime = "ranging";
+  let positionSizeMultiplier = 1.0;
 
-  // Run full smart analysis
-  const smartScore = calculateSignalScore(klines, price);
-  const scalpCooldown = getLossCooldownMultiplier(symbol, "scalping");
+  try {
+    const klines = await fetchKlines(engine.client, symbol, "5", 60, category);
+    if (klines.closes.length >= 30) {
+      smartScore = calculateSignalScore(klines, price);
+      marketRegime = smartScore.regime;
+      positionSizeMultiplier = smartScore.suggestedSizePct;
+      positionSizeMultiplier *= getLossCooldownMultiplier(symbol, "scalping");
 
-  // ─── v9.0: Profit Maximizer Signals ───
-  const marketTiming = getMarketTimingSignal();
-  const volumeProfile = analyzeVolumeProfile(klines, price);
-  const breakoutSig = detectBreakoutSignal(klines, price);
-  const meanRevSig = detectMeanReversionPM(klines, price);
+      // Regime adjustments
+      if (smartScore.regime === "strong_trend_down") positionSizeMultiplier *= 0.4;
+      else if (smartScore.regime === "volatile") positionSizeMultiplier *= 0.6;
+      else if (smartScore.regime === "ranging") positionSizeMultiplier *= 1.2;
+    }
+  } catch { /* keep defaults */ }
 
-  // Volume Profile: prefer trading at high-volume zones (POC)
-  if (!volumeProfile.isHighVolumeZone && !breakoutSig.detected && !meanRevSig.detected) {
-    console.log(`[Scalp] ${symbol} LOW VOLUME ZONE: ${volumeProfile.reason} — reducing confidence`);
-  }
-
-  // Market Timing: adjust sizing based on historical profitability of this hour/day
-  const timingMultiplier = marketTiming.sizingMultiplier;
-  if (timingMultiplier < 0.7) {
-    console.log(`[Scalp] ${symbol} BAD TIMING: ${marketTiming.reason} — sizing ${timingMultiplier.toFixed(2)}x`);
-  }
-
-  // Breakout Hunter: if breakout detected, boost confidence
-  let breakoutBoost = 0;
-  if (breakoutSig.detected && breakoutSig.confidence > 60) {
-    breakoutBoost = Math.round(breakoutSig.confidence * 0.3);
-    console.log(`[Scalp] ${symbol} BREAKOUT: ${breakoutSig.reason} — boost +${breakoutBoost}`);
-  }
-
-  // Mean Reversion: if extreme oversold, add confidence
-  let meanRevBoost = 0;
-  if (meanRevSig.detected && meanRevSig.direction === "long" && meanRevSig.confidence > 50) {
-    meanRevBoost = Math.round(meanRevSig.confidence * 0.25);
-    console.log(`[Scalp] ${symbol} MEAN REVERSION: ${meanRevSig.reason} — boost +${meanRevBoost}`);
-  }
-
-  // ─── MASTER SIGNAL for Scalping ───
-  let scalpMaster: MasterSignal | null = null;
+  // ─── MASTER SIGNAL ───
+  let masterSignal: MasterSignal | null = null;
   try {
     const klines5m = await fetchKlines(engine.client, symbol, "5", 60, category);
+    const klines15m = await fetchKlines(engine.client, symbol, "15", 60, category);
     const klines1h = await fetchKlines(engine.client, symbol, "60", 60, category);
     let orderBookData;
     try { orderBookData = await getOrderBookImbalance(engine.client, symbol, category); } catch { /* silent */ }
     const miState = await db.getOrCreateBotState(engine.userId);
     const miCapital = parseFloat(miState?.currentBalance ?? "5000");
-    const miTodayPnl = parseFloat(miState?.todayPnl ?? "0");
-    scalpMaster = aggregateMasterSignal({
-      symbol, currentPrice: price, klines5m, klines15m: klines, klines1h,
+    masterSignal = aggregateMasterSignal({
+      symbol, currentPrice: price, klines5m, klines15m, klines1h,
       orderBookImbalance: orderBookData,
       totalCapital: miCapital, proposedAmount: miCapital * 0.03,
-      todayPnl: miTodayPnl, currentBalance: miCapital, strategy: "scalping",
+      todayPnl: parseFloat(miState?.todayPnl ?? "0"), currentBalance: miCapital, strategy: "scalping",
     });
-  } catch { /* use smartScore only */ }
+    if (masterSignal.blocked) positionSizeMultiplier *= 0.2;
+    else if (masterSignal.direction === "sell" && masterSignal.confidence > 70) positionSizeMultiplier *= 0.4;
+    positionSizeMultiplier *= masterSignal.sizingMultiplier;
+  } catch { /* silent */ }
 
-  let signal: "Buy" | "Sell" | null = null;
-  const reasons = smartScore.reasons;
+  // ─── v12.0: AI Intelligence Layer ───
+  const state0 = await db.getOrCreateBotState(engine.userId);
+  const balance0 = parseFloat(state0?.currentBalance ?? "5000");
+  const aiMult = getAIMultipliers(symbol, "scalping", smartScore?.confidence ?? 50, balance0 * 0.03, balance0);
+  positionSizeMultiplier *= aiMult.sizeMultiplier;
+  if (aiMult.reasons.length > 0) {
+    console.log(`[Scalp] ${symbol} AI: ${aiMult.reasons.join(" | ")}`);
+  }
 
-  // Use master signal if available, fallback to smart score
-  const effectiveConfidence = scalpMaster ? scalpMaster.confidence : smartScore.confidence;
-  const effectiveDirection = scalpMaster ? scalpMaster.direction : smartScore.direction;
-  // v11.2: Only block scalp on very high confidence master signal (>80)
-  const isBlocked = (scalpMaster?.blocked ?? false) && (scalpMaster?.confidence ?? 0) > 80;
+  // ─── ProfitMaximizer signals ───
+  let breakoutSignal: any = null;
+  let meanRevSignal: any = null;
+  try {
+    const klines5m = await fetchKlines(engine.client, symbol, "5", 60, category);
+    breakoutSignal = detectBreakoutSignal(klines5m, price);
+    meanRevSignal = detectMeanReversionPM(klines5m, price);
+  } catch { /* silent */ }
 
-  // ─── v8.2: Nocturnal Mode — lower thresholds during 2am-6am UTC ───
+  // ─── Nocturnal Mode ───
   const nocturnal = getNocturnalMultiplier();
-  // v9.1.1: XAU gets lower threshold (20) to trade more frequently
-  // v11.4: Smarter confidence thresholds — only enter trades with good probability
-  const baseMinConfidence = symbol === "XAUUSDT" ? 15 : 20; // v11.4: XAU 15, others 20 (balanced)
-  const minConfidence = Math.round(baseMinConfidence * (1 - nocturnal.confidenceReduction));
-  if (nocturnal.confidenceReduction > 0) {
-    console.log(`[Scalp] ${symbol} NOCTURNAL MODE: minConfidence reduced ${baseMinConfidence} → ${minConfidence}`);
-  }
-  if (!isBlocked && effectiveDirection === "buy" && effectiveConfidence >= minConfidence) {
-    signal = "Buy";
-  } else if (effectiveDirection === "sell" && effectiveConfidence >= minConfidence) {
-    signal = "Sell";
-  }
-  // v11.4: REMOVED neutral forced buy — only enter when IA has a clear direction
-  // In simulation, be more lenient
-  if (engine.simulationMode && !signal && effectiveConfidence >= 15) {
-    signal = effectiveDirection === "buy" ? "Buy" : effectiveDirection === "sell" ? "Sell" : null;
-  }
+  positionSizeMultiplier *= nocturnal.sizeMultiplier;
 
-  console.log(`[Scalp] ${symbol} SMART+MASTER: price=${price.toFixed(2)} score=${effectiveConfidence} dir=${effectiveDirection} regime=${smartScore.regime} signal=${signal ?? 'none'} blocked=${isBlocked} reasons=${reasons.length} cooldown=${scalpCooldown.toFixed(1)}x dailyMode=${dailyProfitMode}`);
+  // ─── Scalp Sell Logic ───
+  const positions = engine.scalpPositions[symbol] ?? [];
+  const strats = await db.getUserStrategies(engine.userId);
+  const strat = strats.find(s => s.symbol === symbol && s.strategyType === "scalping");
+  const config = strat?.config as any;
+  const minProfitPct = (config?.minProfitPct ?? 0.2) / 100;
+  const trailingPct = (config?.trailingStopPct ?? 0.3) / 100;
+  const trailingActivation = (config?.trailingActivationPct ?? 0.3) / 100;
+  const maxHoldMs = (config?.maxHoldMinutes ?? 30) * 60 * 1000;
+  const maxPositions = symbol === "XAUUSDT" ? 10 : 6;
 
-  // ─── Daily Profit Target Guard for Scalping ───
-  if (signal === "Buy") {
-    if (dailyProfitMode === "stopped") {
-      console.log(`[Scalp] SKIP BUY ${symbol} — DAILY TARGET 5%+ HIT, no new trades`);
-      signal = null;
-    } else if (dailyProfitMode === "cautious" && smartScore.confidence < 75) {
-      console.log(`[Scalp] SKIP BUY ${symbol} — DAILY 2%+ mode, score ${smartScore.confidence} < 75`);
-      signal = null;
-    } else if (dailyProfitMode === "cautious" && smartScore.confidence >= 75) {
-      console.log(`[Scalp] 💡 EXCEPTIONAL BUY ${symbol} — score ${smartScore.confidence} >= 75 despite daily target`);
+  for (let i = positions.length - 1; i >= 0; i--) {
+    const pos = positions[i];
+    const profitPct = (price - pos.buyPrice) / pos.buyPrice;
+    const holdMs = Date.now() - pos.openedAt;
+
+    // NO STOP-LOSS — HOLD until profit (philosophy: never sell at loss)
+    if (profitPct < 0) {
+      if (holdMs > 1800000) {
+        console.log(`[Scalp] ${symbol} HOLD — ${((-profitPct) * 100).toFixed(2)}% loss, held ${(holdMs / 60000).toFixed(0)}m`);
+      }
+      continue;
     }
-  }
-  // Sells always allowed (closing existing positions)
 
-  if (signal) {
-    const strats = await db.getUserStrategies(engine.userId);
-    const strat = strats.find(s => s.symbol === symbol && s.strategyType === "scalping") ?? strats.find(s => s.symbol === symbol);
-    const allocation = strat?.allocationPct ?? 30;
-    const state = await db.getOrCreateBotState(engine.userId);
-    const balance = parseFloat(state?.currentBalance ?? "5000");
-    // Smart sizing: confidence-weighted + cooldown + BOOST + master signal multiplier + XAU boost + nocturnal
-    const baseAmount = balance * allocation / 100; // v10.1: deploy 100% of allocation
-    const scalpBoost = effectiveConfidence > 75 ? 3.5 : effectiveConfidence > 55 ? 2.5 : 1.8; // v11.0: BEAST MODE — ultra-aggressive sizing for $300-$500/day
-    const masterSizing = scalpMaster?.sizingMultiplier ?? 1.0;
-    // v9.1.1: XAU BOOST — always active for XAUUSDT, minimum 2.0x sizing
-    let xauBoost = 1.0;
-    if (symbol === "XAUUSDT") {
-      try {
-        const perfs = await analyzeStrategyPerformance(engine.userId);
-        xauBoost = Math.max(4.0, getXAUBoostMultiplier(perfs)); // v11.0: BEAST MODE minimum 4.0x for XAU
-      } catch { xauBoost = 4.0; /* default boost even on error */ }
-      console.log(`[Scalp] ${symbol} XAU BOOST: ${xauBoost.toFixed(2)}x (top earner — always boosted)`);
-    }
-    const nocturnalSizing = nocturnal.sizeMultiplier;
-    // v9.0: Market Timing + Volume Profile sizing
-    const vpBoost = volumeProfile.isHighVolumeZone ? 1.15 : 0.85;
-    // v10.9: Apply optimizer adaptive sizing (win streak → bigger, loss streak → smaller)
-    const scalpAdaptive = getAdaptiveState();
-    const scalpAdaptiveMultiplier = scalpAdaptive.aggressiveness;
-    const tradeAmount = baseAmount * smartScore.suggestedSizePct * scalpCooldown * scalpBoost * masterSizing * xauBoost * nocturnalSizing * timingMultiplier * vpBoost * scalpAdaptiveMultiplier;
-    const qty = (tradeAmount / price).toFixed(6);
+    // Dynamic trailing stop from ProfitMaximizer
+    let effectiveTrailingPct = trailingPct;
+    try {
+      const dynTrailing = calculateDynamicTrailingStop(pos.buyPrice, price, pos.highestPrice ?? price, holdMs, marketRegime);
+      effectiveTrailingPct = dynTrailing.trailingPct;
+    } catch { /* use default */ }
 
-    // ─── Position-Tracked Scalping ───
-    // Check existing scalp positions for this symbol
-    const existingPositions = engine.scalpPositions[symbol] ?? [];
-    const exchangeKey = engine.exchange === "both" ? (category === "spot" ? "kucoin" : "bybit") : engine.exchange;
-    const myPositions = existingPositions.filter(p => p.exchange === exchangeKey && p.category === category);
+    // TRAILING STOP
+    if (!pos.highestPrice || price > pos.highestPrice) pos.highestPrice = price;
+    if (pos.highestPrice > pos.buyPrice * (1 + trailingActivation)) {
+      const dropFromHigh = (pos.highestPrice - price) / pos.highestPrice;
+      if (dropFromHigh >= effectiveTrailingPct && profitPct >= minProfitPct) {
+        const qty = pos.qty;
+        const tradeAmount = pos.buyPrice * parseFloat(qty);
+        const grossPnl = (price - pos.buyPrice) * parseFloat(qty);
+        const pnl = calcNetPnl(grossPnl, tradeAmount, category, true, "bybit", holdMs);
 
-    // ─── v8.2: Dynamic Trailing Stop for ALL open scalp positions ───
-    for (const pos of myPositions) {
-      // Update highest price tracking
-      if (!pos.highestPrice || price > pos.highestPrice) pos.highestPrice = price;
-      const atrPctVal = smartScore.suggestedTrailingPct ?? 0.5;
-      const trailing = calculateDynamicTrailingStop(
-        pos.buyPrice, price, pos.highestPrice ?? price, atrPctVal / 100, smartScore.regime ?? "ranging"
-      );
-      pos.highestPrice = trailing.newHighest;
-      if (trailing.shouldSell) {
-        const posValue = pos.buyPrice * parseFloat(pos.qty);
-        const estGross = (price - pos.buyPrice) * parseFloat(pos.qty);
-        const estNet = calcNetPnl(estGross, posValue, category, true, engine.exchange);
-        if (estNet > 0) {
-          console.log(`[Scalp] ${symbol} DYNAMIC TRAILING: ${trailing.reason}`);
-          // Force sell via trailing
-          signal = "Sell";
-          break;
+        if (pnl > tradeAmount * MIN_PROFIT_PCT) {
+          const orderId = await placeOrder(engine, symbol, "Sell", qty, category);
+          if (orderId) {
+            positions.splice(i, 1);
+            recordTradeResult(symbol, "scalping", pnl > 0);
+
+            await db.insertTrade({ userId: engine.userId, symbol, side: "sell", price: price.toString(), qty, pnl: pnl.toFixed(2), strategy: "scalping", orderId, simulated: engine.simulationMode });
+            const cs = await db.getOrCreateBotState(engine.userId);
+            if (cs) {
+              await db.updateBotState(engine.userId, {
+                totalPnl: (parseFloat(cs.totalPnl ?? "0") + pnl).toFixed(2),
+                todayPnl: (parseFloat(cs.todayPnl ?? "0") + pnl).toFixed(2),
+                currentBalance: (parseFloat(cs.currentBalance ?? "5000") + pnl).toFixed(2),
+                totalTrades: (cs.totalTrades ?? 0) + 1,
+                winningTrades: (cs.winningTrades ?? 0) + (pnl > 0 ? 1 : 0),
+              });
+            }
+            if (strat) await db.updateStrategyStats(strat.id, pnl, pnl > 0);
+            const us = await db.getOrCreateBotState(engine.userId);
+            if (us) await db.upsertDailyPnl(engine.userId, parseFloat(us.totalPnl ?? "0"), parseFloat(us.currentBalance ?? "5000"), us.totalTrades ?? 0);
+
+            // AI feedback
+            try {
+              recordTradeForTuning("scalping", pnl, (pnl / tradeAmount) * 100);
+              recordTradeResultOptimizer(pnl);
+              recordTradeForTiming(pnl);
+              recordTradeForLearning({ strategy: "scalping", symbol, entryScore: smartScore?.confidence ?? 50, entryRegime: marketRegime, entrySession: getCurrentSession().session, entryFearGreed: 50, entryPatterns: smartScore?.reasons ?? [], pnlPercent: (pnl / tradeAmount) * 100, holdTimeMinutes: holdMs / 60000, timestamp: Date.now() });
+            } catch { /* silent */ }
+
+            console.log(`[Scalp] TRAILING-SELL ${symbol} @ ${price.toFixed(2)} pnl=$${pnl.toFixed(2)}`);
+            await sendTelegramNotification(engine, `⚡ <b>PHANTOM Scalp Profit</b>\nPar: ${symbol}\nCompra: $${pos.buyPrice.toFixed(2)}\nVenta: $${price.toFixed(2)}\nGanancia: <b>$${pnl.toFixed(2)}</b>`);
+          }
         }
       }
     }
 
-    if (signal === "Sell") {
-      // Only sell if we have a scalp position to close
-      if (myPositions.length === 0) {
-        console.log(`[Scalp] SKIP ${symbol} Sell — no open scalp position to close (${exchangeKey}/${category})`);
-        return;
-      }
-
-      // Close the oldest position — dynamic trailing or min 0.3% net profit
-      const pos = myPositions[0];
-      const posValue = pos.buyPrice * parseFloat(pos.qty);
-      const estGross = (price - pos.buyPrice) * parseFloat(pos.qty);
-      const estNet = calcNetPnl(estGross, posValue, category, true, engine.exchange);
-      // v10.9: Dynamic TP based on ATR volatility — wider TP in volatile markets, tighter in calm
-      let scalpMinProfitPct = symbol === "XAUUSDT" ? 0.0008 : 0.0012; // v11.0: BEAST MODE — XAU 0.08%, others 0.12% for ultra-fast rotation
-      try {
-        const tpKlines = await fetchKlines(engine.client, symbol, "1", 30, category);
-        if (tpKlines.highs.length >= 14) {
-          const atr1m = calculateATRPercent(tpKlines.highs, tpKlines.lows, tpKlines.closes);
-          // High volatility (ATR > 0.3%) → wider TP to capture bigger moves
-          // Low volatility (ATR < 0.1%) → tighter TP to close faster
-          if (atr1m > 0.003) scalpMinProfitPct = Math.min(0.005, scalpMinProfitPct * 2.0);
-          else if (atr1m < 0.001) scalpMinProfitPct = Math.max(0.0005, scalpMinProfitPct * 0.5);
+    // TIME-PROFIT
+    if (holdMs > maxHoldMs && profitPct >= minProfitPct) {
+      const qty = pos.qty;
+      const tradeAmount = pos.buyPrice * parseFloat(qty);
+      const grossPnl = (price - pos.buyPrice) * parseFloat(qty);
+      const pnl = calcNetPnl(grossPnl, tradeAmount, category, true, "bybit", holdMs);
+      if (pnl > tradeAmount * MIN_PROFIT_PCT) {
+        const orderId = await placeOrder(engine, symbol, "Sell", qty, category);
+        if (orderId) {
+          positions.splice(i, 1);
+          recordTradeResult(symbol, "scalping", pnl > 0);
+          await db.insertTrade({ userId: engine.userId, symbol, side: "sell", price: price.toString(), qty, pnl: pnl.toFixed(2), strategy: "scalping", orderId, simulated: engine.simulationMode });
+          const cs = await db.getOrCreateBotState(engine.userId);
+          if (cs) {
+            await db.updateBotState(engine.userId, {
+              totalPnl: (parseFloat(cs.totalPnl ?? "0") + pnl).toFixed(2),
+              todayPnl: (parseFloat(cs.todayPnl ?? "0") + pnl).toFixed(2),
+              currentBalance: (parseFloat(cs.currentBalance ?? "5000") + pnl).toFixed(2),
+              totalTrades: (cs.totalTrades ?? 0) + 1,
+              winningTrades: (cs.winningTrades ?? 0) + (pnl > 0 ? 1 : 0),
+            });
+          }
+          if (strat) await db.updateStrategyStats(strat.id, pnl, pnl > 0);
+          console.log(`[Scalp] TIME-PROFIT ${symbol} @ ${price.toFixed(2)} pnl=$${pnl.toFixed(2)}`);
+          await sendTelegramNotification(engine, `⚡ <b>PHANTOM Scalp Profit</b>\nPar: ${symbol}\nGanancia: <b>$${pnl.toFixed(2)}</b>`);
         }
-      } catch { /* use base */ }
-      const scalpMinProfit = posValue * scalpMinProfitPct;
-      if (estNet < scalpMinProfit) {
-        console.log(`[Scalp] HOLD ${symbol} — net $${estNet.toFixed(2)} < min ${(scalpMinProfitPct * 100).toFixed(2)}% ($${scalpMinProfit.toFixed(2)}), waiting for better exit`);
-        return;
-      }
-      const sellQty = pos.qty;
-      const orderId = await placeOrder(engine, symbol, "Sell", sellQty, category);
-      if (orderId) {
-        // Calculate real PnL: (sellPrice - buyPrice) * qty - fees
-        const grossPnl = (price - pos.buyPrice) * parseFloat(sellQty);
-        const pnl = calcNetPnl(grossPnl, pos.buyPrice * parseFloat(sellQty), category, true, engine.exchange);
-        // Track win/loss for cooldown system
-        recordTradeResult(symbol, "scalping", pnl > 0);
-
-        await db.insertTrade({
-          userId: engine.userId, symbol, side: "sell",
-          price: price.toString(), qty: sellQty, pnl: pnl.toFixed(2),
-          strategy: "scalping", orderId, simulated: engine.simulationMode,
-        });
-
-        const currentState = await db.getOrCreateBotState(engine.userId);
-        if (currentState) {
-          await db.updateBotState(engine.userId, {
-            totalPnl: (parseFloat(currentState.totalPnl ?? "0") + pnl).toFixed(2),
-            todayPnl: (parseFloat(currentState.todayPnl ?? "0") + pnl).toFixed(2),
-            currentBalance: (parseFloat(currentState.currentBalance ?? "5000") + pnl).toFixed(2),
-            totalTrades: (currentState.totalTrades ?? 0) + 1,
-            winningTrades: (currentState.winningTrades ?? 0) + (pnl > 0 ? 1 : 0),
-          });
-        }
-        if (strat) await db.updateStrategyStats(strat.id, pnl, pnl > 0);
-        const scalpState = await db.getOrCreateBotState(engine.userId);
-        if (scalpState) {
-          await db.upsertDailyPnl(engine.userId, parseFloat(scalpState.totalPnl ?? "0"), parseFloat(scalpState.currentBalance ?? "5000"), scalpState.totalTrades ?? 0);
-        }
-
-        // AI + Optimizer feedback: record trade for learning
-        try {
-          recordTradeForTuning("scalping", pnl, (pnl / (pos.buyPrice * parseFloat(sellQty))) * 100);
-          recordTradeResultOptimizer(pnl);
-          recordTradeForTiming(pnl); // v9.0: Market Timing learning
-          recordTradeForLearning({ strategy: "scalping", symbol, entryScore: effectiveConfidence, entryRegime: "unknown", entrySession: "unknown", entryFearGreed: 50, entryPatterns: [], pnlPercent: (pnl / (pos.buyPrice * parseFloat(sellQty))) * 100, holdTimeMinutes: 0, timestamp: Date.now() });
-        } catch { /* silent */ }
-
-        // Remove the closed position
-        engine.scalpPositions[symbol] = existingPositions.filter(p => p !== pos);
-        const holdTime = ((Date.now() - pos.openedAt) / 60000).toFixed(1);
-        console.log(`[Scalp] SELL ${symbol} @ ${price.toFixed(4)} qty=${sellQty} buyPrice=${pos.buyPrice.toFixed(4)} pnl=$${pnl.toFixed(2)} hold=${holdTime}min`);
-
-        if (pnl > 0) {
-          await sendTelegramNotification(engine,
-            `⚡ <b>PHANTOM Scalp Profit</b>\nPar: ${symbol}\nCompra: $${pos.buyPrice.toFixed(4)}\nVenta: $${price.toFixed(4)}\nGanancia: <b>$${pnl.toFixed(2)}</b>\nTiempo: ${holdTime}min`
-          );
-        }
-      } else if (!engine.simulationMode) {
-        // Sell failed in live mode — remove phantom position
-        engine.scalpPositions[symbol] = existingPositions.filter(p => p !== pos);
-        console.log(`[Scalp] Removed phantom scalp position ${symbol} buyPrice=${pos.buyPrice} — sell failed`);
-      }
-    } else if (signal === "Buy") {
-      // XAU gets 6 scalp positions (top earner), others get 3
-      // v11.4: Safer exposure — fewer positions but higher quality
-      const maxScalpPositions = symbol === "XAUUSDT" ? 10 : (symbol === "SP500USDT" ? 6 : 6); // v11.4: XAU 10, others 6 (was 30/20/20)
-      if (myPositions.length >= maxScalpPositions) {
-        console.log(`[Scalp] SKIP ${symbol} Buy — already have ${myPositions.length}/${maxScalpPositions} scalp position(s) on ${exchangeKey}`);
-        return;
-      }
-
-      // v10.5: ultra-low confidence thresholds to maximize entries
-      const boostedConfidence = smartScore.confidence + breakoutBoost + meanRevBoost;
-      // v11.3: Ultra-low confidence — almost always enter
-      // v11.4: Smarter entries — require decent confidence before buying
-      const minScalpConfidence = symbol === "XAUUSDT" ? 12 : 18; // v11.4: XAU 12, others 18 (was 3/5)
-      if (boostedConfidence < minScalpConfidence) {
-        console.log(`[Scalp] SKIP ${symbol} Buy — confidence too low (${smartScore.confidence}% + boosts ${breakoutBoost + meanRevBoost} = ${boostedConfidence}% < ${minScalpConfidence})`);
-        return;
-      }
-      console.log(`[Scalp] ${symbol} Buy — confidence=${smartScore.confidence}% regime=${smartScore.regime} size=${(smartScore.suggestedSizePct * scalpCooldown).toFixed(2)}x`);
-
-      // ─── v9.0: USDT Liquidity Guard for spot scalping buys ───
-      if (category === "spot") {
-        const hasLiquidity = await hasUsdtLiquidity(engine, tradeAmount, `scalp-${symbol}`);
-        if (!hasLiquidity) {
-          console.log(`[Scalp] SKIP ${symbol} Buy — USDT reserve too low, keeping capital liquid`);
-          return;
-        }
-        // v9.0: Big opportunity on spot → redirect to futures (USDT-settled)
-        if (shouldUseFuturesForOpportunity(boostedConfidence, category)) {
-          console.log(`[Scalp] ${symbol} REDIRECTING to FUTURES — score ${boostedConfidence}% >= 80, keeping USDT liquid`);
-          // Don't buy spot, the futures engine will pick this up with the high score
-          return;
-        }
-      }
-
-      // v8.2: Opportunity Alert — notify on high-confidence entries
-      if (effectiveConfidence >= 70) {
-        try {
-          const alertMsg = buildOpportunityAlert(symbol, effectiveConfidence, "buy", smartScore.regime ?? "unknown", smartScore.suggestedTrailingPct ?? 0, smartScore.suggestedSizePct ?? 1.0, "scalping");
-          await sendTelegramNotification(engine, alertMsg);
-        } catch { /* silent */ }
-      }
-
-      const orderId = await placeOrder(engine, symbol, "Buy", qty, category);
-      if (orderId) {
-        // Save the scalp position
-        if (!engine.scalpPositions[symbol]) engine.scalpPositions[symbol] = [];
-        engine.scalpPositions[symbol].push({
-          symbol, buyPrice: price, qty, orderId,
-          exchange: exchangeKey, category, openedAt: Date.now(),
-        });
-
-        await db.insertTrade({
-          userId: engine.userId, symbol, side: "buy",
-          price: price.toString(), qty, pnl: "0",
-          strategy: "scalping", orderId, simulated: engine.simulationMode,
-        });
-
-        const currentState = await db.getOrCreateBotState(engine.userId);
-        if (currentState) {
-          await db.updateBotState(engine.userId, {
-            totalTrades: (currentState.totalTrades ?? 0) + 1,
-          });
-        }
-
-        console.log(`[Scalp] BUY ${symbol} @ ${price.toFixed(4)} qty=${qty} on ${exchangeKey}/${category} — position saved`);
       }
     }
+  }
+
+  // ─── Scalp Buy Logic ───
+  if (dailyProfitMode === "stopped") return;
+  if (positions.length >= maxPositions) return;
+
+  // Confidence gate
+  const baseMinConfidence = symbol === "XAUUSDT" ? 15 : 20;
+  const minConfidence = baseMinConfidence + (dailyProfitMode === "cautious" ? 15 : 0) - nocturnal.confidenceReduction * 100;
+  if (!smartScore || smartScore.confidence < minConfidence) return;
+  if (smartScore.direction !== "buy") return;
+
+  // Breakout/MeanReversion boost
+  let scalpBoost = 1.0;
+  if (breakoutSignal?.isBreakout && breakoutSignal.direction === "up") scalpBoost = 1.3;
+  if (meanRevSignal?.isMeanReversion && meanRevSignal.direction === "up") scalpBoost = 1.2;
+
+  // XAU boost
+  const xauBoost = symbol === "XAUUSDT" ? 2.5 : 1.0; // XAU always boosted
+
+  // Market timing
+  let timingMultiplier = 1.0;
+  try {
+    const timing = getMarketTimingSignal();
+    timingMultiplier = timing.sizingMultiplier;
+  } catch { /* silent */ }
+
+  // Calculate trade amount
+  const allocation = strat?.allocationPct ?? 50;
+  const state = await db.getOrCreateBotState(engine.userId);
+  const balance = parseFloat(state?.currentBalance ?? "5000");
+  const baseAmount = (balance * allocation / 100) * 0.15;
+  const tradeAmount = baseAmount * positionSizeMultiplier * scalpBoost * xauBoost * timingMultiplier;
+  const qty = (tradeAmount / price).toFixed(6);
+
+  const orderId = await placeOrder(engine, symbol, "Buy", qty, category);
+  if (orderId) {
+    if (!engine.scalpPositions[symbol]) engine.scalpPositions[symbol] = [];
+    engine.scalpPositions[symbol].push({
+      symbol, buyPrice: price, qty, orderId, exchange: "bybit",
+      category, openedAt: Date.now(), highestPrice: price,
+    });
+    await db.insertTrade({ userId: engine.userId, symbol, side: "buy", price: price.toString(), qty, pnl: "0.00", strategy: "scalping", orderId, simulated: engine.simulationMode });
+    console.log(`[Scalp] BUY ${symbol} @ ${price.toFixed(2)} qty=${qty} conf=${smartScore.confidence} regime=${marketRegime}`);
   }
 }
 
-// ─── Futures Long + Short Strategy ───
-// Supports both LONG and SHORT positions with dynamic take-profit and trailing stops
-async function runFuturesStrategy(engine: EngineState, symbol: string, dailyProfitMode: "normal" | "cautious" | "stopped" = "normal") {
-  const ticker = await fetchTicker(engine.client, symbol, "linear");
+// ═══════════════════════════════════════════════════════════════
+// ─── SHORT SCALPING STRATEGY v12.0 ───
+// Opens SHORT positions when market is in downtrend. Profits from price drops.
+// ═══════════════════════════════════════════════════════════════
+async function runShortScalpingStrategy(engine: EngineState, symbol: string, category: "linear" = "linear") {
+  const ticker = await fetchTicker(engine.client, symbol, category);
   if (!ticker) return;
 
   const price = ticker.lastPrice;
   engine.lastPrices[symbol] = price;
   livePrices.set(symbol, ticker);
 
-  // Volume filter
   if (!hasAdequateVolume(symbol)) return;
 
-  // Check existing positions
-  if (!engine.futuresPositions[symbol]) engine.futuresPositions[symbol] = [];
-  const positions = engine.futuresPositions[symbol];
+  // ─── SMART ANALYSIS ───
+  let smartScore: SignalScore | null = null;
+  let marketRegime: MarketRegime = "ranging";
+  let positionSizeMultiplier = 1.0;
 
-  // ─── Read strategy config ───
-  const futStrats = await db.getUserStrategies(engine.userId);
-  const futStrat = futStrats.find(s => s.symbol === symbol && s.strategyType === "futures");
-  const futConfig = futStrat?.config as any ?? {};
-  // futuresStopLossPct is IGNORED — no stop-loss philosophy: HOLD until profit
-  // const futuresStopLossPct = (futConfig.stopLossPct ?? 0) / 100;
-  const futuresMaxHoldHours = futConfig.maxHoldHours ?? 0;
-  const futuresNoSL = ["BTCUSDT", "ETHUSDT"];
-
-  // ─── SMART ANALYSIS v6.0 + MARKET INTELLIGENCE v7.0 for Futures ───
-  const klines = await fetchKlines(engine.client, symbol, "15", 50, "linear");
-  if (klines.closes.length < 26) return;
-  const futSmartScore = calculateSignalScore(klines, price);
-  const futCooldown = getLossCooldownMultiplier(symbol, "futures");
-
-  // ─── MASTER SIGNAL for Futures ───
-  let futMaster: MasterSignal | null = null;
   try {
-    const klines5m = await fetchKlines(engine.client, symbol, "5", 60, "linear");
-    const klines1h = await fetchKlines(engine.client, symbol, "60", 60, "linear");
-    let orderBookData;
-    try { orderBookData = await getOrderBookImbalance(engine.client, symbol, "linear"); } catch { /* silent */ }
-    const miState = await db.getOrCreateBotState(engine.userId);
-    const miCapital = parseFloat(miState?.currentBalance ?? "5000");
-    const miTodayPnl = parseFloat(miState?.todayPnl ?? "0");
-    futMaster = aggregateMasterSignal({
-      symbol, currentPrice: price, klines5m, klines15m: klines, klines1h,
-      orderBookImbalance: orderBookData,
-      totalCapital: miCapital, proposedAmount: miCapital * 0.05,
-      todayPnl: miTodayPnl, currentBalance: miCapital, strategy: "futures",
-    });
-  } catch { /* use smartScore only */ }
-
-  // ATR-based dynamic TP and trailing
-  const atrPct = calculateATRPercent(klines.highs, klines.lows, klines.closes);
-  const baseTpPct = futConfig.takeProfitPct ?? 1.2; // v11.0: BEAST MODE — lower base TP for faster rotation
-  const dynamicTpPct = Math.max(0.6, Math.min(2.5, baseTpPct * Math.max(1, atrPct / 0.5)));
-
-  // ─── ATR-based trailing stop for futures ───
-  const trailingActivationPct = Math.max(0.003, atrPct / 100 * 1.0);
-  const trailingDistancePct = Math.max(0.002, atrPct / 100 * 0.7);
-
-  // Effective confidence from master signal or smart score
-  const futEffConf = futMaster ? futMaster.confidence : futSmartScore.confidence;
-  const futEffDir = futMaster ? futMaster.direction : futSmartScore.direction;
-  const futBlocked = futMaster?.blocked ?? false;
-  const futMasterSizing = futMaster?.sizingMultiplier ?? 1.0;
-
-  console.log(`[Futures] ${symbol} SMART+MASTER: score=${futEffConf} dir=${futEffDir} regime=${futSmartScore.regime} blocked=${futBlocked} atrPct=${atrPct.toFixed(2)}% TP=${dynamicTpPct.toFixed(1)}% sizing=${futMasterSizing.toFixed(2)}x`);
-
-  // ─── Manage existing positions ───
-  for (let i = positions.length - 1; i >= 0; i--) {
-    const pos = positions[i];
-    const isLong = (pos.direction ?? "long") === "long";
-    const holdTimeMs = Date.now() - pos.openedAt;
-
-    // Calculate profit/loss based on direction
-    const profitPct = isLong
-      ? (price - pos.entryPrice) / pos.entryPrice
-      : (pos.entryPrice - price) / pos.entryPrice;
-    const lossPct = -profitPct; // positive when losing
-
-    let closeReason = "";
-
-    // 1. NO STOP-LOSS — NUNCA cerrar a pérdida. HOLD hasta que recupere.
-    if (profitPct < 0 && holdTimeMs > 3600000) {
-      console.log(`[Futures] ${symbol} ${isLong ? "LONG" : "SHORT"} HOLD — ${(lossPct * 100).toFixed(2)}% loss, held ${(holdTimeMs / 3600000).toFixed(1)}h, waiting for recovery`);
+    const klines = await fetchKlines(engine.client, symbol, "5", 60, category);
+    if (klines.closes.length >= 30) {
+      smartScore = calculateSignalScore(klines, price);
+      marketRegime = smartScore.regime;
+      positionSizeMultiplier = smartScore.suggestedSizePct;
+      positionSizeMultiplier *= getLossCooldownMultiplier(symbol, "short_scalping");
     }
+  } catch { /* keep defaults */ }
 
-    // Minimum 0.1% net profit on ALL futures exits (lowered from 0.5% to avoid missing big gains)
-    const futMinProfit = pos.tradeAmount * 0.0005; // v10.4: 0.05% of position value — close faster
+  // ─── AI Intelligence Layer ───
+  const state0 = await db.getOrCreateBotState(engine.userId);
+  const balance0 = parseFloat(state0?.currentBalance ?? "5000");
+  const aiMult = getAIMultipliers(symbol, "short_scalping", smartScore?.confidence ?? 50, balance0 * 0.03, balance0);
+  positionSizeMultiplier *= aiMult.sizeMultiplier;
 
-    // 0. FORCED CLOSE: If profit >= 3%, close immediately to lock in gains (v11.0: faster capture)
-    if (!closeReason && profitPct >= 0.03) {
-      const estGrossBig = isLong
-        ? (price - pos.entryPrice) * parseFloat(pos.qty) * pos.leverage
-        : (pos.entryPrice - price) * parseFloat(pos.qty) * pos.leverage;
-      const estNetBig = calcNetPnl(estGrossBig, pos.tradeAmount * pos.leverage, "linear", true, "bybit", holdTimeMs);
-      closeReason = `FORCED-CLOSE-BIG-GAIN (${(profitPct * 100).toFixed(2)}%, net=$${estNetBig.toFixed(2)} — locking in huge profit)`;
-      console.log(`[Futures] 🎯 ${symbol} FORCED CLOSE — ${(profitPct * 100).toFixed(2)}% gain, locking in $${estNetBig.toFixed(2)}`);
-    }
+  // ─── Nocturnal Mode ───
+  const nocturnal = getNocturnalMultiplier();
+  positionSizeMultiplier *= nocturnal.sizeMultiplier;
 
-    // 2. TIME-PROFIT: Only close if held long AND net profit >= 0.1%
-    if (!closeReason && futuresMaxHoldHours > 0 && holdTimeMs > futuresMaxHoldHours * 3600000 && profitPct > 0.003) {
-      const estGross = isLong
-        ? (price - pos.entryPrice) * parseFloat(pos.qty) * pos.leverage
-        : (pos.entryPrice - price) * parseFloat(pos.qty) * pos.leverage;
-      const estNet = calcNetPnl(estGross, pos.tradeAmount * pos.leverage, "linear", true, "bybit", holdTimeMs);
-      if (estNet >= futMinProfit) {
-        closeReason = `TIME-PROFIT (held ${(holdTimeMs / 3600000).toFixed(1)}h, net $${estNet.toFixed(2)} ${isLong ? "LONG" : "SHORT"})`;
-      } else if (estNet > 0) {
-        console.log(`[Futures] ${symbol} HOLD — time-profit $${estNet.toFixed(2)} < min ($${futMinProfit.toFixed(2)})`);
-      }
-    }
+  // ─── Short Sell Logic (close shorts = buy to cover) ───
+  const positions = engine.shortPositions[symbol] ?? [];
+  const shortPositionsForStrategy = positions.filter(p => p.strategy === "short_scalping");
+  const strats = await db.getUserStrategies(engine.userId);
+  const strat = strats.find(s => s.symbol === symbol && s.strategyType === "short_scalping");
+  const config = strat?.config as any;
+  const minProfitPct = (config?.minProfitPct ?? 0.2) / 100;
+  const trailingPct = (config?.trailingStopPct ?? 0.4) / 100;
+  const trailingActivation = (config?.trailingActivationPct ?? 0.3) / 100;
+  const maxHoldMs = (config?.maxHoldMinutes ?? 45) * 60 * 1000;
+  const maxPositions = symbol === "XAUUSDT" ? 8 : 5;
 
-    // 3. TRAILING STOP: Lock in profits
-    if (!closeReason && profitPct > 0) {
-      if (isLong) {
-        if (!pos.highestPrice || price > pos.highestPrice) pos.highestPrice = price;
-        if (pos.highestPrice && profitPct >= trailingActivationPct) {
-          const dropFromHigh = (pos.highestPrice - price) / pos.highestPrice;
-          // Tighter trailing: 0.4% drop from high (was full trailingDistancePct)
-          const tightTrailing = Math.max(0.004, trailingDistancePct * 0.6);
-          if (dropFromHigh >= tightTrailing) {
-            const estGross = (price - pos.entryPrice) * parseFloat(pos.qty) * pos.leverage;
-            const estNet = calcNetPnl(estGross, pos.tradeAmount * pos.leverage, "linear", true, "bybit", holdTimeMs);
-            if (estNet >= futMinProfit) closeReason = `TRAILING-STOP (high=${pos.highestPrice.toFixed(4)}, drop=${(dropFromHigh*100).toFixed(2)}%, net=$${estNet.toFixed(2)} LONG)`;
-            else if (estNet > 0) console.log(`[Futures] ${symbol} HOLD — trailing net $${estNet.toFixed(2)} < min ($${futMinProfit.toFixed(2)}) LONG`);
-          }
-        }
-      } else {
-        // SHORT: track lowest price, close when price rises from low
-        if (!pos.lowestPrice || price < pos.lowestPrice) pos.lowestPrice = price;
-        if (pos.lowestPrice && profitPct >= trailingActivationPct) {
-          const riseFromLow = (price - pos.lowestPrice) / pos.lowestPrice;
-          // Tighter trailing for SHORT: 0.4% rise from low
-          const tightTrailingShort = Math.max(0.004, trailingDistancePct * 0.6);
-          if (riseFromLow >= tightTrailingShort) {
-            const estGross = (pos.entryPrice - price) * parseFloat(pos.qty) * pos.leverage;
-            const estNet = calcNetPnl(estGross, pos.tradeAmount * pos.leverage, "linear", true, "bybit", holdTimeMs);
-            if (estNet >= futMinProfit) closeReason = `TRAILING-STOP (low=${pos.lowestPrice.toFixed(4)}, rise=${(riseFromLow*100).toFixed(2)}%, net=$${estNet.toFixed(2)} SHORT)`;
-            else if (estNet > 0) console.log(`[Futures] ${symbol} HOLD — trailing net $${estNet.toFixed(2)} < min ($${futMinProfit.toFixed(2)}) SHORT`);
-          }
-        }
-        // Protect SHORT gains: if profit > 5% and price rises 0.2% from low, close
-        if (!closeReason && profitPct >= 0.05 && pos.lowestPrice) {
-          const riseFromLow = (price - pos.lowestPrice) / pos.lowestPrice;
-          if (riseFromLow >= 0.002) {
-            const estGross = (pos.entryPrice - price) * parseFloat(pos.qty) * pos.leverage;
-            const estNet = calcNetPnl(estGross, pos.tradeAmount * pos.leverage, "linear", true, "bybit", holdTimeMs);
-            if (estNet >= futMinProfit) closeReason = `PROTECT-PROFIT-SHORT (${(profitPct*100).toFixed(2)}% gain, rise=${(riseFromLow*100).toFixed(2)}% from low, net=$${estNet.toFixed(2)})`;
-          }
-        }
-      }
-    }
+  for (let i = shortPositionsForStrategy.length - 1; i >= 0; i--) {
+    const pos = shortPositionsForStrategy[i];
+    // For shorts: profit when price DROPS below entry
+    const profitPct = (pos.entryPrice - price) / pos.entryPrice;
+    const holdMs = Date.now() - pos.openedAt;
 
-    // 4. TAKE PROFIT: Dynamic TP
-    const effectiveTp = pos.takeProfitPct / 100;
-    if (!closeReason && profitPct >= effectiveTp) {
-      const estGrossPnl = isLong
-        ? (price - pos.entryPrice) * parseFloat(pos.qty) * pos.leverage
-        : (pos.entryPrice - price) * parseFloat(pos.qty) * pos.leverage;
-      const estNetPnl = calcNetPnl(estGrossPnl, pos.tradeAmount * pos.leverage, "linear", true, "bybit", holdTimeMs);
-      if (estNetPnl >= futMinProfit) {
-        closeReason = `TAKE-PROFIT (${(profitPct * 100).toFixed(2)}%, net=$${estNetPnl.toFixed(2)} ${isLong ? "LONG" : "SHORT"})`;
-      } else if (estNetPnl > 0) {
-        console.log(`[Futures] ${symbol} HOLD — TP net $${estNetPnl.toFixed(2)} < min ($${futMinProfit.toFixed(2)}) after fees+funding`);
-      } else {
-        console.log(`[Futures] ${symbol} HOLD — TP triggered but net $${estNetPnl.toFixed(2)} NEGATIVE after fees+funding`);
-      }
-    }
-    // 5. EXTENDED TP: If profit >= 2x original TP, close to lock in double gains
-    if (!closeReason && profitPct >= effectiveTp * 2 && profitPct > 0.01) {
-      const estGrossExt = isLong
-        ? (price - pos.entryPrice) * parseFloat(pos.qty) * pos.leverage
-        : (pos.entryPrice - price) * parseFloat(pos.qty) * pos.leverage;
-      const estNetExt = calcNetPnl(estGrossExt, pos.tradeAmount * pos.leverage, "linear", true, "bybit", holdTimeMs);
-      if (estNetExt > 0) closeReason = `EXTENDED-TP (${(profitPct * 100).toFixed(2)}% = 2x TP, net=$${estNetExt.toFixed(2)} ${isLong ? "LONG" : "SHORT"})`;
-    }
-
-    if (closeReason) {
-      // Close: LONG → Sell, SHORT → Buy
-      const closeSide = isLong ? "Sell" : "Buy";
-      const orderId = await placeOrder(engine, symbol, closeSide, pos.qty, "linear");
-      if (!orderId && !engine.simulationMode) {
-        const idx = engine.futuresPositions[symbol]?.findIndex(p => p.entryPrice === pos.entryPrice && p.qty === pos.qty);
-        if (idx !== undefined && idx >= 0) {
-          engine.futuresPositions[symbol]!.splice(idx, 1);
-          console.log(`[Futures] Removed phantom ${isLong ? "LONG" : "SHORT"} ${symbol} entry=${pos.entryPrice} — close failed`);
-        }
-        await db.deleteOpenPosition(engine.userId, symbol, pos.entryPrice, pos.qty, "bybit");
-        continue;
-      }
+    // NO STOP-LOSS philosophy for shorts too — hold until profit
+    // But add a safety cap: if price rises 3% above entry, cut loss
+    if (profitPct < -0.03) {
+      const qty = pos.qty;
+      const tradeAmount = pos.entryPrice * parseFloat(qty);
+      const grossPnl = (pos.entryPrice - price) * parseFloat(qty); // negative
+      const pnl = calcNetPnl(grossPnl, tradeAmount, "linear", true, "bybit", holdMs);
+      const orderId = await placeOrder(engine, symbol, "Buy", qty, "linear", { reduceOnly: true });
       if (orderId) {
-        const grossPnl = isLong
-          ? (price - pos.entryPrice) * parseFloat(pos.qty) * pos.leverage
-          : (pos.entryPrice - price) * parseFloat(pos.qty) * pos.leverage;
-        const pnl = calcNetPnl(grossPnl, pos.tradeAmount * pos.leverage, "linear", true, "bybit", holdTimeMs);
-        // Track win/loss for cooldown system
-        recordTradeResult(symbol, "futures", pnl > 0);
-        // AI + Optimizer feedback: record trade for learning
-        try {
-          recordTradeForTuning("futures", pnl, (pnl / (pos.tradeAmount * pos.leverage)) * 100);
-          recordTradeResultOptimizer(pnl);
-          recordTradeForTiming(pnl); // v9.0: Market Timing learning
-          recordTradeForLearning({ strategy: "futures", symbol, entryScore: 50, entryRegime: "unknown", entrySession: "unknown", entryFearGreed: 50, entryPatterns: [], pnlPercent: (pnl / (pos.tradeAmount * pos.leverage)) * 100, holdTimeMinutes: 0, timestamp: Date.now() });
-        } catch { /* silent */ }
-
-        await db.insertTrade({
-          userId: engine.userId, symbol, side: closeSide.toLowerCase() as "buy" | "sell", price: price.toString(),
-          qty: pos.qty, pnl: pnl.toFixed(2), strategy: "futures", orderId, simulated: engine.simulationMode,
-        });
-
-        const currentState = await db.getOrCreateBotState(engine.userId);
-        if (currentState) {
+        const allShorts = engine.shortPositions[symbol] ?? [];
+        const idx = allShorts.findIndex(p => p.orderId === pos.orderId);
+        if (idx >= 0) allShorts.splice(idx, 1);
+        recordTradeResult(symbol, "short_scalping", false);
+        await db.insertTrade({ userId: engine.userId, symbol, side: "buy", price: price.toString(), qty, pnl: pnl.toFixed(2), strategy: "short_scalping", orderId, simulated: engine.simulationMode });
+        const cs = await db.getOrCreateBotState(engine.userId);
+        if (cs) {
           await db.updateBotState(engine.userId, {
-            totalPnl: (parseFloat(currentState.totalPnl ?? "0") + pnl).toFixed(2),
-            todayPnl: (parseFloat(currentState.todayPnl ?? "0") + pnl).toFixed(2),
-            currentBalance: (parseFloat(currentState.currentBalance ?? "5000") + pnl).toFixed(2),
-            totalTrades: (currentState.totalTrades ?? 0) + 1,
-            winningTrades: (currentState.winningTrades ?? 0) + (pnl > 0 ? 1 : 0),
+            totalPnl: (parseFloat(cs.totalPnl ?? "0") + pnl).toFixed(2),
+            todayPnl: (parseFloat(cs.todayPnl ?? "0") + pnl).toFixed(2),
+            currentBalance: (parseFloat(cs.currentBalance ?? "5000") + pnl).toFixed(2),
+            totalTrades: (cs.totalTrades ?? 0) + 1,
+            winningTrades: (cs.winningTrades ?? 0) + (pnl > 0 ? 1 : 0),
           });
         }
+        if (strat) await db.updateStrategyStats(strat.id, pnl, pnl > 0);
+        console.log(`[ShortScalp] STOP-LOSS ${symbol} @ ${price.toFixed(2)} entry=${pos.entryPrice.toFixed(2)} pnl=$${pnl.toFixed(2)}`);
+        await sendTelegramNotification(engine, `🔴 <b>PHANTOM Short Stop</b>\nPar: ${symbol}\nEntrada: $${pos.entryPrice.toFixed(2)}\nSalida: $${price.toFixed(2)}\nPérdida: <b>$${pnl.toFixed(2)}</b>`);
+      }
+      continue;
+    }
 
-        if (pnl < 0) {
-          const state = await db.getOrCreateBotState(engine.userId);
-          const currentDrawdown = Math.abs(pnl);
-          const maxDrawdown = parseFloat(state?.maxDrawdown ?? "0");
-          if (currentDrawdown > maxDrawdown) {
-            await db.updateBotState(engine.userId, { maxDrawdown: currentDrawdown.toFixed(2) });
+    if (profitPct < 0) continue; // underwater, hold
+
+    // Track lowest price for trailing
+    if (!pos.lowestPrice || price < pos.lowestPrice) pos.lowestPrice = price;
+
+    // TRAILING STOP for shorts: price bounces UP from lowest
+    if (pos.lowestPrice && pos.lowestPrice < pos.entryPrice * (1 - trailingActivation)) {
+      const bounceFromLow = (price - pos.lowestPrice) / pos.lowestPrice;
+      if (bounceFromLow >= trailingPct && profitPct >= minProfitPct) {
+        const qty = pos.qty;
+        const tradeAmount = pos.entryPrice * parseFloat(qty);
+        const grossPnl = (pos.entryPrice - price) * parseFloat(qty);
+        const pnl = calcNetPnl(grossPnl, tradeAmount, "linear", true, "bybit", holdMs);
+
+        if (pnl > tradeAmount * MIN_PROFIT_PCT) {
+          const orderId = await placeOrder(engine, symbol, "Buy", qty, "linear", { reduceOnly: true });
+          if (orderId) {
+            const allShorts = engine.shortPositions[symbol] ?? [];
+            const idx = allShorts.findIndex(p => p.orderId === pos.orderId);
+            if (idx >= 0) allShorts.splice(idx, 1);
+            recordTradeResult(symbol, "short_scalping", pnl > 0);
+            await db.insertTrade({ userId: engine.userId, symbol, side: "buy", price: price.toString(), qty, pnl: pnl.toFixed(2), strategy: "short_scalping", orderId, simulated: engine.simulationMode });
+            const cs = await db.getOrCreateBotState(engine.userId);
+            if (cs) {
+              await db.updateBotState(engine.userId, {
+                totalPnl: (parseFloat(cs.totalPnl ?? "0") + pnl).toFixed(2),
+                todayPnl: (parseFloat(cs.todayPnl ?? "0") + pnl).toFixed(2),
+                currentBalance: (parseFloat(cs.currentBalance ?? "5000") + pnl).toFixed(2),
+                totalTrades: (cs.totalTrades ?? 0) + 1,
+                winningTrades: (cs.winningTrades ?? 0) + (pnl > 0 ? 1 : 0),
+              });
+            }
+            if (strat) await db.updateStrategyStats(strat.id, pnl, pnl > 0);
+            try { recordTradeForTuning("short_scalping", pnl, (pnl / tradeAmount) * 100); recordTradeResultOptimizer(pnl); } catch { /* silent */ }
+            console.log(`[ShortScalp] TRAILING-COVER ${symbol} @ ${price.toFixed(2)} entry=${pos.entryPrice.toFixed(2)} pnl=$${pnl.toFixed(2)}`);
+            await sendTelegramNotification(engine, `📉 <b>PHANTOM Short Profit</b>\nPar: ${symbol}\nEntrada: $${pos.entryPrice.toFixed(2)}\nCobertura: $${price.toFixed(2)}\nGanancia: <b>$${pnl.toFixed(2)}</b>`);
           }
         }
+      }
+    }
 
-        const emoji = pnl > 0 ? "🎯" : "🛑";
-        const dirLabel = isLong ? "LONG" : "SHORT";
-        console.log(`[Futures] ${closeReason} ${symbol} @ ${price.toFixed(2)} entry=${pos.entryPrice.toFixed(2)} pnl=$${pnl.toFixed(2)} (${pos.leverage}x ${dirLabel})`);
-
-        await sendTelegramNotification(engine,
-          `${emoji} <b>PHANTOM Futures ${closeReason.split(" ")[0]}</b>\nDirección: ${dirLabel}\nPar: ${symbol}\nEntrada: $${pos.entryPrice.toFixed(2)}\nSalida: $${price.toFixed(2)}\nApalancamiento: ${pos.leverage}x\nResultado: <b>$${pnl.toFixed(2)}</b>`
-        );
-
-        positions.splice(i, 1);
+    // TIME-PROFIT for shorts
+    if (holdMs > maxHoldMs && profitPct >= minProfitPct) {
+      const qty = pos.qty;
+      const tradeAmount = pos.entryPrice * parseFloat(qty);
+      const grossPnl = (pos.entryPrice - price) * parseFloat(qty);
+      const pnl = calcNetPnl(grossPnl, tradeAmount, "linear", true, "bybit", holdMs);
+      if (pnl > tradeAmount * MIN_PROFIT_PCT) {
+        const orderId = await placeOrder(engine, symbol, "Buy", qty, "linear", { reduceOnly: true });
+        if (orderId) {
+          const allShorts = engine.shortPositions[symbol] ?? [];
+          const idx = allShorts.findIndex(p => p.orderId === pos.orderId);
+          if (idx >= 0) allShorts.splice(idx, 1);
+          recordTradeResult(symbol, "short_scalping", pnl > 0);
+          await db.insertTrade({ userId: engine.userId, symbol, side: "buy", price: price.toString(), qty, pnl: pnl.toFixed(2), strategy: "short_scalping", orderId, simulated: engine.simulationMode });
+          const cs = await db.getOrCreateBotState(engine.userId);
+          if (cs) {
+            await db.updateBotState(engine.userId, {
+              totalPnl: (parseFloat(cs.totalPnl ?? "0") + pnl).toFixed(2),
+              todayPnl: (parseFloat(cs.todayPnl ?? "0") + pnl).toFixed(2),
+              currentBalance: (parseFloat(cs.currentBalance ?? "5000") + pnl).toFixed(2),
+              totalTrades: (cs.totalTrades ?? 0) + 1,
+              winningTrades: (cs.winningTrades ?? 0) + (pnl > 0 ? 1 : 0),
+            });
+          }
+          if (strat) await db.updateStrategyStats(strat.id, pnl, pnl > 0);
+          console.log(`[ShortScalp] TIME-COVER ${symbol} @ ${price.toFixed(2)} pnl=$${pnl.toFixed(2)}`);
+          await sendTelegramNotification(engine, `📉 <b>PHANTOM Short Profit</b>\nPar: ${symbol}\nGanancia: <b>$${pnl.toFixed(2)}</b>`);
+        }
       }
     }
   }
 
-  // ─── Smart Entry: LONG or SHORT based on scoring ───
-  // XAU gets more positions (7), other coins share 5
-    const maxPositions = symbol === "XAUUSDT" ? 20 : 10; // v10.8: XAU 20 slots, BTC/ETH 10 — more futures for $300/day
-  const longPositions = positions.filter(p => (p.direction ?? "long") === "long");
-  const shortPositions = positions.filter(p => p.direction === "short");
+  // ─── Short Entry Logic ───
+  if (shortPositionsForStrategy.length >= maxPositions) return;
 
-  if (positions.length >= maxPositions) {
-    console.log(`[Futures] ${symbol} SKIP — max ${maxPositions} positions reached`);
-    return;
+  // Only enter shorts when market is bearish
+  const baseMinConfidence = symbol === "XAUUSDT" ? 20 : 25;
+  const minConfidence = baseMinConfidence - nocturnal.confidenceReduction * 100;
+  if (!smartScore || smartScore.confidence < minConfidence) return;
+  // Direction MUST be "sell" (bearish signal)
+  if (smartScore.direction !== "sell") return;
+  // Regime must be bearish
+  if (marketRegime !== "trend_down" && marketRegime !== "strong_trend_down" && marketRegime !== "volatile") return;
+
+  // Calculate trade amount (conservative for shorts)
+  const allocation = strat?.allocationPct ?? 30;
+  const state = await db.getOrCreateBotState(engine.userId);
+  const balance = parseFloat(state?.currentBalance ?? "5000");
+  const baseAmount = (balance * allocation / 100) * 0.10; // 10% per position (conservative)
+  const tradeAmount = baseAmount * positionSizeMultiplier;
+  const qty = (tradeAmount / price).toFixed(6);
+
+  // Open SHORT (Sell without reduceOnly)
+  const orderId = await placeOrder(engine, symbol, "Sell", qty, "linear", { isOpenShort: true });
+  if (orderId) {
+    if (!engine.shortPositions[symbol]) engine.shortPositions[symbol] = [];
+    engine.shortPositions[symbol].push({
+      symbol, entryPrice: price, qty, orderId, exchange: "bybit",
+      category: "linear", openedAt: Date.now(), lowestPrice: price, strategy: "short_scalping",
+    });
+    await db.insertTrade({ userId: engine.userId, symbol, side: "sell", price: price.toString(), qty, pnl: "0.00", strategy: "short_scalping", orderId, simulated: engine.simulationMode });
+    console.log(`[ShortScalp] OPEN SHORT ${symbol} @ ${price.toFixed(2)} qty=${qty} conf=${smartScore.confidence} regime=${marketRegime}`);
+    await sendTelegramNotification(engine, `📉 <b>PHANTOM Short Abierto</b>\nPar: ${symbol}\nEntrada: $${price.toFixed(2)}\nConfianza: ${smartScore.confidence}%\nRégimen: ${marketRegime}`);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// ─── MEAN REVERSION STRATEGY v12.0 ───
+// Buys extreme oversold bounces, sells overbought for shorts. Works in ANY market.
+// ═══════════════════════════════════════════════════════════════
+async function runMeanReversionStrategy(engine: EngineState, symbol: string, category: "linear" = "linear") {
+  const ticker = await fetchTicker(engine.client, symbol, category);
+  if (!ticker) return;
+
+  const price = ticker.lastPrice;
+  engine.lastPrices[symbol] = price;
+  livePrices.set(symbol, ticker);
+
+  if (!hasAdequateVolume(symbol)) return;
+
+  const strats = await db.getUserStrategies(engine.userId);
+  const strat = strats.find(s => s.symbol === symbol && s.strategyType === "mean_reversion");
+  const config = strat?.config as any;
+  const maxLongPositions = config?.maxOpenPositions ?? 4;
+  const maxShortPositions = config?.maxOpenPositions ?? 3;
+  const takeProfitPct = (config?.takeProfitPct ?? 0.4) / 100; // 0.4% default target
+  const maxHoldMs = (config?.maxHoldMinutes ?? 60) * 60 * 1000;
+
+  // ─── Detect Mean Reversion Signal ───
+  let meanRevSignal: any = null;
+  try {
+    const klines = await fetchKlines(engine.client, symbol, "5", 60, category);
+    meanRevSignal = detectMeanReversionPM(klines, price);
+  } catch { return; }
+
+  if (!meanRevSignal) return;
+
+  // ─── Close existing mean reversion positions (both longs and shorts) ───
+  // Long positions (stored in scalpPositions with strategy label)
+  const scalpPositions = engine.scalpPositions[symbol] ?? [];
+  const meanRevLongs = scalpPositions.filter(p => (p as any).__strategy === "mean_reversion");
+
+  for (let i = meanRevLongs.length - 1; i >= 0; i--) {
+    const pos = meanRevLongs[i];
+    const profitPct = (price - pos.buyPrice) / pos.buyPrice;
+    const holdMs = Date.now() - pos.openedAt;
+
+    // Take profit at target OR time-based exit
+    if (profitPct >= takeProfitPct || (holdMs > maxHoldMs && profitPct > 0)) {
+      const qty = pos.qty;
+      const tradeAmount = pos.buyPrice * parseFloat(qty);
+      const grossPnl = (price - pos.buyPrice) * parseFloat(qty);
+      const pnl = calcNetPnl(grossPnl, tradeAmount, "linear", true, "bybit", holdMs);
+
+      if (pnl > tradeAmount * MIN_PROFIT_PCT) {
+        const orderId = await placeOrder(engine, symbol, "Sell", qty, "linear");
+        if (orderId) {
+          const allScalps = engine.scalpPositions[symbol] ?? [];
+          const idx = allScalps.findIndex(p => p.orderId === pos.orderId);
+          if (idx >= 0) allScalps.splice(idx, 1);
+          recordTradeResult(symbol, "mean_reversion", pnl > 0);
+          await db.insertTrade({ userId: engine.userId, symbol, side: "sell", price: price.toString(), qty, pnl: pnl.toFixed(2), strategy: "mean_reversion", orderId, simulated: engine.simulationMode });
+          const cs = await db.getOrCreateBotState(engine.userId);
+          if (cs) {
+            await db.updateBotState(engine.userId, {
+              totalPnl: (parseFloat(cs.totalPnl ?? "0") + pnl).toFixed(2),
+              todayPnl: (parseFloat(cs.todayPnl ?? "0") + pnl).toFixed(2),
+              currentBalance: (parseFloat(cs.currentBalance ?? "5000") + pnl).toFixed(2),
+              totalTrades: (cs.totalTrades ?? 0) + 1,
+              winningTrades: (cs.winningTrades ?? 0) + (pnl > 0 ? 1 : 0),
+            });
+          }
+          if (strat) await db.updateStrategyStats(strat.id, pnl, pnl > 0);
+          try { recordTradeForTuning("mean_reversion", pnl, (pnl / tradeAmount) * 100); recordTradeResultOptimizer(pnl); } catch { /* silent */ }
+          console.log(`[MeanRev] SELL ${symbol} @ ${price.toFixed(2)} entry=${pos.buyPrice.toFixed(2)} pnl=$${pnl.toFixed(2)} (${profitPct >= takeProfitPct ? "TP" : "TIME"})`);
+          await sendTelegramNotification(engine, `🎯 <b>PHANTOM MeanRev Profit</b>\nPar: ${symbol}\nCompra: $${pos.buyPrice.toFixed(2)}\nVenta: $${price.toFixed(2)}\nGanancia: <b>$${pnl.toFixed(2)}</b>`);
+        }
+      }
+    }
   }
 
-  // ─── Daily Profit Target Guard for Futures ───
-  if (dailyProfitMode === "stopped") {
-    console.log(`[Futures] ${symbol} SKIP entry — DAILY TARGET 5%+ HIT, no new trades`);
-    return;
+  // Short positions for mean reversion (close when price drops to target)
+  const shortPositions = engine.shortPositions[symbol] ?? [];
+  const meanRevShorts = shortPositions.filter(p => p.strategy === "mean_reversion");
+
+  for (let i = meanRevShorts.length - 1; i >= 0; i--) {
+    const pos = meanRevShorts[i];
+    const profitPct = (pos.entryPrice - price) / pos.entryPrice;
+    const holdMs = Date.now() - pos.openedAt;
+
+    if (profitPct >= takeProfitPct || (holdMs > maxHoldMs && profitPct > 0)) {
+      const qty = pos.qty;
+      const tradeAmount = pos.entryPrice * parseFloat(qty);
+      const grossPnl = (pos.entryPrice - price) * parseFloat(qty);
+      const pnl = calcNetPnl(grossPnl, tradeAmount, "linear", true, "bybit", holdMs);
+
+      if (pnl > tradeAmount * MIN_PROFIT_PCT) {
+        const orderId = await placeOrder(engine, symbol, "Buy", qty, "linear", { reduceOnly: true });
+        if (orderId) {
+          const allShorts = engine.shortPositions[symbol] ?? [];
+          const idx = allShorts.findIndex(p => p.orderId === pos.orderId);
+          if (idx >= 0) allShorts.splice(idx, 1);
+          recordTradeResult(symbol, "mean_reversion", pnl > 0);
+          await db.insertTrade({ userId: engine.userId, symbol, side: "buy", price: price.toString(), qty, pnl: pnl.toFixed(2), strategy: "mean_reversion", orderId, simulated: engine.simulationMode });
+          const cs = await db.getOrCreateBotState(engine.userId);
+          if (cs) {
+            await db.updateBotState(engine.userId, {
+              totalPnl: (parseFloat(cs.totalPnl ?? "0") + pnl).toFixed(2),
+              todayPnl: (parseFloat(cs.todayPnl ?? "0") + pnl).toFixed(2),
+              currentBalance: (parseFloat(cs.currentBalance ?? "5000") + pnl).toFixed(2),
+              totalTrades: (cs.totalTrades ?? 0) + 1,
+              winningTrades: (cs.winningTrades ?? 0) + (pnl > 0 ? 1 : 0),
+            });
+          }
+          if (strat) await db.updateStrategyStats(strat.id, pnl, pnl > 0);
+          try { recordTradeForTuning("mean_reversion", pnl, (pnl / tradeAmount) * 100); recordTradeResultOptimizer(pnl); } catch { /* silent */ }
+          console.log(`[MeanRev] COVER SHORT ${symbol} @ ${price.toFixed(2)} entry=${pos.entryPrice.toFixed(2)} pnl=$${pnl.toFixed(2)}`);
+          await sendTelegramNotification(engine, `🎯 <b>PHANTOM MeanRev Short Profit</b>\nPar: ${symbol}\nGanancia: <b>$${pnl.toFixed(2)}</b>`);
+        }
+      }
+    }
   }
 
-  // ─── v9.0: Profit Maximizer for Futures ───
-  const futKlines = await fetchKlines(engine.client, symbol, "15", 50, "linear");
-  const futBreakout = detectBreakoutSignal(futKlines, price);
-  const futMeanRev = detectMeanReversionPM(futKlines, price);
-  const futTiming = getMarketTimingSignal();
-  const futVolProfile = analyzeVolumeProfile(futKlines, price);
-  let futPMBoost = 0;
-  if (futBreakout.detected && futBreakout.confidence > 60) {
-    futPMBoost += Math.round(futBreakout.confidence * 0.3);
-    console.log(`[Futures] ${symbol} BREAKOUT: ${futBreakout.reason} — boost +${futPMBoost}`);
-  }
-  if (futMeanRev.detected && futMeanRev.confidence > 50) {
-    futPMBoost += Math.round(futMeanRev.confidence * 0.2);
-    console.log(`[Futures] ${symbol} MEAN REVERSION: ${futMeanRev.reason}`);
-  }
+  // ─── Entry Logic ───
+  if (!meanRevSignal.detected || meanRevSignal.confidence < 45) return;
 
-  // Smart scoring determines entry direction — use master signal when available
-  // v11.4: Smarter futures entries — require decent confidence (IA-driven)
-  const minFuturesConfidence = symbol === "XAUUSDT" ? 15 : 20; // v11.4: XAU 15, others 20 (was 3/5)
-  const futBoostedConf = futEffConf + futPMBoost;
-  let entryDirection: "long" | "short" | null = null;
-
-  // v11.2: Only block on very high confidence master signal
-  if (futBlocked && (futMaster?.confidence ?? 0) > 80) {
-    console.log(`[Futures] ${symbol} BLOCKED by master signal (conf ${futMaster?.confidence}): ${futMaster?.blockReason}`);
-    return;
-  }
-
-  // v10.5: increased per-pair limits (was 3), allow neutral dir for XAU
-  // v11.4: Reduced max positions for safer exposure
-  const maxLongPerPair = symbol === "XAUUSDT" ? 8 : (symbol === "SP500USDT" ? 5 : 5); // v11.4: XAU 8, others 5 (was 20/15/12)
-  const maxShortPerPair = symbol === "XAUUSDT" ? 8 : (symbol === "SP500USDT" ? 5 : 5);
-
-  // v11.2: BEAST MODE — very aggressive entry logic
-  if (futEffDir === "buy" && futBoostedConf >= minFuturesConfidence && longPositions.length < maxLongPerPair) {
-    entryDirection = "long"; // v11.2: removed regime block
-  } else if (futEffDir === "sell" && futBoostedConf >= minFuturesConfidence && shortPositions.length < maxShortPerPair) {
-    entryDirection = "short"; // v11.2: removed regime block
-  } else if (futEffDir === "neutral" && futBoostedConf >= 35 && longPositions.length < maxLongPerPair) {
-    // v11.4: Only enter neutral with HIGH confidence (35+) — IA must be fairly sure
-    entryDirection = "long";
-    console.log(`[Futures] ${symbol} NEUTRAL-ENTRY — high-confidence long (score=${futBoostedConf} >= 35)`);
-  }
-
-  if (dailyProfitMode === "cautious" && entryDirection) {
-    console.log(`[Futures] 💡 EXCEPTIONAL ${entryDirection.toUpperCase()} ${symbol} — score ${futEffConf} >= 70 despite daily target`);
-  }
-
-  // v11.2: REMOVED micro-momentum filter for futures — was blocking too many entries
-
-  if (!entryDirection) {
-    console.log(`[Futures] ${symbol} SKIP entry — score=${futEffConf} dir=${futEffDir} regime=${futSmartScore.regime}`);
-    return;
-  }
-
-  const strat = futStrat;
-  const config = futConfig;
-  const leverage = Math.min(config?.leverage ?? 5, 5); // v11.4: HARD CAP 5x max leverage for safety
   const allocation = strat?.allocationPct ?? 25;
   const state = await db.getOrCreateBotState(engine.userId);
   const balance = parseFloat(state?.currentBalance ?? "5000");
-  // Smart sizing: confidence-weighted + cooldown + BOOST + master signal multiplier
-  const baseTradeAmount = (balance * allocation / 100) / maxPositions;
-  // v11.4: Safer sizing — confidence-weighted but not over-leveraged
-  const strengthBoost = futEffConf > 80 ? 1.5 : futEffConf > 65 ? 1.2 : 1.0; // v11.4: reduced (was 2.5/1.8/1.3)
-  // v11.4: Reduced symbol boosts for safety
-  const futXauBoost = symbol === "XAUUSDT" ? 2.0 : (symbol === "SP500USDT" ? 1.5 : 1.2); // v11.4: XAU 2x, SP500 1.5x, BTC/ETH 1.2x (was 4/2.5/2)
-  // v9.0: Market Timing + Volume Profile sizing for futures
-  const futTimingMult = futTiming.sizingMultiplier;
-  const futVPBoost = futVolProfile.isHighVolumeZone ? 1.2 : 0.85;
-  // v10.9: Apply optimizer adaptive sizing (win streak → bigger, loss streak → smaller)
-  const futAdaptive = getAdaptiveState();
-  const futAdaptiveMultiplier = futAdaptive.aggressiveness;
-  const tradeAmount = baseTradeAmount * futSmartScore.suggestedSizePct * futCooldown * strengthBoost * futMasterSizing * futTimingMult * futVPBoost * futXauBoost * futAdaptiveMultiplier;
-  const qty = ((tradeAmount * leverage) / price).toFixed(6);
+  const positionSizeMultiplier = getLossCooldownMultiplier(symbol, "mean_reversion");
+  const baseAmount = (balance * allocation / 100) * 0.12;
+  const tradeAmount = baseAmount * positionSizeMultiplier * (meanRevSignal.confidence / 60);
+  const qty = (tradeAmount / price).toFixed(6);
 
-  // v11.4: Force leverage on Bybit before placing order
-  try {
-    await engine.client.setLeverage({ category: "linear", symbol, buyLeverage: String(leverage), sellLeverage: String(leverage) });
-    console.log(`[Futures] Set leverage ${symbol} to ${leverage}x`);
-  } catch (e: any) {
-    // 110043 = leverage not modified (already set) — safe to ignore
-    if (!e?.message?.includes("110043") && !e?.message?.includes("not modified")) {
-      console.warn(`[Futures] setLeverage ${symbol} warning: ${e?.message}`);
+  if (meanRevSignal.direction === "long" && meanRevLongs.length < maxLongPositions) {
+    // OVERSOLD → Buy long
+    const orderId = await placeOrder(engine, symbol, "Buy", qty, "linear");
+    if (orderId) {
+      if (!engine.scalpPositions[symbol]) engine.scalpPositions[symbol] = [];
+      const newPos: ScalpPosition & { __strategy?: string } = {
+        symbol, buyPrice: price, qty, orderId, exchange: "bybit",
+        category: "linear", openedAt: Date.now(), highestPrice: price,
+      };
+      (newPos as any).__strategy = "mean_reversion";
+      engine.scalpPositions[symbol].push(newPos);
+      await db.insertTrade({ userId: engine.userId, symbol, side: "buy", price: price.toString(), qty, pnl: "0.00", strategy: "mean_reversion", orderId, simulated: engine.simulationMode });
+      console.log(`[MeanRev] BUY OVERSOLD ${symbol} @ ${price.toFixed(2)} RSI=${meanRevSignal.rsiValue?.toFixed(1)} conf=${meanRevSignal.confidence}`);
+      await sendTelegramNotification(engine, `🎯 <b>PHANTOM MeanRev Compra</b>\nPar: ${symbol}\nPrecio: $${price.toFixed(2)}\nRSI: ${meanRevSignal.rsiValue?.toFixed(1)}\nConfianza: ${meanRevSignal.confidence}%\nRazón: ${meanRevSignal.reason}`);
     }
-  }
-
-  // LONG → Buy to open, SHORT → Sell to open
-  const entrySide = entryDirection === "long" ? "Buy" : "Sell";
-  const orderId = await placeOrder(engine, symbol, entrySide, qty, "linear");
-  if (orderId) {
-    positions.push({
-      symbol, entryPrice: price, qty, leverage,
-      takeProfitPct: dynamicTpPct,
-      tradeAmount, openedAt: Date.now(),
-      direction: entryDirection,
-    });
-
-    await db.insertTrade({
-      userId: engine.userId, symbol, side: entrySide.toLowerCase() as "buy" | "sell", price: price.toString(),
-      qty, pnl: "0.00", strategy: "futures", orderId, simulated: engine.simulationMode,
-    });
-
-    console.log(`[Futures] ${entryDirection.toUpperCase()} ${symbol} @ ${price.toFixed(2)} qty=${qty} leverage=${leverage}x TP=${dynamicTpPct.toFixed(1)}% score=${futSmartScore.confidence} regime=${futSmartScore.regime} order=${orderId}`);
-
-    // Telegram notification for futures entry
-    const dirEmoji = entryDirection === "long" ? "🟢" : "🔴";
-    const dirLabel = entryDirection === "long" ? "LONG" : "SHORT";
-    const masterReasons = futMaster?.reasons?.slice(0, 3).join(", ") ?? futSmartScore.reasons.slice(0, 3).join(", ");
-    await sendTelegramNotification(engine,
-      `${dirEmoji} <b>PHANTOM Futures ${dirLabel}</b>\n` +
-      `Par: ${symbol}\n` +
-      `Entrada: $${price.toFixed(2)}\n` +
-      `Apalancamiento: ${leverage}x\n` +
-      `Monto: $${tradeAmount.toFixed(2)}\n` +
-      `TP: ${dynamicTpPct.toFixed(1)}%\n` +
-      `Score: ${futEffConf} | Régimen: ${futSmartScore.regime}\n` +
-      `Master: ${masterReasons}`
-    );
+  } else if (meanRevSignal.direction === "short" && meanRevShorts.length < maxShortPositions) {
+    // OVERBOUGHT → Open short
+    const orderId = await placeOrder(engine, symbol, "Sell", qty, "linear", { isOpenShort: true });
+    if (orderId) {
+      if (!engine.shortPositions[symbol]) engine.shortPositions[symbol] = [];
+      engine.shortPositions[symbol].push({
+        symbol, entryPrice: price, qty, orderId, exchange: "bybit",
+        category: "linear", openedAt: Date.now(), lowestPrice: price, strategy: "mean_reversion",
+      });
+      await db.insertTrade({ userId: engine.userId, symbol, side: "sell", price: price.toString(), qty, pnl: "0.00", strategy: "mean_reversion", orderId, simulated: engine.simulationMode });
+      console.log(`[MeanRev] SHORT OVERBOUGHT ${symbol} @ ${price.toFixed(2)} RSI=${meanRevSignal.rsiValue?.toFixed(1)} conf=${meanRevSignal.confidence}`);
+      await sendTelegramNotification(engine, `🎯 <b>PHANTOM MeanRev Short</b>\nPar: ${symbol}\nPrecio: $${price.toFixed(2)}\nRSI: ${meanRevSignal.rsiValue?.toFixed(1)}\nConfianza: ${meanRevSignal.confidence}%`);
+    }
   }
 }
 
-// Backward compatibility alias
-const runFuturesLongOnly = runFuturesStrategy;
+// ═══════════════════════════════════════════════════════════════
+// ─── BIDIRECTIONAL GRID STRATEGY v12.0 ───
+// Grid with BOTH longs and shorts simultaneously. AI decides ratio.
+// ═══════════════════════════════════════════════════════════════
+async function runBidirectionalGridStrategy(engine: EngineState, symbol: string, category: "linear" = "linear") {
+  const ticker = await fetchTicker(engine.client, symbol, category);
+  if (!ticker) return;
 
-// ─── Opportunity Scanner (Smart Analysis v6.0 + Market Intelligence v7.0) ───
-async function runOpportunityScanner(engine: EngineState) {
-  console.log(`[Scanner] Scanning ${SCANNER_COINS.length} coins with Smart+Master Analysis...`);
-  for (const symbol of SCANNER_COINS) {
-    try {
-      const klines = await fetchKlines(null, symbol, "15", 50, "spot");
-      if (klines.closes.length < 26) continue;
+  const price = ticker.lastPrice;
+  engine.lastPrices[symbol] = price;
+  livePrices.set(symbol, ticker);
 
-      const price = klines.closes[klines.closes.length - 1];
+  if (!hasAdequateVolume(symbol)) return;
 
-      // Full smart analysis
-      const score = calculateSignalScore(klines, price);
+  // ─── SMART ANALYSIS ───
+  let smartScore: SignalScore | null = null;
+  let marketRegime: MarketRegime = "ranging";
+  let positionSizeMultiplier = 1.0;
 
-      // Master signal for enhanced scanning
-      let scanMaster: MasterSignal | null = null;
-      try {
-        const k5m = await fetchKlines(null, symbol, "5", 60, "spot");
-        const k1h = await fetchKlines(null, symbol, "60", 60, "spot");
-        const miState = await db.getOrCreateBotState(engine.userId);
-        const miCap = parseFloat(miState?.currentBalance ?? "5000");
-        scanMaster = aggregateMasterSignal({
-          symbol, currentPrice: price, klines5m: k5m, klines15m: klines, klines1h: k1h,
-          totalCapital: miCap, proposedAmount: miCap * 0.05,
-          todayPnl: parseFloat(miState?.todayPnl ?? "0"), currentBalance: miCap, strategy: "grid",
-        });
-      } catch { /* use score only */ }
+  try {
+    const klines = await fetchKlines(engine.client, symbol, "15", 60, category);
+    if (klines.closes.length >= 30) {
+      smartScore = calculateSignalScore(klines, price);
+      marketRegime = smartScore.regime;
+      positionSizeMultiplier = smartScore.suggestedSizePct;
+      positionSizeMultiplier *= getLossCooldownMultiplier(symbol, "bidirectional_grid");
+    }
+  } catch { /* keep defaults */ }
 
-      // Use best available confidence
-      const effConf = scanMaster ? Math.max(score.confidence, scanMaster.confidence) : score.confidence;
-      const effDir = scanMaster ? scanMaster.direction : score.direction;
+  const strats = await db.getUserStrategies(engine.userId);
+  const strat = strats.find(s => s.symbol === symbol && s.strategyType === "bidirectional_grid");
+  const config = strat?.config as any;
+  const gridSpreadPct = (config?.gridSpreadPct ?? 0.3) / 100;
+  const maxLongPositions = config?.maxOpenPositions ?? 6;
+  const maxShortPositions = Math.max(3, Math.floor((config?.maxOpenPositions ?? 6) * 0.7));
+  const trailingPct = (config?.trailingStopPct ?? 0.3) / 100;
 
-      // Map direction to signal label
-      let signal: string | null = null;
-      if (effDir === "buy" && effConf >= 70) signal = "STRONG BUY";
-      else if (effDir === "buy" && effConf >= 40) signal = "BUY";
-      else if (effDir === "sell" && effConf >= 70) signal = "STRONG SELL";
-      else if (effDir === "sell" && effConf >= 40) signal = "SELL";
+  // ─── AI decides long/short ratio based on regime ───
+  let longRatio = 0.5; // 50/50 default
+  let shortRatio = 0.5;
+  if (marketRegime === "trend_up" || marketRegime === "strong_trend_up") {
+    longRatio = 0.7; shortRatio = 0.3;
+  } else if (marketRegime === "trend_down" || marketRegime === "strong_trend_down") {
+    longRatio = 0.3; shortRatio = 0.7;
+  } else if (marketRegime === "volatile") {
+    longRatio = 0.5; shortRatio = 0.5;
+  }
 
-      // Also detect mean reversion and breakout opportunities
-      const meanRev = detectMeanReversion(klines, price);
-      if (meanRev?.active && !signal) {
-        signal = meanRev.direction === "buy" ? "MEAN REVERSION BUY" : "MEAN REVERSION SELL";
-      }
-      const breakout = detectBreakout(klines, price);
-      if (breakout?.active && !signal) {
-        signal = breakout.direction === "buy" ? "BREAKOUT BUY" : "BREAKOUT SELL";
-      }
+  // ─── Close existing positions ───
+  // Close long positions (in openBuyPositions with biGrid tag or general trailing)
+  const longPositions = engine.openBuyPositions[symbol] ?? [];
+  for (let i = longPositions.length - 1; i >= 0; i--) {
+    const pos = longPositions[i];
+    if ((pos as any).__biGrid !== true) continue; // only manage our own positions
+    const profitPct = (price - pos.buyPrice) / pos.buyPrice;
 
-      if (signal && effConf >= 35 && score.reasons.length >= 1) {
-        const confidence = Math.min(effConf, 95);
-        const allReasons = [...score.reasons, ...(scanMaster?.reasons ?? [])].slice(0, 6);
-        await db.insertOpportunity({
-          userId: engine.userId, symbol, signal, price: price.toString(),
-          confidence, reasons: allReasons, isRead: false,
-        });
-        console.log(`[Scanner] ${signal} ${symbol} @ ${price} confidence=${confidence}% regime=${score.regime} master=${scanMaster ? 'yes' : 'no'}`);
-        if (confidence >= 70) {
-          try {
-            const { notifyOwner } = await import("./_core/notification");
-            await notifyOwner({
-              title: `📊 PHANTOM: ${signal} ${symbol} (${confidence}%)`,
-              content: `Par: ${symbol}\nSeñal: ${signal}\nConfianza: ${confidence}%\nRégimen: ${score.regime}\nPrecio: $${price.toFixed(4)}\nRazones: ${allReasons.join(", ")}`,
-            });
-          } catch { /* non-blocking */ }
-
-          if (confidence >= 80) {
-            await sendTelegramNotification(engine,
-              `📊 <b>PHANTOM Scanner: ${signal}</b>\nPar: ${symbol}\nPrecio: $${price.toFixed(4)}\nConfianza: ${confidence}%\nRégimen: ${score.regime}\n${allReasons.join("\n")}`
-            );
+    // Trailing stop for longs
+    if (!pos.highestPrice || price > pos.highestPrice) pos.highestPrice = price;
+    if (pos.highestPrice && profitPct > 0) {
+      const dropFromHigh = (pos.highestPrice - price) / pos.highestPrice;
+      if (dropFromHigh >= trailingPct && profitPct >= 0.001) {
+        const qty = pos.qty;
+        const tradeAmount = pos.tradeAmount;
+        const grossPnl = (price - pos.buyPrice) * parseFloat(qty);
+        const pnl = calcNetPnl(grossPnl, tradeAmount, "linear", true, "bybit");
+        if (pnl > tradeAmount * MIN_PROFIT_PCT) {
+          const orderId = await placeOrder(engine, symbol, "Sell", qty, "linear");
+          if (orderId) {
+            longPositions.splice(i, 1);
+            recordTradeResult(symbol, "bidirectional_grid", pnl > 0);
+            await db.insertTrade({ userId: engine.userId, symbol, side: "sell", price: price.toString(), qty, pnl: pnl.toFixed(2), strategy: "bidirectional_grid", orderId, simulated: engine.simulationMode });
+            const cs = await db.getOrCreateBotState(engine.userId);
+            if (cs) {
+              await db.updateBotState(engine.userId, {
+                totalPnl: (parseFloat(cs.totalPnl ?? "0") + pnl).toFixed(2),
+                todayPnl: (parseFloat(cs.todayPnl ?? "0") + pnl).toFixed(2),
+                currentBalance: (parseFloat(cs.currentBalance ?? "5000") + pnl).toFixed(2),
+                totalTrades: (cs.totalTrades ?? 0) + 1,
+                winningTrades: (cs.winningTrades ?? 0) + (pnl > 0 ? 1 : 0),
+              });
+            }
+            if (strat) await db.updateStrategyStats(strat.id, pnl, pnl > 0);
+            try { recordTradeForTuning("bidirectional_grid", pnl, (pnl / tradeAmount) * 100); recordTradeResultOptimizer(pnl); } catch { /* silent */ }
+            console.log(`[BiGrid] SELL LONG ${symbol} @ ${price.toFixed(2)} pnl=$${pnl.toFixed(2)}`);
+            if (pnl > 0) await sendTelegramNotification(engine, `🔄 <b>PHANTOM BiGrid Long Profit</b>\nPar: ${symbol}\nGanancia: <b>$${pnl.toFixed(2)}</b>`);
           }
         }
       }
+    }
+  }
 
-      // Update arbitrage prices for multi-exchange scanning
-      updateArbPrice(symbol, "bybit", price);
+  // Close short positions
+  const shortPositions = engine.shortPositions[symbol] ?? [];
+  const biGridShorts = shortPositions.filter(p => p.strategy === "bidirectional_grid");
+  for (let i = biGridShorts.length - 1; i >= 0; i--) {
+    const pos = biGridShorts[i];
+    const profitPct = (pos.entryPrice - price) / pos.entryPrice;
 
-      await new Promise(r => setTimeout(r, 3000));
-    } catch (e) {
-      // Skip this coin on error
+    if (!pos.lowestPrice || price < pos.lowestPrice) pos.lowestPrice = price;
+    if (pos.lowestPrice && profitPct > 0) {
+      const bounceFromLow = (price - pos.lowestPrice) / pos.lowestPrice;
+      if (bounceFromLow >= trailingPct && profitPct >= 0.001) {
+        const qty = pos.qty;
+        const tradeAmount = pos.entryPrice * parseFloat(qty);
+        const grossPnl = (pos.entryPrice - price) * parseFloat(qty);
+        const pnl = calcNetPnl(grossPnl, tradeAmount, "linear", true, "bybit");
+        if (pnl > tradeAmount * MIN_PROFIT_PCT) {
+          const orderId = await placeOrder(engine, symbol, "Buy", qty, "linear", { reduceOnly: true });
+          if (orderId) {
+            const allShorts = engine.shortPositions[symbol] ?? [];
+            const idx = allShorts.findIndex(p => p.orderId === pos.orderId);
+            if (idx >= 0) allShorts.splice(idx, 1);
+            recordTradeResult(symbol, "bidirectional_grid", pnl > 0);
+            await db.insertTrade({ userId: engine.userId, symbol, side: "buy", price: price.toString(), qty, pnl: pnl.toFixed(2), strategy: "bidirectional_grid", orderId, simulated: engine.simulationMode });
+            const cs = await db.getOrCreateBotState(engine.userId);
+            if (cs) {
+              await db.updateBotState(engine.userId, {
+                totalPnl: (parseFloat(cs.totalPnl ?? "0") + pnl).toFixed(2),
+                todayPnl: (parseFloat(cs.todayPnl ?? "0") + pnl).toFixed(2),
+                currentBalance: (parseFloat(cs.currentBalance ?? "5000") + pnl).toFixed(2),
+                totalTrades: (cs.totalTrades ?? 0) + 1,
+                winningTrades: (cs.winningTrades ?? 0) + (pnl > 0 ? 1 : 0),
+              });
+            }
+            if (strat) await db.updateStrategyStats(strat.id, pnl, pnl > 0);
+            try { recordTradeForTuning("bidirectional_grid", pnl, (pnl / tradeAmount) * 100); recordTradeResultOptimizer(pnl); } catch { /* silent */ }
+            console.log(`[BiGrid] COVER SHORT ${symbol} @ ${price.toFixed(2)} pnl=$${pnl.toFixed(2)}`);
+            if (pnl > 0) await sendTelegramNotification(engine, `🔄 <b>PHANTOM BiGrid Short Profit</b>\nPar: ${symbol}\nGanancia: <b>$${pnl.toFixed(2)}</b>`);
+          }
+        }
+      }
+    }
+
+    // Safety stop for shorts at -3%
+    if (profitPct < -0.03) {
+      const qty = pos.qty;
+      const tradeAmount = pos.entryPrice * parseFloat(qty);
+      const grossPnl = (pos.entryPrice - price) * parseFloat(qty);
+      const pnl = calcNetPnl(grossPnl, tradeAmount, "linear", true, "bybit");
+      const orderId = await placeOrder(engine, symbol, "Buy", qty, "linear", { reduceOnly: true });
+      if (orderId) {
+        const allShorts = engine.shortPositions[symbol] ?? [];
+        const idx = allShorts.findIndex(p => p.orderId === pos.orderId);
+        if (idx >= 0) allShorts.splice(idx, 1);
+        recordTradeResult(symbol, "bidirectional_grid", false);
+        await db.insertTrade({ userId: engine.userId, symbol, side: "buy", price: price.toString(), qty, pnl: pnl.toFixed(2), strategy: "bidirectional_grid", orderId, simulated: engine.simulationMode });
+        const cs = await db.getOrCreateBotState(engine.userId);
+        if (cs) {
+          await db.updateBotState(engine.userId, {
+            totalPnl: (parseFloat(cs.totalPnl ?? "0") + pnl).toFixed(2),
+            todayPnl: (parseFloat(cs.todayPnl ?? "0") + pnl).toFixed(2),
+            currentBalance: (parseFloat(cs.currentBalance ?? "5000") + pnl).toFixed(2),
+            totalTrades: (cs.totalTrades ?? 0) + 1,
+            winningTrades: (cs.winningTrades ?? 0) + (pnl > 0 ? 1 : 0),
+          });
+        }
+        console.log(`[BiGrid] STOP SHORT ${symbol} @ ${price.toFixed(2)} pnl=$${pnl.toFixed(2)}`);
+      }
+    }
+  }
+
+  // ─── Entry Logic: Place grid entries at spread intervals ───
+  const biGridLongs = longPositions.filter(p => (p as any).__biGrid === true);
+  const currentBiGridShorts = (engine.shortPositions[symbol] ?? []).filter(p => p.strategy === "bidirectional_grid");
+
+  // Only enter if confidence is reasonable
+  if (!smartScore || smartScore.confidence < 15) return;
+
+  const allocation = strat?.allocationPct ?? 30;
+  const state = await db.getOrCreateBotState(engine.userId);
+  const balance = parseFloat(state?.currentBalance ?? "5000");
+  const baseAmount = (balance * allocation / 100) * 0.08;
+
+  // ─── Long entries (below current price) ───
+  if (biGridLongs.length < maxLongPositions * longRatio) {
+    // Check if price dropped enough from last long entry
+    const lastLongPrice = biGridLongs.length > 0 ? Math.min(...biGridLongs.map(p => p.buyPrice)) : price * (1 + gridSpreadPct);
+    if (price < lastLongPrice * (1 - gridSpreadPct)) {
+      const tradeAmount = baseAmount * positionSizeMultiplier * longRatio;
+      const qty = (tradeAmount / price).toFixed(6);
+      const orderId = await placeOrder(engine, symbol, "Buy", qty, "linear");
+      if (orderId) {
+        if (!engine.openBuyPositions[symbol]) engine.openBuyPositions[symbol] = [];
+        const newPos: OpenBuyPosition & { __biGrid?: boolean } = {
+          symbol, buyPrice: price, qty, tradeAmount, category: "linear",
+          gridLevelPrice: price, highestPrice: price, openedAt: Date.now(),
+        };
+        (newPos as any).__biGrid = true;
+        engine.openBuyPositions[symbol].push(newPos);
+        await db.insertTrade({ userId: engine.userId, symbol, side: "buy", price: price.toString(), qty, pnl: "0.00", strategy: "bidirectional_grid", orderId, simulated: engine.simulationMode });
+        console.log(`[BiGrid] BUY LONG ${symbol} @ ${price.toFixed(2)} qty=${qty} ratio=L${(longRatio*100).toFixed(0)}/S${(shortRatio*100).toFixed(0)}`);
+      }
+    }
+  }
+
+  // ─── Short entries (above current price) ───
+  if (currentBiGridShorts.length < maxShortPositions * shortRatio) {
+    const lastShortPrice = currentBiGridShorts.length > 0 ? Math.max(...currentBiGridShorts.map(p => p.entryPrice)) : price * (1 - gridSpreadPct);
+    if (price > lastShortPrice * (1 + gridSpreadPct)) {
+      const tradeAmount = baseAmount * positionSizeMultiplier * shortRatio;
+      const qty = (tradeAmount / price).toFixed(6);
+      const orderId = await placeOrder(engine, symbol, "Sell", qty, "linear", { isOpenShort: true });
+      if (orderId) {
+        if (!engine.shortPositions[symbol]) engine.shortPositions[symbol] = [];
+        engine.shortPositions[symbol].push({
+          symbol, entryPrice: price, qty, orderId, exchange: "bybit",
+          category: "linear", openedAt: Date.now(), lowestPrice: price, strategy: "bidirectional_grid",
+        });
+        await db.insertTrade({ userId: engine.userId, symbol, side: "sell", price: price.toString(), qty, pnl: "0.00", strategy: "bidirectional_grid", orderId, simulated: engine.simulationMode });
+        console.log(`[BiGrid] OPEN SHORT ${symbol} @ ${price.toFixed(2)} qty=${qty} ratio=L${(longRatio*100).toFixed(0)}/S${(shortRatio*100).toFixed(0)}`);
+      }
     }
   }
 }
 
-// ─── SP500 via Yahoo Finance ───
-async function fetchSP500Price(): Promise<TickerData | null> {
+// ═══════════════════════════════════════════════════════════════
+// ─── OPPORTUNITY SCANNER v12.0 ───
+// ═══════════════════════════════════════════════════════════════
+async function runOpportunityScanner(engine: EngineState) {
   try {
-    const url = `https://query1.finance.yahoo.com/v8/finance/chart/%5EGSPC?interval=1d&range=5d`;
-    const res = await fetch(url, {
-      signal: AbortSignal.timeout(10000),
-      headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" },
-    });
-    if (!res.ok) throw new Error(`Yahoo Finance HTTP ${res.status}`);
-    const data = await res.json() as any;
-    const meta = data?.chart?.result?.[0]?.meta;
-    if (!meta) throw new Error("No meta in Yahoo Finance response");
+    for (const symbol of SCANNER_COINS) {
+      const ticker = livePrices.get(symbol);
+      if (!ticker) continue;
+      const price = ticker.lastPrice;
 
-    const price = meta.regularMarketPrice ?? 0;
-    const prevClose = meta.chartPreviousClose ?? meta.previousClose ?? price;
-    const pctChange = prevClose > 0 ? (price - prevClose) / prevClose : 0;
-    return {
-      symbol: "SP500", lastPrice: price, bid1Price: price, ask1Price: price,
-      price24hPcnt: pctChange, highPrice24h: meta.regularMarketDayHigh ?? price,
-      lowPrice24h: meta.regularMarketDayLow ?? price, volume24h: meta.regularMarketVolume ?? 0,
-      turnover24h: 0,
-    };
+      try {
+        const klines = await fetchKlines(engine.client, symbol, "15", 60, "linear");
+        if (klines.closes.length < 30) continue;
+        const score = calculateSignalScore(klines, price);
+        if (score.confidence >= 80 && score.direction === "buy") {
+          console.log(`[Scanner] ${symbol} HIGH CONFIDENCE: ${score.confidence}% ${score.direction} regime=${score.regime}`);
+          await sendTelegramNotification(engine, buildOpportunityAlert(symbol, score.confidence, score.direction, score.regime, 0, 0, "scanner"));
+        }
+      } catch { /* skip symbol */ }
+    }
   } catch (e) {
-    console.error("[PriceFeed] SP500 Yahoo Finance fetch failed:", (e as Error).message);
-    return null;
+    console.error("[Scanner] Error:", (e as Error).message);
   }
 }
 
-async function updateLivePrices(_client?: RestClientV5) {
-  // Prices are fed by WebSocket — this is a no-op
-}
+// ═══════════════════════════════════════════════════════════════
+// ─── POSITION RECONCILIATION v12.0 ───
+// Sync DB positions with actual Bybit positions on startup
+// ═══════════════════════════════════════════════════════════════
+async function reconcilePositions(engine: EngineState) {
+  if (engine.simulationMode) return;
+  console.log("[Reconcile] Starting position reconciliation with Bybit...");
 
-// ─── Engine Control ───
-export async function startEngine(userId: number): Promise<{ success: boolean; error?: string }> {
-  if (engines.has(userId)) {
-    return { success: false, error: "Engine already running" };
-  }
-
-  const state = await db.getOrCreateBotState(userId);
-  const simulationMode = state?.simulationMode ?? true;
-  const selectedExchange = (state as any)?.selectedExchange ?? "bybit";
-
-  // Load Telegram config
-  let telegramBotToken: string | undefined;
-  let telegramChatId: string | undefined;
   try {
-    const tgKey = await db.getApiKey(userId, "telegram" as any);
-    if (tgKey) {
-      telegramBotToken = tgKey.apiKey;
-      telegramChatId = tgKey.apiSecret;
+    // Get all linear positions from Bybit
+    const res = await withRetry(() => engine.client.getPositionInfo({ category: "linear", settleCoin: "USDT" }), "Reconcile positions");
+    if (res.retCode !== 0) {
+      console.warn("[Reconcile] Failed to fetch Bybit positions:", res.retMsg);
+      return;
     }
-  } catch { /* no telegram config */ }
 
-  let client: RestClientV5 = new RestClientV5({});
-  let kucoinClient: any = null;
+    const bybitPositions = (res.result?.list ?? []) as any[];
+    const activeBybitSymbols = new Map<string, { size: number; avgPrice: number }>();
 
-  if (simulationMode) {
-    console.log(`[Engine] Starting in SIMULATION mode (${selectedExchange}) for user ${userId}`);
-  } else if (selectedExchange === "both") {
-    const bybitKeys = await db.getApiKey(userId, "bybit");
-    const kucoinKeys = await db.getApiKey(userId, "kucoin");
-    if (bybitKeys) {
-      client = new RestClientV5({ key: bybitKeys.apiKey, secret: bybitKeys.apiSecret });
-      console.log(`[Engine] BOTH mode: Bybit client initialized for user ${userId}`);
-    } else {
-      console.log(`[Engine] BOTH mode: No Bybit keys, using public client`);
-    }
-    if (kucoinKeys) {
-      try {
-        const { SpotClient } = await import("kucoin-api");
-        kucoinClient = new SpotClient({
-          apiKey: kucoinKeys.apiKey, apiSecret: kucoinKeys.apiSecret,
-          apiPassphrase: kucoinKeys.passphrase ?? "",
+    for (const pos of bybitPositions) {
+      const size = parseFloat(pos.size ?? "0");
+      if (size > 0 && pos.side === "Buy") {
+        activeBybitSymbols.set(pos.symbol, {
+          size,
+          avgPrice: parseFloat(pos.avgPrice ?? "0"),
         });
-        console.log(`[Engine] BOTH mode: KuCoin client initialized for user ${userId}`);
-      } catch (e) {
-        console.error(`[Engine] BOTH mode: Failed to create KuCoin client:`, (e as Error).message);
       }
-    } else {
-      console.log(`[Engine] BOTH mode: No KuCoin keys, KuCoin will be skipped`);
     }
-    console.log(`[Engine] Starting in LIVE mode (BOTH: Bybit + KuCoin) for user ${userId}`);
-  } else {
-    const keys = await db.getApiKey(userId, selectedExchange);
-    if (!keys) {
-      console.log(`[Engine] Starting in PUBLIC mode (${selectedExchange}) for user ${userId}`);
-    } else if (selectedExchange === "kucoin") {
-      try {
-        const { SpotClient } = await import("kucoin-api");
-        kucoinClient = new SpotClient({
-          apiKey: keys.apiKey, apiSecret: keys.apiSecret,
-          apiPassphrase: keys.passphrase ?? "",
-        });
-        console.log(`[Engine] Starting in LIVE mode (KuCoin) for user ${userId}`);
-      } catch (e) {
-        console.error(`[Engine] Failed to create KuCoin client:`, (e as Error).message);
-        return { success: false, error: "Failed to initialize KuCoin client" };
+
+    console.log(`[Reconcile] Bybit has ${activeBybitSymbols.size} active long positions`);
+
+    // Check each DB position against Bybit
+    const allSymbols = new Set([
+      ...Object.keys(engine.openBuyPositions),
+      ...Object.keys(engine.scalpPositions),
+    ]);
+
+    for (const symbol of Array.from(allSymbols)) {
+      const bybitPos = activeBybitSymbols.get(symbol);
+
+      // Grid positions
+      const gridPositions = engine.openBuyPositions[symbol] ?? [];
+      if (gridPositions.length > 0 && !bybitPos) {
+        console.warn(`[Reconcile] ${symbol} has ${gridPositions.length} grid positions in DB but NO position on Bybit — clearing DB`);
+        engine.openBuyPositions[symbol] = [];
+        await db.clearAllOpenPositions(engine.userId);
       }
-    } else {
-      client = new RestClientV5({ key: keys.apiKey, secret: keys.apiSecret });
-      console.log(`[Engine] Starting in LIVE mode (Bybit) for user ${userId}`);
+
+      // Scalp positions
+      const scalpPositions = engine.scalpPositions[symbol] ?? [];
+      if (scalpPositions.length > 0 && !bybitPos) {
+        console.warn(`[Reconcile] ${symbol} has ${scalpPositions.length} scalp positions in DB but NO position on Bybit — clearing`);
+        engine.scalpPositions[symbol] = [];
+      }
+    }
+
+    // Check if Bybit has positions we don't know about
+    for (const [symbol, bybitPos] of Array.from(activeBybitSymbols.entries())) {
+      const hasGrid = (engine.openBuyPositions[symbol]?.length ?? 0) > 0;
+      const hasScalp = (engine.scalpPositions[symbol]?.length ?? 0) > 0;
+      if (!hasGrid && !hasScalp) {
+        console.warn(`[Reconcile] ${symbol} has position on Bybit (size=${bybitPos.size}, avg=${bybitPos.avgPrice}) but NOT in DB — adding as grid position`);
+        if (!engine.openBuyPositions[symbol]) engine.openBuyPositions[symbol] = [];
+        engine.openBuyPositions[symbol].push({
+          symbol, buyPrice: bybitPos.avgPrice, qty: bybitPos.size.toString(),
+          tradeAmount: bybitPos.avgPrice * bybitPos.size, category: "linear",
+          gridLevelPrice: bybitPos.avgPrice, highestPrice: bybitPos.avgPrice, openedAt: Date.now(),
+        });
+      }
+    }
+
+    console.log("[Reconcile] Position reconciliation complete");
+  } catch (e) {
+    console.error("[Reconcile] Error:", (e as Error).message);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// ─── STALE POSITION CLOSER v12.0 ───
+// Actually close stale positions instead of just logging them
+// ═══════════════════════════════════════════════════════════════
+async function closeStalePositions(engine: EngineState) {
+  const allScalpPositions = Object.entries(engine.scalpPositions).flatMap(([sym, positions]) =>
+    positions.map((p, idx) => ({ symbol: sym, pos: p, idx, strategy: "scalping" as const }))
+  );
+  const allGridPositions = Object.entries(engine.openBuyPositions).flatMap(([sym, positions]) =>
+    positions.map((p, idx) => ({ symbol: sym, pos: p, idx, strategy: "grid" as const }))
+  );
+
+  for (const item of [...allScalpPositions, ...allGridPositions]) {
+    const price = engine.lastPrices[item.symbol] ?? livePrices.get(item.symbol)?.lastPrice ?? 0;
+    if (price <= 0) continue;
+
+    const buyPrice = item.strategy === "scalping" ? (item.pos as ScalpPosition).buyPrice : (item.pos as OpenBuyPosition).buyPrice;
+    const openedAt = item.strategy === "scalping" ? (item.pos as ScalpPosition).openedAt : (item.pos as OpenBuyPosition).openedAt;
+    const holdHours = (Date.now() - openedAt) / 3600000;
+    const profitPct = (price - buyPrice) / buyPrice;
+
+    // Stale thresholds: scalp > 4h, grid > 12h
+    const staleHours = item.strategy === "scalping" ? 4 : 12;
+    if (holdHours < staleHours) continue;
+
+    // Only close if in profit (no stop-loss philosophy)
+    if (profitPct <= 0) {
+      console.log(`[Stale] ${item.symbol} ${item.strategy} held ${holdHours.toFixed(1)}h at ${(profitPct * 100).toFixed(2)}% — HOLD (no stop-loss)`);
+      continue;
+    }
+
+    const qty = item.strategy === "scalping" ? (item.pos as ScalpPosition).qty : (item.pos as OpenBuyPosition).qty;
+    const tradeAmount = buyPrice * parseFloat(qty);
+    const grossPnl = (price - buyPrice) * parseFloat(qty);
+    const pnl = calcNetPnl(grossPnl, tradeAmount, "linear", true, "bybit", Date.now() - openedAt);
+
+    if (pnl <= tradeAmount * MIN_PROFIT_PCT) continue;
+
+    const orderId = await placeOrder(engine, item.symbol, "Sell", qty, "linear");
+    if (orderId) {
+      // Remove from positions
+      if (item.strategy === "scalping") {
+        const arr = engine.scalpPositions[item.symbol];
+        if (arr) {
+          const idx = arr.findIndex(p => p.buyPrice === buyPrice && p.qty === qty);
+          if (idx >= 0) arr.splice(idx, 1);
+        }
+      } else {
+        const arr = engine.openBuyPositions[item.symbol];
+        if (arr) {
+          const idx = arr.findIndex(p => p.buyPrice === buyPrice && p.qty === qty);
+          if (idx >= 0) arr.splice(idx, 1);
+        }
+      }
+
+      recordTradeResult(item.symbol, item.strategy, pnl > 0);
+      await db.insertTrade({ userId: engine.userId, symbol: item.symbol, side: "sell", price: price.toString(), qty, pnl: pnl.toFixed(2), strategy: item.strategy, orderId, simulated: engine.simulationMode });
+      const cs = await db.getOrCreateBotState(engine.userId);
+      if (cs) {
+        await db.updateBotState(engine.userId, {
+          totalPnl: (parseFloat(cs.totalPnl ?? "0") + pnl).toFixed(2),
+          todayPnl: (parseFloat(cs.todayPnl ?? "0") + pnl).toFixed(2),
+          currentBalance: (parseFloat(cs.currentBalance ?? "5000") + pnl).toFixed(2),
+          totalTrades: (cs.totalTrades ?? 0) + 1,
+          winningTrades: (cs.winningTrades ?? 0) + (pnl > 0 ? 1 : 0),
+        });
+      }
+
+      console.log(`[Stale] CLOSED ${item.symbol} ${item.strategy} held ${holdHours.toFixed(1)}h pnl=$${pnl.toFixed(2)}`);
+      await sendTelegramNotification(engine, `🕐 <b>PHANTOM Stale Close</b>\nPar: ${item.symbol}\nEstrategia: ${item.strategy}\nTiempo: ${holdHours.toFixed(1)}h\nGanancia: <b>$${pnl.toFixed(2)}</b>`);
     }
   }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// ─── START ENGINE v12.0 ───
+// ═══════════════════════════════════════════════════════════════
+export async function startEngine(userId: number, options: {
+  exchange: string; apiKey: string; apiSecret: string;
+  passphrase?: string; simulationMode?: boolean;
+  telegramBotToken?: string; telegramChatId?: string;
+}): Promise<{ success: boolean }> {
+  if (engines.has(userId)) {
+    console.log(`[Engine] Already running for user ${userId}`);
+    return { success: true };
+  }
+
+  const client = new RestClientV5({
+    key: options.simulationMode ? undefined : options.apiKey,
+    secret: options.simulationMode ? undefined : options.apiSecret,
+  });
 
   const engine: EngineState = {
-    userId, exchange: selectedExchange, client, kucoinClient,
-    isRunning: true, simulationMode,
-    gridLevels: {}, lastPrices: {}, openBuyPositions: {},
-    futuresPositions: {}, dcaPositions: {}, scalpPositions: {},
-    telegramBotToken, telegramChatId,
+    userId, exchange: "bybit", client,
+    isRunning: true, simulationMode: options.simulationMode ?? false,
+    gridLevels: {}, lastPrices: {},
+    openBuyPositions: {}, dcaPositions: {},
+    scalpPositions: {}, shortPositions: {},
+    telegramBotToken: options.telegramBotToken,
+    telegramChatId: options.telegramChatId,
+    pnlAlertsSentToday: new Set<string>(),
   };
 
   engines.set(userId, engine);
-  await db.updateBotState(userId, { isRunning: true, startedAt: new Date() });
-  await updateLivePrices(client);
   engineCycles.set(userId, 0);
 
-  // ─── Restore open positions from DB (survive restarts) ───
-  // Always restore positions (both LIVE and simulation) so sells can find paired buys
-  try {
-    const savedBybit = await db.loadOpenPositions(userId, "bybit");
-    const savedKucoin = await db.loadOpenPositions(userId, "kucoin");
-    let totalRestored = 0;
-    for (const [sym, positions] of Object.entries(savedBybit)) {
-      engine.openBuyPositions[sym] = [...(engine.openBuyPositions[sym] ?? []), ...positions];
-      totalRestored += positions.length;
+  // ─── v12.0: Force leverage 5x on all active symbols ───
+  if (!engine.simulationMode) {
+    const strats = await db.getUserStrategies(userId);
+    const activeSymbols = new Set(strats.filter(s => s.enabled).map(s => s.symbol));
+    for (const symbol of Array.from(activeSymbols)) {
+      await ensureLeverage(client, symbol, LEVERAGE);
     }
-    for (const [sym, positions] of Object.entries(savedKucoin)) {
-      engine.openBuyPositions[sym] = [...(engine.openBuyPositions[sym] ?? []), ...positions];
-      totalRestored += positions.length;
-    }
-    if (totalRestored > 0) {
-      console.log(`[Engine] Restored ${totalRestored} open positions from DB for user ${userId} (mode: ${simulationMode ? 'SIM' : 'LIVE'})`);
-    }
-  } catch (e) {
-    console.error(`[Engine] Failed to restore positions:`, (e as Error).message);
+    console.log(`[Engine] Leverage set to ${LEVERAGE}x for ${activeSymbols.size} symbols`);
   }
 
-  // Main trading loop — every 30 seconds
+  // ─── Restore positions from DB ───
+  try {
+    const savedPositions = await db.loadOpenPositions(userId, "bybit");
+    let totalRestored = 0;
+    for (const [symbol, positions] of Object.entries(savedPositions)) {
+      if (!engine.openBuyPositions[symbol]) engine.openBuyPositions[symbol] = [];
+      for (const pos of positions) {
+        engine.openBuyPositions[symbol].push(pos);
+        totalRestored++;
+      }
+    }
+    if (totalRestored > 0) console.log(`[Engine] Restored ${totalRestored} positions from DB`);
+  } catch (e) {
+    console.error("[Engine] Failed to restore positions:", (e as Error).message);
+  }
+
+  // ─── v12.0: Reconcile with Bybit ───
+  await reconcilePositions(engine);
+
+  // ─── Fetch Fear & Greed Index ───
+  try {
+    const fg = await fetchFearGreedIndex();
+    if (fg) console.log(`[Engine] Fear & Greed Index: ${fg.score} (${fg.label})`);
+  } catch { /* silent */ }
+
+  // ─── AutoTune parameters ───
+  try {
+    const tuneResult = autoTuneParameters();
+    console.log(`[Engine] AutoTune: gridSpread=${tuneResult.gridSpreadMultiplier.toFixed(2)}, posSize=${tuneResult.positionSizeMultiplier.toFixed(2)}`);
+  } catch { /* silent */ }
+
+  await db.updateBotState(userId, { isRunning: true });
+  console.log(`[Engine] v12.0 STARTED for user ${userId} | exchange=bybit | sim=${engine.simulationMode} | leverage=${LEVERAGE}x`);
+
+  await sendTelegramNotification(engine,
+    `🚀 <b>PHANTOM v12.0 — Motor Iniciado</b>\n` +
+    `Modo: ${engine.simulationMode ? "🧪 Simulación" : "🔴 LIVE"}\n` +
+    `Leverage: ${LEVERAGE}x\n` +
+    `Exchange: Bybit\n` +
+    `Inteligencia: AI + Kelly + F&G conectados\n` +
+    `Protección: Trailing + Time-Profit (sin stop-loss)`
+  );
+
+  // ═══ MAIN TRADING LOOP ═══
   engine.intervalId = setInterval(async () => {
     if (!engine.isRunning) return;
     try {
-      const cycleNum = (engineCycles.get(userId) ?? 0) + 1;
-      engineCycles.set(userId, cycleNum);
+      const cycle = (engineCycles.get(userId) ?? 0) + 1;
+      engineCycles.set(userId, cycle);
 
-      // ─── MARKET INTELLIGENCE: Update BTC state every cycle ───
-      try {
-        const btcTicker = livePrices.get("BTCUSDT");
-        if (btcTicker) {
-          updateBTCState(btcTicker.lastPrice);
-        } else {
-          const btcData = await fetchTicker(engine.client, "BTCUSDT", "linear");
-          if (btcData) updateBTCState(btcData.lastPrice);
+      // ─── v12.0: Emergency Stop using REAL today PnL from trades ───
+      const realTodayPnl = await getRealTodayPnl(userId);
+      if (realTodayPnl <= EMERGENCY_STOP_THRESHOLD) {
+        console.error(`[Engine] 🚨 EMERGENCY STOP — Today PnL: $${realTodayPnl.toFixed(2)} <= $${EMERGENCY_STOP_THRESHOLD}`);
+        await sendTelegramNotification(engine,
+          `🚨 <b>PHANTOM — FRENO DE EMERGENCIA</b>\nPérdida hoy: $${realTodayPnl.toFixed(2)}\nLímite: $${EMERGENCY_STOP_THRESHOLD}\nBot DETENIDO automáticamente.`
+        );
+        await stopEngine(userId);
+        return;
+      }
+
+      // ─── PnL Alerts ───
+      const todayStr = new Date().toISOString().slice(0, 10);
+      if (realTodayPnl <= WARNING_THRESHOLD) {
+        const alertKey = `warn_${todayStr}`;
+        if (!engine.pnlAlertsSentToday?.has(alertKey)) {
+          engine.pnlAlertsSentToday?.add(alertKey);
+          await sendTelegramNotification(engine, `⚠️ <b>PHANTOM Alerta</b>\nPérdida hoy: $${realTodayPnl.toFixed(2)}\nUmbral: $${WARNING_THRESHOLD}`);
         }
-      } catch { /* silent */ }
-
-      // ─── MARKET INTELLIGENCE: Session & Momentum logging ───
-      const currentSession = getCurrentSession();
-      const intradayBoost = getIntradayMomentumBoost();
-      if (cycleNum % 20 === 1) {
-        console.log(`[Intelligence] Session=${currentSession.session} aggressiveness=${currentSession.aggressiveness} intradayBoost=${intradayBoost} reason=${currentSession.reason}`);
       }
 
-      // ─── MARKET INTELLIGENCE: Drawdown check ───
-      try {
-        const ddState = await db.getOrCreateBotState(userId);
-        const ddPnl = parseFloat(ddState?.todayPnl ?? "0");
-        const ddBal = parseFloat(ddState?.currentBalance ?? "5000");
-        updateDrawdownState(ddBal, ddPnl);
-        const ddCheck = getDrawdownMultiplier();
-        if (ddCheck.mode !== "normal" && cycleNum % 10 === 1) {
-          console.log(`[Intelligence] DRAWDOWN: mode=${ddCheck.mode} multiplier=${ddCheck.multiplier} reason=${ddCheck.reason}`);
-        }
-      } catch { /* silent */ }
-
-      // ─── MARKET INTELLIGENCE: Arbitrage scan (every 10 cycles) ───
-      if (cycleNum % 10 === 0 && engine.exchange === "both") {
-        try {
-          const arbOpps = scanArbitrage(0.3);
-          if (arbOpps.length > 0) {
-            console.log(`[Intelligence] Arbitrage opportunities: ${arbOpps.map(a => `${a.symbol} ${a.spreadPct.toFixed(2)}%`).join(", ")}`);
-          }
-        } catch { /* silent */ }
-      }
-
-      // ─── AI ENGINE: Fear & Greed + Sentiment (every 20 cycles ~5min) ───
-      if (cycleNum % 20 === 0) {
-        try {
-          const fgData = await fetchFearGreedIndex();
-          const fgSignal = getFearGreedSignal(fgData);
-          if (fgSignal.strength > 30) {
-            console.log(`[AI] Fear&Greed: ${fgData?.score ?? '?'} (${fgData?.label ?? '?'}) → ${fgSignal.direction} (${fgSignal.strength}%)`);
-          }
-        } catch { /* silent */ }
-      }
-
-      // ─── AUTO-OPTIMIZER: Tune parameters every 60 cycles (~8min) ─── v10.9: faster adaptation
-      if (cycleNum % 60 === 0) {
-        try {
-          const tuning = autoTuneParameters();
-          const adaptive = getAdaptiveState();
-          console.log(`[Optimizer] Auto-tune: mode=${adaptive.mode} aggressiveness=${adaptive.aggressiveness.toFixed(2)} WR=${(adaptive.recentWinRate*100).toFixed(0)}%`);
-          // Generate performance report
-          const perfReport = generatePerformanceReport();
-          if (perfReport.totalTrades > 0) {
-            console.log(`[Optimizer] Performance: WR=${(perfReport.winRate*100).toFixed(0)}% PF=${perfReport.profitFactor.toFixed(2)} Sharpe=${perfReport.sharpeRatio.toFixed(2)} trades=${perfReport.totalTrades}`);
-          }
-        } catch { /* silent */ }
-      }
-
-      // ─── ADVANCED DATA: On-chain + Open Interest + Whale (every 30 cycles ~7.5min) ───
-      if (cycleNum % 30 === 0) {
-        try {
-          for (const sym of ["BTCUSDT", "ETHUSDT"]) {
-            const price = livePrices.get(sym)?.lastPrice ?? 0;
-            const advData = await getAdvancedDataSignal(sym, price, 1000000, 500000, 0, 1.5);
-            if (advData.confidence > 40) {
-              console.log(`[AdvData] ${sym}: ${advData.direction} conf=${advData.confidence}% reasons=${advData.reasons.join(", ")}`);
-            }
-          }
-        } catch { /* silent */ }
-      }
-
-      // ─── ANOMALY DETECTION: Check for unusual market behavior (every 15 cycles ~3.75min) ───
-      if (cycleNum % 15 === 0) {
-        try {
-          for (const sym of ["BTCUSDT", "ETHUSDT", "SOLUSDT"]) {
-            const klines = klineCache.get(`${sym}_15`)?.data;
-            if (klines && klines.closes.length > 20) {
-              const anomalyResult = detectAnomaly(klines, livePrices.get(sym)?.lastPrice ?? 0);
-              const anomalies = anomalyResult.detected ? [{ type: anomalyResult.type, severity: anomalyResult.severity, action: anomalyResult.action }] : [];
-              if (anomalies.length > 0) {
-                console.log(`[AI] Anomalies ${sym}: ${anomalies.map(a => `${a.type}(${a.severity})`).join(", ")}`);
-                // Alert on critical anomalies
-                const critical = anomalies.filter(a => a.severity === "critical");
-                if (critical.length > 0) {
-                  await sendTelegramNotification(engine,
-                    `⚠️ <b>PHANTOM — Anomalía Detectada</b>\n` +
-                    `Par: ${sym}\n` +
-                    `Tipo: ${critical.map(a => a.type).join(", ")}\n` +
-                    `Acción: ${critical[0].action}`
-                  );
-                }
-              }
-            }
-          }
-        } catch { /* silent */ }
-      }
-
-      // ─── PAIR PRICE TRACKING: Update every cycle for pairs trading ───
-      try {
-        for (const sym of ["BTCUSDT", "ETHUSDT", "SOLUSDT"]) { // v11.6: concentrated
-          const ticker = livePrices.get(sym);
-          if (ticker) updatePairPrice(sym, ticker.lastPrice);
-        }
-      } catch { /* silent */ }
-
-      console.log(`[Engine] Cycle #${cycleNum} for user ${userId} (session=${currentSession.session}, boost=${intradayBoost})`);
-
-      // Periodic position save every 10 cycles (~5 minutes)
-      if (cycleNum % 10 === 0) {
-        try {
-          const posCount = Object.values(engine.openBuyPositions).reduce((s, a) => s + a.length, 0);
-          if (posCount > 0) {
-            await db.saveOpenPositions(userId, engine.openBuyPositions, engine.exchange === "both" ? "bybit" : engine.exchange);
-            if (engine.exchange === "both") {
-              await db.saveOpenPositions(userId, engine.openBuyPositions, "kucoin");
-            }
-            console.log(`[Engine] Periodic save: ${posCount} positions saved to DB`);
-          }
-        } catch (e) { /* silent */ }
-      }
-
-      // ─── Periodic 4h Report via Telegram ───
-      if (cycleNum % 720 === 0) {
-        try {
-          await sendStatusReport(engine);
-          console.log(`[Engine] Periodic 4h report sent via Telegram`);
-        } catch (e) { /* silent */ }
-      }
-      // ─── v10.4: FORCE SELL ALL altcoins to USDT (every 2 cycles ~20s) ───
-      if (true) { // v10.8: liquidate ALL altcoins EVERY cycle for fastest USDT recovery
-        try {
-          await autoConvertCoinsToUSDT(engine);
-          console.log(`[Engine] Auto-convert check completed`);
-        } catch (e) { /* silent */ }
-      }
-      // ─── v11.4: EMERGENCY STOP — $500 daily loss limit ───
-      if (cycleNum % 10 === 0) {
-        try {
-          const ddState = await db.getOrCreateBotState(userId);
-          const ddTodayPnl = parseFloat(ddState?.todayPnl ?? "0");
-          const EMERGENCY_STOP_THRESHOLD = -500; // v11.4: HARD STOP at -$500
-          const WARNING_THRESHOLD = -300; // v11.4: Warning at -$300
-          const todayStr = new Date().toISOString().slice(0, 10);
-
-          // EMERGENCY STOP: -$500 — stop ALL trading immediately
-          if (ddTodayPnl <= EMERGENCY_STOP_THRESHOLD) {
-            console.log(`[ENGINE] 🚨🚨🚨 EMERGENCY STOP TRIGGERED: todayPnl=$${ddTodayPnl.toFixed(2)} <= $${EMERGENCY_STOP_THRESHOLD}`);
-            engine.isRunning = false;
-            await sendTelegramNotification(engine,
-              `🚨🚨🚨 <b>PHANTOM — FRENO DE EMERGENCIA</b>\n\n` +
-              `Pérdida del día: <b>$${ddTodayPnl.toFixed(2)}</b>\n` +
-              `Límite configurado: $${EMERGENCY_STOP_THRESHOLD}\n\n` +
-              `⛔ <b>EL BOT SE DETUVO AUTOMÁTICAMENTE</b>\n` +
-              `No se abrirán más posiciones hasta que reinicies manualmente.\n` +
-              `Revisa las posiciones abiertas en Bybit y decide si cerrarlas.`
-            );
-            await db.updateBotState(userId, { isRunning: false });
-            return; // Stop the entire engine loop
-          }
-
-          // WARNING: -$300 — alert but keep trading
-          if (ddTodayPnl <= WARNING_THRESHOLD && engine.lastDrawdownAlertDate !== todayStr) {
-            engine.lastDrawdownAlertDate = todayStr;
-            await sendTelegramNotification(engine,
-              `⚠️ <b>PHANTOM — Alerta de Pérdida</b>\n\n` +
-              `Pérdida del día: <b>$${ddTodayPnl.toFixed(2)}</b>\n` +
-              `Límite de emergencia: $${EMERGENCY_STOP_THRESHOLD}\n\n` +
-              `El bot sigue operando pero se detendrá automáticamente si llega a $${EMERGENCY_STOP_THRESHOLD}.\n` +
-              `Usa /status para ver el estado actual.`
-            );
-            console.log(`[Engine] Drawdown WARNING: todayPnl=$${ddTodayPnl.toFixed(2)} threshold=$${WARNING_THRESHOLD}`);
-          }
-        } catch (e) { /* silent */ }
-      }
-
-      // ─── v11.6: PNL THRESHOLD ALERTS ($100, $200, $300) — REAL trades PnL, no duplicates ───
-      // Check every 60 cycles (~6 min) to avoid spam and give time for new trades
-      if (cycleNum % 60 === 0) {
-        try {
-          const todayStr = new Date().toISOString().slice(0, 10);
-          const now = new Date();
-          const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-
-          // v11.6: Calculate REAL PnL from actual closed trades today (not stale DB value)
-          const allTradesForAlert = await db.getUserTrades(userId, 5000);
-          const todayClosedTrades = allTradesForAlert.filter(t => 
-            new Date(t.createdAt) >= todayStart && t.side === "sell"
-          );
-          const realTodayPnl = todayClosedTrades.reduce((sum, t) => sum + parseFloat(t.pnl ?? "0"), 0);
-
-          // Fetch REAL Bybit balance for the alert message
-          let realCapital = 0;
-          try {
-            if (engine.client) {
-              const walletRes = await withRetry(() => engine.client.getWalletBalance({ accountType: "UNIFIED" }), "Alert Bybit balance");
-              const bybitEquity = parseFloat((walletRes.result as any)?.list?.[0]?.totalEquity ?? "0");
-              if (bybitEquity > 0) realCapital = bybitEquity;
-            }
-          } catch { /* use 0 as fallback */ }
-
-          const thresholds = [300, 200, 100]; // check highest first
-          for (const threshold of thresholds) {
-            const alertKey = `pnl_threshold_${threshold}_${todayStr}`;
-            // Triple-check to prevent duplicates: in-memory Set + Map
-            const alreadySentMemory = engine.pnlAlertsSentToday?.has(alertKey) ?? false;
-            const alreadySentMap = lastErrorNotif.has(alertKey);
-            if (realTodayPnl >= threshold && !alreadySentMemory && !alreadySentMap) {
-              // Mark as sent in BOTH places immediately
-              if (!engine.pnlAlertsSentToday) engine.pnlAlertsSentToday = new Set();
-              engine.pnlAlertsSentToday.add(alertKey);
-              lastErrorNotif.set(alertKey, Date.now());
-              const emoji = threshold >= 300 ? "\u{1F3C6}" : threshold >= 200 ? "\u{1F525}" : "\u2705";
-              const tradeCount = todayClosedTrades.length;
-              await sendTelegramNotification(engine,
-                `${emoji} <b>PHANTOM \u2014 Meta $${threshold} Alcanzada!</b>\n\n` +
-                `Ganancia hoy: <b>+$${realTodayPnl.toFixed(2)}</b> (${tradeCount} trades cerrados)\n` +
-                `Capital real (Bybit): <b>$${realCapital.toFixed(2)}</b>\n\n` +
-                `${threshold >= 300 ? "\u{1F3AF} META DIARIA CUMPLIDA! El bot sigue operando para maximizar." : "Seguimos operando hacia la meta de $300/d\u00EDa."}`
-              );
-              console.log(`[Engine] PnL threshold alert: $${threshold} reached (realTodayPnl=$${realTodayPnl.toFixed(2)}, trades=${tradeCount}, capital=$${realCapital.toFixed(2)})`);
-              break; // only send highest threshold alert
-            }
-          }
-        } catch { /* silent */ }
-      }
-
-      // ─── DAILY PROFIT TARGET SYSTEM ───
-      // When daily profit reaches 2%+: only allow exceptional opportunities (score >= 75)
-      // When daily profit reaches 5%+: STOP all new trades completely
-      // v11.2: NEVER STOP TRADING — always normal mode, target is $300-$500/day
-      // Removed cautious/stopped modes that were blocking trades
+      // ─── Daily Profit Mode ───
       let dailyProfitMode: "normal" | "cautious" | "stopped" = "normal";
-      // Always normal mode — keep trading 24/7
+      if (realTodayPnl <= -200) dailyProfitMode = "stopped";
+      else if (realTodayPnl <= -100) dailyProfitMode = "cautious";
 
+      // ─── Periodic tasks ───
+      // Fear & Greed refresh every 20 cycles (~2 min)
+      if (cycle % 20 === 0) {
+        try { await fetchFearGreedIndex(); } catch { /* silent */ }
+      }
+      // AutoConvert every 50 cycles (~5 min)
+      if (cycle % 50 === 0) {
+        try { await autoConvertCoinsToUSDT(engine.client, engine.userId, engine.simulationMode); } catch { /* silent */ }
+      }
+      // Anomaly detection every 30 cycles
+      if (cycle % 30 === 0) {
+        for (const symbol of Object.keys(engine.lastPrices)) {
+          try {
+            const klines = await fetchKlines(engine.client, symbol, "5", 60, "linear");
+            const anomaly = detectAnomaly(klines, engine.lastPrices[symbol]);
+            if (anomaly.isAnomaly) {
+              console.log(`[AI] ${symbol} ANOMALY: ${anomaly.reason}`);
+              await sendTelegramNotification(engine, `🔍 <b>Anomalía Detectada</b>\n${symbol}: ${anomaly.reason}`);
+            }
+          } catch { /* silent */ }
+        }
+      }
+
+      // ─── Execute strategies ───
       const strats = await db.getUserStrategies(userId);
-      console.log(`[Engine] Found ${strats.length} strategies, ${strats.filter(s => s.enabled).length} enabled (dailyMode=${dailyProfitMode})`);
+      console.log(`[Engine] Cycle ${cycle}: ${strats.filter(s => s.enabled).length} strategies enabled (mode=${dailyProfitMode})`);
 
       for (const strat of strats) {
         if (!strat.enabled) continue;
-        const cat = strat.category === "linear" ? "linear" : "spot";
 
-        // XAUUSDT and XAGUSD always run on Bybit
-        if (strat.symbol === "XAUUSDT" || strat.symbol === "XAGUSD" || strat.symbol === "SPXUSDT" || strat.symbol === "SP500USDT") {
-          if (engine.exchange === "kucoin") {
-            const bybitKeys = await db.getApiKey(userId, "bybit");
-            if (bybitKeys) {
-              const bybitClient = new RestClientV5({ key: bybitKeys.apiKey, secret: bybitKeys.apiSecret });
-              const bybitEngine: EngineState = { ...engine, client: bybitClient, exchange: "bybit", kucoinClient: null };
-              console.log(`[Engine] Running ${strat.strategyType} for ${strat.symbol} on Bybit (forced)`);
-              if (strat.strategyType === "scalping") await runScalpingStrategy(bybitEngine, strat.symbol, "linear", dailyProfitMode);
-              // v11.5: Futures DISABLED — only Grid + Scalping
-              // else if (strat.strategyType === "futures") await runFuturesLongOnly(bybitEngine, strat.symbol, dailyProfitMode);
-              else await runGridStrategy(bybitEngine, strat.symbol, "linear", dailyProfitMode);
-            } else {
-              console.log(`[Engine] Skipping ${strat.symbol} — no Bybit keys available`);
-            }
-          } else {
-            console.log(`[Engine] Running ${strat.strategyType} for ${strat.symbol} on Bybit`);
-            if (strat.strategyType === "scalping") await runScalpingStrategy(engine, strat.symbol, "linear", dailyProfitMode);
-            // v11.5: Futures DISABLED — only Grid + Scalping
-            // else if (strat.strategyType === "futures") await runFuturesLongOnly(engine, strat.symbol, dailyProfitMode);
-            else await runGridStrategy(engine, strat.symbol, "linear", dailyProfitMode);
-          }
-          continue;
-        }
-
-        // v11.5: Futures strategy DISABLED — skip entirely
-        if (strat.strategyType === "futures") {
-          console.log(`[Engine] SKIP ${strat.symbol} futures — v11.5: futures disabled (only Grid + Scalping)`);
-          continue;
-        }
-
-        // v10.1: FORCE ALL to LINEAR (USDT-settled) — never buy altcoins in spot
-        // This keeps 100% of capital in USDT, only trading contracts
-        if (engine.exchange === "both") {
-          // KuCoin: skip spot entirely, only use Bybit linear
-          const bybitEngine: EngineState = { ...engine, exchange: "bybit", kucoinClient: null };
-          console.log(`[Engine] Running ${strat.strategyType} for ${strat.symbol} on Bybit LINEAR (USDT-settled)`);
-          if (strat.strategyType === "grid") await runGridStrategy(bybitEngine, strat.symbol, "linear", dailyProfitMode);
-          else if (strat.strategyType === "scalping") await runScalpingStrategy(bybitEngine, strat.symbol, "linear", dailyProfitMode);
-          continue;
-        }
-
-        // v10.1: ALWAYS force linear — never spot, capital stays in USDT
-        console.log(`[Engine] Running ${strat.strategyType} for ${strat.symbol} LINEAR (USDT-settled)`);
-        if (strat.strategyType === "grid") {
-          await runGridStrategy(engine, strat.symbol, "linear", dailyProfitMode);
-        } else if (strat.strategyType === "scalping") {
+        console.log(`[Engine] Running ${strat.strategyType} for ${strat.symbol} on Bybit LINEAR`);
+        if (strat.strategyType === "scalping") {
           await runScalpingStrategy(engine, strat.symbol, "linear", dailyProfitMode);
+        } else if (strat.strategyType === "short_scalping") {
+          if (dailyProfitMode !== "stopped") await runShortScalpingStrategy(engine, strat.symbol, "linear");
+        } else if (strat.strategyType === "mean_reversion") {
+          if (dailyProfitMode !== "stopped") await runMeanReversionStrategy(engine, strat.symbol, "linear");
+        } else if (strat.strategyType === "bidirectional_grid") {
+          await runBidirectionalGridStrategy(engine, strat.symbol, "linear");
+        } else {
+          await runGridStrategy(engine, strat.symbol, "linear", dailyProfitMode);
         }
       }
     } catch (e) {
       console.error("[Engine] Trading loop error:", (e as Error).message);
     }
-  }, 6_000); // v11.0: BEAST MODE — 6s cycle for $300-$500/day target
+  }, 6_000); // 6s cycle
 
-  // Opportunity scanner — every 1 minute (aggressive for daily target)
+  // ─── Opportunity Scanner (every 45s) ───
   engine.scannerIntervalId = setInterval(async () => {
     if (!engine.isRunning) return;
     await runOpportunityScanner(engine);
-  }, 45_000); // v10: faster scanning
-
+  }, 45_000);
   setTimeout(() => runOpportunityScanner(engine), 3000);
 
-  // Run first trading cycle immediately (mirrors main loop logic for proper exchange routing)
+  // ─── First trading cycle (immediate) ───
   setTimeout(async () => {
     const strats = await db.getUserStrategies(userId);
-    console.log(`[Engine] First cycle: ${strats.length} strategies, ${strats.filter(s => s.enabled).length} enabled`);
     for (const strat of strats) {
       if (!strat.enabled) continue;
-      const cat = strat.category === "linear" ? "linear" : "spot";
-
-      // XAUUSDT, XAGUSD, SPXUSDT always route to Bybit
-      if (strat.symbol === "XAUUSDT" || strat.symbol === "XAGUSD" || strat.symbol === "SPXUSDT" || strat.symbol === "SP500USDT") {
-        if (engine.exchange === "kucoin") {
-          const bybitKeys = await db.getApiKey(userId, "bybit");
-          if (bybitKeys || engine.simulationMode) {
-            const bybitClient = engine.simulationMode ? engine.client : new (await import("bybit-api")).RestClientV5({ key: bybitKeys!.apiKey, secret: bybitKeys!.apiSecret });
-            const bybitEngine: EngineState = { ...engine, client: bybitClient, exchange: "bybit", kucoinClient: null };
-            console.log(`[Engine] First cycle: ${strat.strategyType} ${strat.symbol} on Bybit (forced)`);
-            if (strat.strategyType === "scalping") await runScalpingStrategy(bybitEngine, strat.symbol, "linear");
-            // v11.5: Futures DISABLED in first cycle too
-            else if (strat.strategyType === "futures") { console.log(`[Engine] SKIP ${strat.symbol} futures (first cycle) — v11.5`); }
-            else await runGridStrategy(bybitEngine, strat.symbol, "linear");
-          }
-        } else {
-          console.log(`[Engine] First cycle: ${strat.strategyType} ${strat.symbol} on Bybit`);
-          if (strat.strategyType === "scalping") await runScalpingStrategy(engine, strat.symbol, "linear");
-          // v11.5: Futures DISABLED in first cycle too
-          else if (strat.strategyType === "futures") { console.log(`[Engine] SKIP ${strat.symbol} futures (first cycle) — v11.5`); }
-          else await runGridStrategy(engine, strat.symbol, "linear");
-        }
-        continue;
-      }
-
-      // v11.5: Futures DISABLED — skip in first cycle
-      if (strat.strategyType === "futures") {
-        console.log(`[Engine] SKIP ${strat.symbol} futures (first cycle) — v11.5: futures disabled`);
-        continue;
-      }
-
-      // v10.1: FORCE ALL to LINEAR (USDT-settled) — first cycle too
-      if (engine.exchange === "both") {
-        const bybitEngine: EngineState = { ...engine, exchange: "bybit", kucoinClient: null };
-        console.log(`[Engine] First cycle: ${strat.strategyType} ${strat.symbol} on Bybit LINEAR`);
-        if (strat.strategyType === "grid") await runGridStrategy(bybitEngine, strat.symbol, "linear");
-        else if (strat.strategyType === "scalping") await runScalpingStrategy(bybitEngine, strat.symbol, "linear");
-      } else {
-        console.log(`[Engine] First cycle: ${strat.strategyType} ${strat.symbol} LINEAR`);
-        if (strat.strategyType === "grid") await runGridStrategy(engine, strat.symbol, "linear");
-        else if (strat.strategyType === "scalping") await runScalpingStrategy(engine, strat.symbol, "linear");
-      }
+      console.log(`[Engine] First cycle: ${strat.strategyType} ${strat.symbol} LINEAR`);
+      if (strat.strategyType === "scalping") await runScalpingStrategy(engine, strat.symbol, "linear");
+      else if (strat.strategyType === "short_scalping") await runShortScalpingStrategy(engine, strat.symbol, "linear");
+      else if (strat.strategyType === "mean_reversion") await runMeanReversionStrategy(engine, strat.symbol, "linear");
+      else if (strat.strategyType === "bidirectional_grid") await runBidirectionalGridStrategy(engine, strat.symbol, "linear");
+      else await runGridStrategy(engine, strat.symbol, "linear");
     }
   }, 2000);
 
-  // ─── Daily Summary Scheduler ───
-  // Check every minute if it's 23:00 (VPS time) to send daily summary
+  // ─── Daily Summary (23:00) ───
   let lastSummaryDate = "";
   engine.dailySummaryId = setInterval(async () => {
     if (!engine.isRunning) return;
     const now = new Date();
-    const hour = now.getHours();
-    const minute = now.getMinutes();
-    const dateStr = now.toISOString().slice(0, 10); // YYYY-MM-DD
-    // Send at 23:00 once per day
-    if (hour === 23 && minute === 0 && dateStr !== lastSummaryDate) {
+    const dateStr = now.toISOString().slice(0, 10);
+    if (now.getHours() === 23 && now.getMinutes() === 0 && dateStr !== lastSummaryDate) {
       lastSummaryDate = dateStr;
       await sendDailySummary(engine);
-      // v10.9: Weekly summary on Sundays at 23:00
       if (now.getDay() === 0) {
-        try { await sendWeeklySummary(engine); } catch (e) { console.error(`[Engine] Weekly summary error:`, (e as Error).message); }
+        try { await sendWeeklySummary(engine); } catch { /* silent */ }
       }
     }
-  }, 60_000); // Check every 60 seconds
+  }, 60_000);
 
-  // ─── v9.0: Aggressive Compounding (every 1 hour) + Capital Rebalancing (every 4 hours) + Stale Position Checker ───
+  // ─── Compounding + Rebalancing + Stale Closer (every 5 min) ───
   let rebalanceCycleCount = 0;
   engine.autoReinvestId = setInterval(async () => {
     if (!engine.isRunning) return;
     try {
       rebalanceCycleCount++;
-      // 1. AGGRESSIVE COMPOUNDING: reinvest every hour with $20 minimum (v9.0)
-      const reinvestResult = await checkAutoReinvest(engine.userId, 5); // v11.3: $5 min — compound every penny
+
+      // 1. Compound profits
+      const reinvestResult = await checkAutoReinvest(engine.userId, 5);
       if (reinvestResult?.reinvested) {
-        console.log(`[v9.0] COMPOUND: $${reinvestResult.amount.toFixed(2)} → ${reinvestResult.target}`);
-        await sendTelegramNotification(engine,
-          `💰 <b>Compounding Agresivo v9.0</b>\nMonto: $${reinvestResult.amount.toFixed(2)}\nDestino: ${reinvestResult.target}\nNuevo capital: $${reinvestResult.newBalance}`
-        );
+        console.log(`[Compound] $${reinvestResult.amount.toFixed(2)} → ${reinvestResult.target}`);
+        await sendTelegramNotification(engine, `💰 <b>Compounding</b>\nMonto: $${reinvestResult.amount.toFixed(2)}\nDestino: ${reinvestResult.target}`);
       }
 
-      // 2. STALE POSITION CHECKER: analyze positions stuck too long
-      const allScalpPositions = Object.entries(engine.scalpPositions).flatMap(([sym, positions]) =>
-        positions.map(p => ({ symbol: sym, buyPrice: p.buyPrice, currentPrice: engine.lastPrices[sym] ?? p.buyPrice, openedAt: p.openedAt, strategy: "scalping" as const }))
-      );
-      const allGridPositions = Object.entries(engine.openBuyPositions).flatMap(([sym, positions]) =>
-        positions.map(p => ({ symbol: sym, buyPrice: p.buyPrice, currentPrice: engine.lastPrices[sym] ?? p.buyPrice, openedAt: p.openedAt, strategy: "grid" as const }))
-      );
-      for (const pos of [...allScalpPositions, ...allGridPositions]) {
-        // v9.1.1: Faster USDT recovery — shorter stale timeouts
-        const staleHours = pos.strategy === "scalping" ? 0.5 : 2; // v11.3: even faster stale detection (was 0.75/3)
-        const staleAnalysis = analyzeStalePosition(pos.buyPrice, pos.currentPrice, pos.openedAt, staleHours);
-        if (staleAnalysis.isStale) {
-          console.log(`[v9.0] STALE: ${pos.symbol} ${pos.strategy} — ${staleAnalysis.recommendation} (held ${staleAnalysis.holdTimeHours.toFixed(1)}h, ${staleAnalysis.priceChangePct.toFixed(2)}%)`);
-        }
-      }
+      // 2. Close stale positions (v12.0: actually close them)
+      await closeStalePositions(engine);
 
-      // 3. LIQUIDITY ANALYSIS: check USDT availability
+      // 3. Liquidity analysis
       const botState = await db.getOrCreateBotState(engine.userId);
       const currentBal = parseFloat(botState?.currentBalance ?? "5000");
-      const investedPct = 1 - (currentBal * 0.3 / currentBal); // rough estimate
       const totalPositions = Object.values(engine.scalpPositions).reduce((a, b) => a + b.length, 0) + Object.values(engine.openBuyPositions).reduce((a, b) => a + b.length, 0);
-      const deployedEstimate = currentBal * 0.7; // rough estimate of deployed capital
-      const liqAnalysis = analyzeLiquidity(currentBal, deployedEstimate, totalPositions);
-      if (liqAnalysis.recommendation === "hold_cash" || liqAnalysis.recommendation === "reduce_exposure") {
-        console.log(`[v9.0] LIQUIDITY: ${liqAnalysis.recommendation} — ${liqAnalysis.reason}`);
+      const deployedEstimate = currentBal * 0.7;
+      // Inline liquidity check (v12.0)
+      const deployedPct = deployedEstimate / currentBal;
+      const liqRecommendation = deployedPct > 0.85 ? "reduce_exposure" : deployedPct > 0.7 ? "hold_cash" : "ok";
+      if (liqRecommendation !== "ok") {
+        console.log(`[Liquidity] ${liqRecommendation}: deployed=${(deployedPct * 100).toFixed(0)}% positions=${totalPositions}`);
       }
 
-      // 4. REBALANCE: every 4 cycles (4 hours)
+      // 4. Rebalance every 4 cycles (20 min)
       if (rebalanceCycleCount % 4 === 0) {
         const allocResult = await rebalanceCapital(engine.userId);
         if (allocResult.decisions.length > 0) {
-          console.log(`[Allocator] REBALANCE: ${allocResult.decisions.length} changes, top=${allocResult.topPerformer?.strategy} ${allocResult.topPerformer?.symbol}`);
-          let msg = `🔄 <b>Capital Rebalanceado v11.6</b>\n\n`;
+          console.log(`[Allocator] REBALANCE: ${allocResult.decisions.length} changes`);
+          let msg = `🔄 <b>Capital Rebalanceado</b>\n`;
           for (const d of allocResult.decisions) {
             msg += `${d.newAllocationPct > d.oldAllocationPct ? "⬆️" : "⬇️"} ${d.strategy} ${d.symbol}: ${d.oldAllocationPct}% → ${d.newAllocationPct}%\n`;
-          }
-          if (allocResult.topPerformer) {
-            msg += `\n🏆 Top Performer: ${allocResult.topPerformer.strategy} ${allocResult.topPerformer.symbol} (score=${allocResult.topPerformer.score})`;
           }
           await sendTelegramNotification(engine, msg);
         }
       }
-    } catch (e) {
-      console.error("[v9.0 Allocator] Error:", (e as Error).message);
-    }
-  }, 5 * 60 * 1000); // v11.3: compound every 5 min — reinvest gains immediately
-  console.log(`[Engine] v9.0 Aggressive Compounding (1h) + Rebalancing (4h) + Stale Checker active`);
 
-  // ─── Telegram Polling for /status command ───
+      // 5. Sync balance with Bybit every 12 cycles (1 hour)
+      if (rebalanceCycleCount % 12 === 0 && !engine.simulationMode) {
+        try {
+          const res = await withRetry(() => engine.client.getWalletBalance({ accountType: "UNIFIED" }), "Balance sync");
+          if (res.retCode === 0) {
+            const realBalance = parseFloat((res.result as any)?.list?.[0]?.totalEquity ?? "0");
+            if (realBalance > 0) {
+              await db.updateBotState(engine.userId, { currentBalance: realBalance.toFixed(2) });
+              console.log(`[Sync] Balance synced from Bybit: $${realBalance.toFixed(2)}`);
+            }
+          }
+        } catch { /* silent */ }
+      }
+    } catch (e) {
+      console.error("[Allocator] Error:", (e as Error).message);
+    }
+  }, 5 * 60 * 1000);
+
+  // ─── Telegram Polling ───
   if (engine.telegramBotToken && engine.telegramChatId) {
     engine.telegramPollingOffset = 0;
     engine.telegramPollingId = setInterval(async () => {
@@ -2876,144 +2084,82 @@ export async function startEngine(userId: number): Promise<{ success: boolean; e
           engine.telegramPollingOffset = update.update_id + 1;
           const text = update.message?.text?.trim();
           const chatId = String(update.message?.chat?.id);
-          // Only respond to messages from our configured chat
           if (chatId !== engine.telegramChatId) continue;
           if (text === "/status" || text === "/estado") {
             await sendStatusReport(engine);
           } else if (text === "/stats" || text === "/estadisticas") {
-            // v8.2: Full stats report with period PnL, top strategies, best/worst trades
             try {
               const report = await buildStatsReport(engine.userId);
               await sendTelegramNotification(engine, report);
-            } catch (e) {
-              await sendTelegramNotification(engine, `❌ Error generando stats: ${(e as Error).message}`);
-            }
+            } catch (e) { await sendTelegramNotification(engine, `❌ Error: ${(e as Error).message}`); }
           } else if (text === "/allocation" || text === "/capital") {
-            // v8.2: Show current capital allocation
             try {
               const perfs = await analyzeStrategyPerformance(engine.userId);
-              let msg = `📊 <b>PHANTOM — Capital Allocation</b>\n\n`;
+              let msg = `📊 <b>Capital Allocation</b>\n`;
               for (const p of perfs.slice(0, 10)) {
                 const emoji = p.score >= 60 ? "🟢" : p.score >= 30 ? "🟡" : "🔴";
                 msg += `${emoji} ${p.strategy} ${p.symbol}: ${p.currentAllocation}% → ${p.suggestedAllocation}% (score=${p.score})\n`;
               }
-              if (perfs.length > 0) {
-                msg += `\n🏆 Top: ${perfs[0].strategy} ${perfs[0].symbol} (score=${perfs[0].score})`;
-              }
               await sendTelegramNotification(engine, msg);
-            } catch (e) {
-              await sendTelegramNotification(engine, `❌ Error: ${(e as Error).message}`);
-            }
+            } catch (e) { await sendTelegramNotification(engine, `❌ Error: ${(e as Error).message}`); }
           } else if (text === "/reinvest" || text === "/reinvertir") {
-            // v8.2: Force auto-reinvestment check
             try {
               const result = await checkAutoReinvest(engine.userId);
               if (result?.reinvested) {
-                await sendTelegramNotification(engine, `💰 <b>Reinversión ejecutada</b>\nMonto: $${result.amount.toFixed(2)}\nDestino: ${result.target}\nNuevo capital base: $${result.newBalance}`);
+                await sendTelegramNotification(engine, `💰 Reinversión: $${result.amount.toFixed(2)} → ${result.target}`);
               } else {
-                await sendTelegramNotification(engine, `ℹ️ No hay ganancias suficientes para reinvertir (mínimo $50 acumulados).`);
+                await sendTelegramNotification(engine, `ℹ️ No hay ganancias suficientes para reinvertir.`);
               }
-            } catch (e) {
-              await sendTelegramNotification(engine, `❌ Error: ${(e as Error).message}`);
-            }
+            } catch (e) { await sendTelegramNotification(engine, `❌ Error: ${(e as Error).message}`); }
           } else if (text === "/help" || text === "/ayuda") {
             await sendTelegramNotification(engine,
-              `👻 <b>PHANTOM Bot — Comandos</b>\n\n` +
-              `/status — Estado actual del bot\n` +
-              `/stats — Estadísticas completas (PnL por período, top estrategias)\n` +
-              `/allocation — Distribución de capital actual\n` +
-              `/reinvest — Forzar reinversión de ganancias\n` +
-              `/help — Este mensaje`
+              `👻 <b>PHANTOM v12.0 — Comandos</b>\n\n` +
+              `/status — Estado actual\n/stats — Estadísticas completas\n/allocation — Distribución de capital\n/reinvest — Forzar reinversión\n/help — Este mensaje`
             );
           }
         }
-      } catch (e) {
-        console.error("[Telegram] Polling error:", (e as Error).message);
-      }
-    }, 10_000); // Poll every 10 seconds
-    console.log(`[Engine] Telegram polling started for /status command`);
+      } catch { /* silent */ }
+    }, 10_000);
+    console.log(`[Engine] Telegram polling started`);
   }
 
   return { success: true };
 }
 
-// ─── /status Telegram Command Response ───
+// ═══════════════════════════════════════════════════════════════
+// ─── STATUS REPORT ───
+// ═══════════════════════════════════════════════════════════════
 async function sendStatusReport(engine: EngineState) {
   try {
     const state = await db.getOrCreateBotState(engine.userId);
     const initialDeposit = parseFloat(state?.initialBalance ?? "2500");
-
-    // Count open positions
     const gridCount = Object.values(engine.openBuyPositions).reduce((s, a) => s + a.length, 0);
-    const futCount = Object.values(engine.futuresPositions).reduce((s, a) => s + a.length, 0);
     const scalpCount = Object.values(engine.scalpPositions).reduce((s, a) => s + a.length, 0);
+    const shortCount = Object.values(engine.shortPositions).reduce((s, a) => s + a.length, 0);
 
-    // Get live exchange balances (numeric for real profit calc)
     let bybitBalNum = 0;
-    let kucoinBalNum = 0;
     try {
-      const bybitKeys = await db.getApiKey(engine.userId, "bybit");
-      if (bybitKeys && !engine.simulationMode) {
-        const { RestClientV5 } = await import("bybit-api");
-        const cl = new RestClientV5({ key: bybitKeys.apiKey, secret: bybitKeys.apiSecret });
-        const res = await withRetry(() => cl.getWalletBalance({ accountType: "UNIFIED" }), "Status Bybit balance");
-        if (res.retCode === 0) {
-          bybitBalNum = parseFloat((res.result as any)?.list?.[0]?.totalEquity ?? "0");
-        }
-      }
-    } catch { /* skip */ }
-    try {
-      const kucoinKeys = await db.getApiKey(engine.userId, "kucoin");
-      if (kucoinKeys && !engine.simulationMode) {
-        const { SpotClient } = await import("kucoin-api");
-        const cl = new SpotClient({ apiKey: kucoinKeys.apiKey, apiSecret: kucoinKeys.apiSecret, apiPassphrase: kucoinKeys.passphrase ?? "" });
-        const [mainRes, tradeRes, hfRes] = await Promise.allSettled([
-          withRetry(() => cl.getBalances({ type: "main" }), "Status KuCoin main"),
-          withRetry(() => cl.getBalances({ type: "trade" }), "Status KuCoin trade"),
-          withRetry(() => cl.getBalances({ type: "trade_hf" as any }), "Status KuCoin trade_hf"),
-        ]);
-        const prices = getLivePrices();
-        const proc = (r: any) => {
-          if (r.status !== "fulfilled" || r.value?.code !== "200000") return;
-          for (const acc of (r.value.data as any[] ?? [])) {
-            const cur = acc.currency;
-            const bal = parseFloat(acc.balance ?? "0");
-            if (cur === "USDT" || cur === "USDC" || cur === "USD") kucoinBalNum += bal;
-            else {
-              const p = prices[`${cur}USDT`]?.lastPrice ?? 0;
-              if (p > 0) kucoinBalNum += bal * p;
-            }
-          }
-        };
-        proc(mainRes); proc(tradeRes); proc(hfRes);
+      if (!engine.simulationMode) {
+        const res = await withRetry(() => engine.client.getWalletBalance({ accountType: "UNIFIED" }), "Status balance");
+        if (res.retCode === 0) bybitBalNum = parseFloat((res.result as any)?.list?.[0]?.totalEquity ?? "0");
       }
     } catch { /* skip */ }
 
-    const bybitBal = bybitBalNum > 0 ? `$${bybitBalNum.toFixed(2)}` : "N/A";
-    const kucoinBal = kucoinBalNum > 0 ? `$${kucoinBalNum.toFixed(2)}` : "N/A";
-    const totalBal = bybitBalNum + kucoinBalNum;
-
-    // Real profit = current balance - initial deposit (the TRUE total PnL)
+    const totalBal = bybitBalNum > 0 ? bybitBalNum : parseFloat(state?.currentBalance ?? "0");
     const realProfit = totalBal - initialDeposit;
     const realProfitPct = initialDeposit > 0 ? ((realProfit / initialDeposit) * 100).toFixed(1) : "0";
 
-    // v11.6: TODAY's PnL from CLOSED (sell) trades only — these have real PnL values
     const allTrades = await db.getUserTrades(engine.userId, 5000);
     const now = new Date();
     const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     const todayTrades = allTrades.filter(t => new Date(t.createdAt) >= todayStart);
-    const todaySellTrades = todayTrades.filter(t => t.side === "sell");
-    const todayPnl = todaySellTrades.reduce((sum, t) => sum + parseFloat(t.pnl ?? "0"), 0);
-    const todayBuyCount = todayTrades.filter(t => t.side === "buy").length;
-
-    // Win rate from all sell trades
+    const todaySells = todayTrades.filter(t => t.side === "sell");
+    const todayPnl = todaySells.reduce((sum, t) => sum + parseFloat(t.pnl ?? "0"), 0);
     const sellTrades = allTrades.filter(t => t.side === "sell");
-    const winTrades = sellTrades.filter(t => parseFloat(t.pnl ?? "0") > 0);
-    const winRate = sellTrades.length > 0 ? ((winTrades.length / sellTrades.length) * 100).toFixed(1) : "0";
+    const winRate = sellTrades.length > 0 ? ((sellTrades.filter(t => parseFloat(t.pnl ?? "0") > 0).length / sellTrades.length) * 100).toFixed(1) : "0";
 
-    // Per-strategy breakdown for today (only sell trades = closed with PnL)
     const stratBreakdown: Record<string, { count: number; pnl: number }> = {};
-    for (const t of todaySellTrades) {
+    for (const t of todaySells) {
       const key = t.strategy ?? "unknown";
       if (!stratBreakdown[key]) stratBreakdown[key] = { count: 0, pnl: 0 };
       stratBreakdown[key].count++;
@@ -3021,211 +2167,147 @@ async function sendStatusReport(engine: EngineState) {
     }
     let stratLines = "";
     for (const [strat, data] of Object.entries(stratBreakdown)) {
-      const icon = data.pnl >= 0 ? "\u{1F7E2}" : "\u{1F534}";
-      stratLines += `\n  ${icon} ${strat}: ${data.count} ops, ${data.pnl >= 0 ? "+" : ""}$${data.pnl.toFixed(2)}`;
+      stratLines += `\n  ${data.pnl >= 0 ? "🟢" : "🔴"} ${strat}: ${data.count} ops, ${data.pnl >= 0 ? "+" : ""}$${data.pnl.toFixed(2)}`;
     }
 
-    const todayEmoji = todayPnl >= 0 ? "\u{1F7E2}" : "\u{1F534}";
-    const totalEmoji = realProfit >= 0 ? "\u{1F7E2}" : "\u{1F534}";
-    const mode = engine.simulationMode ? "\u{1F9EA} SIMULACI\u00D3N" : "\u{1F534} LIVE";
-    const uptime = engine.intervalId ? "\u2705 Activo" : "\u26A0\uFE0F Detenido";
-
-    const message = `\u{1F47B} <b>PHANTOM \u2014 Estado Actual</b>\n${mode} | ${uptime}\n\n` +
-      `\u{1F4B0} <b>Balances</b>\n  Bybit: ${bybitBal}\n  KuCoin: ${kucoinBal}\n  Total: $${totalBal.toFixed(2)}\n  Capital: $${initialDeposit.toFixed(2)}\n\n` +
-      `${todayEmoji} <b>Ganancia Hoy</b>: ${todayPnl >= 0 ? "+" : ""}$${todayPnl.toFixed(2)} (${todaySellTrades.length} ventas cerradas)\n` +
-      `${totalEmoji} <b>Ganancia Total</b>: ${realProfit >= 0 ? "+" : ""}$${realProfit.toFixed(2)} (${realProfitPct}%)\n\n` +
-      `\u{1F4E6} <b>Posiciones Abiertas</b>\n  Grid: ${gridCount}\n  Scalping: ${scalpCount}\n\n` +
-      `\u{1F3AF} <b>Operaciones Hoy</b>: ${todayBuyCount} compras, ${todaySellTrades.length} ventas\n` +
-      `\u{1F3C6} <b>Win Rate</b>: ${winRate}% (${sellTrades.length} ventas totales)\n` +
-      (stratLines ? `\n\u{1F4CA} <b>Desglose Hoy</b>:${stratLines}\n` : "") +
-      `\n\u2014\n<i>PHANTOM Trading Bot v11.6</i>`;
+    const mode = engine.simulationMode ? "🧪 SIMULACIÓN" : "🔴 LIVE";
+    const message = `👻 <b>PHANTOM v12.0 — Estado</b>\n${mode} | ✅ Activo | ${LEVERAGE}x\n\n` +
+      `💰 <b>Balance</b>: $${totalBal.toFixed(2)}\nCapital: $${initialDeposit.toFixed(2)}\n\n` +
+      `${todayPnl >= 0 ? "🟢" : "🔴"} <b>Hoy</b>: ${todayPnl >= 0 ? "+" : ""}$${todayPnl.toFixed(2)} (${todaySells.length} ventas)\n` +
+      `${realProfit >= 0 ? "🟢" : "🔴"} <b>Total</b>: ${realProfit >= 0 ? "+" : ""}$${realProfit.toFixed(2)} (${realProfitPct}%)\n\n` +
+      `📦 <b>Posiciones</b>: Grid=${gridCount} Scalp=${scalpCount} Short=${shortCount}\n` +
+      `🏆 <b>Win Rate</b>: ${winRate}%\n` +
+      (stratLines ? `\n📊 <b>Desglose</b>:${stratLines}\n` : "") +
+      `\n—\n<i>PHANTOM v12.0 • AI + Kelly + F&G</i>`;
 
     await sendTelegramNotification(engine, message);
-    console.log(`[Engine] /status report sent via Telegram for user ${engine.userId}`);
   } catch (e) {
-    console.error(`[Engine] Failed to send status report:`, (e as Error).message);
+    console.error("[Status] Error:", (e as Error).message);
   }
 }
 
-// ─── Daily Summary via Telegram ───
+// ─── Stats Report Builder ───
+async function buildStatsReport(userId: number): Promise<string> {
+  const allTrades = await db.getUserTrades(userId, 10000);
+  const now = new Date();
+  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const weekStart = new Date(todayStart); weekStart.setDate(weekStart.getDate() - 7);
+  const monthStart = new Date(todayStart); monthStart.setDate(monthStart.getDate() - 30);
+
+  const calcPnl = (trades: any[]) => trades.filter(t => t.side === "sell").reduce((s, t) => s + parseFloat(t.pnl ?? "0"), 0);
+  const todayPnl = calcPnl(allTrades.filter(t => new Date(t.createdAt) >= todayStart));
+  const weekPnl = calcPnl(allTrades.filter(t => new Date(t.createdAt) >= weekStart));
+  const monthPnl = calcPnl(allTrades.filter(t => new Date(t.createdAt) >= monthStart));
+  const totalPnl = calcPnl(allTrades);
+
+  const sells = allTrades.filter(t => t.side === "sell");
+  const wins = sells.filter(t => parseFloat(t.pnl ?? "0") > 0);
+  const winRate = sells.length > 0 ? ((wins.length / sells.length) * 100).toFixed(1) : "0";
+
+  const byStrategy: Record<string, { pnl: number; count: number }> = {};
+  for (const t of sells) {
+    const key = t.strategy ?? "unknown";
+    if (!byStrategy[key]) byStrategy[key] = { pnl: 0, count: 0 };
+    byStrategy[key].pnl += parseFloat(t.pnl ?? "0");
+    byStrategy[key].count++;
+  }
+
+  let stratLines = "";
+  for (const [s, d] of Object.entries(byStrategy).sort((a, b) => b[1].pnl - a[1].pnl)) {
+    stratLines += `\n  ${d.pnl >= 0 ? "🟢" : "🔴"} ${s}: $${d.pnl.toFixed(2)} (${d.count} trades)`;
+  }
+
+  return `📊 <b>PHANTOM — Estadísticas</b>\n\n` +
+    `Hoy: ${todayPnl >= 0 ? "+" : ""}$${todayPnl.toFixed(2)}\n` +
+    `Semana: ${weekPnl >= 0 ? "+" : ""}$${weekPnl.toFixed(2)}\n` +
+    `Mes: ${monthPnl >= 0 ? "+" : ""}$${monthPnl.toFixed(2)}\n` +
+    `Total: ${totalPnl >= 0 ? "+" : ""}$${totalPnl.toFixed(2)}\n\n` +
+    `Win Rate: ${winRate}% (${sells.length} ventas)\n` +
+    `${stratLines}\n\n<i>PHANTOM v12.0</i>`;
+}
+
+// ─── Daily Summary ───
 async function sendDailySummary(engine: EngineState) {
   if (!engine.telegramBotToken || !engine.telegramChatId) return;
   try {
-    // Get today's trades
     const allTrades = await db.getUserTrades(engine.userId, 5000);
     const now = new Date();
     const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     const todayTrades = allTrades.filter(t => new Date(t.createdAt) >= todayStart);
-    const todayPnl = todayTrades.reduce((sum, t) => sum + parseFloat(t.pnl ?? "0"), 0);
     const todaySells = todayTrades.filter(t => t.side === "sell");
+    const todayPnl = todaySells.reduce((sum, t) => sum + parseFloat(t.pnl ?? "0"), 0);
     const todayWins = todaySells.filter(t => parseFloat(t.pnl ?? "0") > 0);
-    const todayWinRate = todaySells.length > 0 ? ((todayWins.length / todaySells.length) * 100).toFixed(1) : "0";
+    const winRate = todaySells.length > 0 ? ((todayWins.length / todaySells.length) * 100).toFixed(1) : "0";
 
-    // Get initial deposit from DB
     const state = await db.getOrCreateBotState(engine.userId);
     const initialDeposit = parseFloat(state?.initialBalance ?? "2500");
-
-    // Count open positions
     const gridCount = Object.values(engine.openBuyPositions).reduce((s, a) => s + a.length, 0);
-    const futCount = Object.values(engine.futuresPositions).reduce((s, a) => s + a.length, 0);
     const scalpCount = Object.values(engine.scalpPositions).reduce((s, a) => s + a.length, 0);
 
-    // Get live exchange balances (numeric for real profit calc)
-    let bybitBalNum = 0;
-    let kucoinBalNum = 0;
+    let realBalance = parseFloat(state?.currentBalance ?? "0");
     try {
-      const bybitKeys = await db.getApiKey(engine.userId, "bybit");
-      if (bybitKeys && !engine.simulationMode) {
-        const { RestClientV5 } = await import("bybit-api");
-        const cl = new RestClientV5({ key: bybitKeys.apiKey, secret: bybitKeys.apiSecret });
-        const res = await withRetry(() => cl.getWalletBalance({ accountType: "UNIFIED" }), "DailySummary Bybit balance");
-        if (res.retCode === 0) {
-          bybitBalNum = parseFloat((res.result as any)?.list?.[0]?.totalEquity ?? "0");
-        }
-      }
-    } catch { /* skip */ }
-    try {
-      const kucoinKeys = await db.getApiKey(engine.userId, "kucoin");
-      if (kucoinKeys && !engine.simulationMode) {
-        const { SpotClient } = await import("kucoin-api");
-        const cl = new SpotClient({ apiKey: kucoinKeys.apiKey, apiSecret: kucoinKeys.apiSecret, apiPassphrase: kucoinKeys.passphrase ?? "" });
-        const [mainRes, tradeRes, hfRes] = await Promise.allSettled([
-          withRetry(() => cl.getBalances({ type: "main" }), "DailySummary KuCoin main"),
-          withRetry(() => cl.getBalances({ type: "trade" }), "DailySummary KuCoin trade"),
-          withRetry(() => cl.getBalances({ type: "trade_hf" as any }), "DailySummary KuCoin trade_hf"),
-        ]);
-        const prices = getLivePrices();
-        const proc = (r: any) => {
-          if (r.status !== "fulfilled" || r.value?.code !== "200000") return;
-          for (const acc of (r.value.data as any[] ?? [])) {
-            const cur = acc.currency;
-            const bal = parseFloat(acc.balance ?? "0");
-            if (cur === "USDT" || cur === "USDC" || cur === "USD") kucoinBalNum += bal;
-            else {
-              const p = prices[`${cur}USDT`]?.lastPrice ?? 0;
-              if (p > 0) kucoinBalNum += bal * p;
-            }
-          }
-        };
-        proc(mainRes); proc(tradeRes); proc(hfRes);
+      if (!engine.simulationMode) {
+        const res = await withRetry(() => engine.client.getWalletBalance({ accountType: "UNIFIED" }), "DailySummary balance");
+        if (res.retCode === 0) realBalance = parseFloat((res.result as any)?.list?.[0]?.totalEquity ?? "0");
       }
     } catch { /* skip */ }
 
-    const bybitBal = bybitBalNum > 0 ? `$${bybitBalNum.toFixed(2)}` : "N/A";
-    const kucoinBal = kucoinBalNum > 0 ? `$${kucoinBalNum.toFixed(2)}` : "N/A";
-    const totalBal = bybitBalNum + kucoinBalNum;
-
-    // Real profit = current balance - initial deposit
-    const realProfit = totalBal - initialDeposit;
-    const realProfitPct = initialDeposit > 0 ? ((realProfit / initialDeposit) * 100).toFixed(1) : "0";
-
-    // Win rate from all sell trades
-    const sellTrades = allTrades.filter(t => t.side === "sell");
-    const winTrades = sellTrades.filter(t => parseFloat(t.pnl ?? "0") > 0);
-    const overallWinRate = sellTrades.length > 0 ? ((winTrades.length / sellTrades.length) * 100).toFixed(1) : "0";
-
-    // Build per-strategy breakdown for today
-    const stratBreakdown: Record<string, { count: number; pnl: number }> = {};
-    for (const t of todayTrades) {
-      const key = t.strategy ?? "unknown";
-      if (!stratBreakdown[key]) stratBreakdown[key] = { count: 0, pnl: 0 };
-      stratBreakdown[key].count++;
-      stratBreakdown[key].pnl += parseFloat(t.pnl ?? "0");
-    }
-    let stratLines = "";
-    for (const [strat, data] of Object.entries(stratBreakdown)) {
-      const icon = data.pnl >= 0 ? "🟢" : "🔴";
-      stratLines += `\n  ${icon} ${strat}: ${data.count} ops, ${data.pnl >= 0 ? "+" : ""}$${data.pnl.toFixed(2)}`;
-    }
-
-    const todayEmoji = todayPnl >= 0 ? "🟢" : "🔴";
-    const totalEmoji = realProfit >= 0 ? "🟢" : "🔴";
-    const dateFormatted = now.toLocaleDateString("es-AR", { day: "2-digit", month: "2-digit", year: "numeric" });
-
-    const message = `📊 <b>PHANTOM — Resumen Diario</b>\n📅 ${dateFormatted}\n\n` +
-      `💰 <b>Balances</b>\n  Bybit: ${bybitBal}\n  KuCoin: ${kucoinBal}\n  Total: $${totalBal.toFixed(2)}\n  Capital: $${initialDeposit.toFixed(2)}\n\n` +
-      `${todayEmoji} <b>PnL del Día</b>: ${todayPnl >= 0 ? "+" : ""}$${todayPnl.toFixed(2)}\n` +
-      `${totalEmoji} <b>Ganancia Real</b>: ${realProfit >= 0 ? "+" : ""}$${realProfit.toFixed(2)} (${realProfitPct}%)\n\n` +
-      `🎯 <b>Operaciones Hoy</b>: ${todayTrades.length}\n` +
-      `🏆 <b>Win Rate Hoy</b>: ${todayWinRate}%\n` +
-      `📊 <b>Win Rate Total</b>: ${overallWinRate}% (${sellTrades.length} sells)\n\n` +
-      `📦 <b>Posiciones Abiertas</b>: ${gridCount} grid + ${scalpCount} scalp\n\n` +
-      (stratLines ? `📊 <b>Desglose por Estrategia</b>:${stratLines}\n\n` : "") +
-      `—\n<i>PHANTOM Trading Bot • Resumen automático 23:00</i>`;
+    const totalProfit = realBalance - initialDeposit;
+    const message = `📋 <b>PHANTOM — Resumen Diario</b>\n\n` +
+      `${todayPnl >= 0 ? "🟢" : "🔴"} PnL Hoy: ${todayPnl >= 0 ? "+" : ""}$${todayPnl.toFixed(2)}\n` +
+      `Operaciones: ${todayTrades.length} (${todaySells.length} ventas)\nWin Rate: ${winRate}%\n\n` +
+      `📦 Posiciones: Grid=${gridCount} Scalp=${scalpCount}\n` +
+      `💰 Balance: $${realBalance.toFixed(2)}\n` +
+      `📈 Ganancia Total: ${totalProfit >= 0 ? "+" : ""}$${totalProfit.toFixed(2)}\n\n` +
+      `—\n<i>PHANTOM v12.0 • Resumen automático</i>`;
 
     await sendTelegramNotification(engine, message);
-    console.log(`[Engine] Daily summary sent via Telegram for user ${engine.userId}`);
+    await db.upsertDailyPnl(engine.userId, parseFloat(state?.totalPnl ?? "0"), realBalance, state?.totalTrades ?? 0);
   } catch (e) {
-    console.error(`[Engine] Failed to send daily summary:`, (e as Error).message);
+    console.error("[DailySummary] Error:", (e as Error).message);
   }
 }
 
-// ─── v10.9: Weekly Summary (Sundays at 23:00) ───
+// ─── Weekly Summary ───
 async function sendWeeklySummary(engine: EngineState) {
   if (!engine.telegramBotToken || !engine.telegramChatId) return;
   try {
-    const pnlHist = await db.getPnlHistory(engine.userId, 7);
-    if (pnlHist.length === 0) return;
+    const allTrades = await db.getUserTrades(engine.userId, 10000);
+    const now = new Date();
+    const weekStart = new Date(now); weekStart.setDate(weekStart.getDate() - 7);
+    const weekTrades = allTrades.filter(t => new Date(t.createdAt) >= weekStart && t.side === "sell");
+    const weekTotal = weekTrades.reduce((s, t) => s + parseFloat(t.pnl ?? "0"), 0);
 
     const state = await db.getOrCreateBotState(engine.userId);
     const initialDeposit = parseFloat(state?.initialBalance ?? "2500");
-
-    // Calculate weekly stats
-    let weekTotal = 0;
-    let bestDay = { date: "", pnl: -Infinity };
-    let worstDay = { date: "", pnl: Infinity };
-    let greenDays = 0;
-    let redDays = 0;
-
-    for (const day of pnlHist) {
-      const dayPnl = parseFloat(day.pnl as any ?? "0");
-      weekTotal += dayPnl;
-      if (dayPnl > bestDay.pnl) bestDay = { date: day.date, pnl: dayPnl };
-      if (dayPnl < worstDay.pnl) worstDay = { date: day.date, pnl: dayPnl };
-      if (dayPnl >= 0) greenDays++; else redDays++;
-    }
-
-    const avgDaily = weekTotal / pnlHist.length;
-    const projectedMonthly = avgDaily * 30;
-    const projectedYearly = avgDaily * 365;
-    const weeklyROI = initialDeposit > 0 ? ((weekTotal / initialDeposit) * 100).toFixed(2) : "0";
-
-    // Get real Bybit balance
     let realBalance = parseFloat(state?.currentBalance ?? "0");
     try {
-      if (engine.client) {
-        const walletRes = await withRetry(() => engine.client.getWalletBalance({ accountType: "UNIFIED" }), "Weekly Bybit balance");
-        const eq = parseFloat((walletRes.result as any)?.list?.[0]?.totalEquity ?? "0");
-        if (eq > 0) realBalance = eq;
+      if (!engine.simulationMode) {
+        const res = await withRetry(() => engine.client.getWalletBalance({ accountType: "UNIFIED" }), "WeeklySummary balance");
+        if (res.retCode === 0) realBalance = parseFloat((res.result as any)?.list?.[0]?.totalEquity ?? "0");
       }
-    } catch { /* fallback to DB */ }
+    } catch { /* skip */ }
 
-    const weekEmoji = weekTotal >= 0 ? "\u{1F4C8}" : "\u{1F4C9}";
-    const formatDate = (d: string) => {
-      const parts = d.split("-");
-      return parts.length >= 3 ? `${parts[2]}/${parts[1]}` : d;
-    };
+    const weeklyROI = initialDeposit > 0 ? ((weekTotal / initialDeposit) * 100).toFixed(2) : "0";
+    const avgDaily = weekTotal / 7;
 
-    const message = `${weekEmoji} <b>PHANTOM \u2014 Resumen Semanal</b>\n\n` +
-      `\u{1F4B0} <b>PnL Semanal</b>: ${weekTotal >= 0 ? "+" : ""}$${weekTotal.toFixed(2)} (${weeklyROI}%)\n` +
-      `\u{1F3C6} <b>Mejor d\u00EDa</b>: ${formatDate(bestDay.date)} → +$${bestDay.pnl.toFixed(2)}\n` +
-      `\u{1F534} <b>Peor d\u00EDa</b>: ${formatDate(worstDay.date)} → $${worstDay.pnl.toFixed(2)}\n` +
-      `\u{1F7E2} D\u00EDas verdes: ${greenDays} | \u{1F534} D\u00EDas rojos: ${redDays}\n\n` +
-      `\u{1F4CA} <b>Promedio diario</b>: ${avgDaily >= 0 ? "+" : ""}$${avgDaily.toFixed(2)}\n` +
-      `\u{1F4C5} <b>Proyecci\u00F3n mensual</b>: ${projectedMonthly >= 0 ? "+" : ""}$${projectedMonthly.toFixed(2)}\n` +
-      `\u{1F4C6} <b>Proyecci\u00F3n anual</b>: ${projectedYearly >= 0 ? "+" : ""}$${projectedYearly.toFixed(2)}\n\n` +
-      `\u{1F4B5} <b>Capital actual (Bybit)</b>: $${realBalance.toFixed(2)}\n` +
-      `\u{1F3AF} <b>Capital inicial</b>: $${initialDeposit.toFixed(2)}\n` +
-      `\u{1F4C8} <b>Ganancia total</b>: ${(realBalance - initialDeposit) >= 0 ? "+" : ""}$${(realBalance - initialDeposit).toFixed(2)}\n\n` +
-      `\u2014\n<i>PHANTOM Trading Bot \u2022 Resumen semanal autom\u00E1tico</i>`;
+    const message = `📈 <b>PHANTOM — Resumen Semanal</b>\n\n` +
+      `💰 PnL Semanal: ${weekTotal >= 0 ? "+" : ""}$${weekTotal.toFixed(2)} (${weeklyROI}%)\n` +
+      `📊 Promedio diario: ${avgDaily >= 0 ? "+" : ""}$${avgDaily.toFixed(2)}\n` +
+      `📅 Proyección mensual: ${(avgDaily * 30) >= 0 ? "+" : ""}$${(avgDaily * 30).toFixed(2)}\n\n` +
+      `💵 Balance: $${realBalance.toFixed(2)}\n` +
+      `📈 Ganancia total: ${(realBalance - initialDeposit) >= 0 ? "+" : ""}$${(realBalance - initialDeposit).toFixed(2)}\n\n` +
+      `—\n<i>PHANTOM v12.0 • Resumen semanal</i>`;
 
     await sendTelegramNotification(engine, message);
-    console.log(`[Engine] Weekly summary sent via Telegram for user ${engine.userId}`);
   } catch (e) {
-    console.error(`[Engine] Failed to send weekly summary:`, (e as Error).message);
+    console.error("[WeeklySummary] Error:", (e as Error).message);
   }
 }
 
+// ═══════════════════════════════════════════════════════════════
+// ─── EXPORTS ───
+// ═══════════════════════════════════════════════════════════════
 export async function stopEngine(userId: number): Promise<{ success: boolean }> {
   const engine = engines.get(userId);
   if (!engine) return { success: true };
@@ -3238,24 +2320,19 @@ export async function stopEngine(userId: number): Promise<{ success: boolean }> 
   if (engine.telegramPollingId) clearInterval(engine.telegramPollingId);
   if (engine.autoReinvestId) clearInterval(engine.autoReinvestId);
 
-  // ─── Save open positions to DB before stopping (survive restarts) ───
+  // Save positions to DB
   try {
     const posCount = Object.values(engine.openBuyPositions).reduce((sum, arr) => sum + arr.length, 0);
     if (posCount > 0) {
-      await db.saveOpenPositions(userId, engine.openBuyPositions, engine.exchange === "both" ? "bybit" : engine.exchange);
-      if (engine.exchange === "both") {
-        // Also save KuCoin positions separately (they share the same openBuyPositions map)
-        await db.saveOpenPositions(userId, engine.openBuyPositions, "kucoin");
-      }
-      console.log(`[Engine] Saved ${posCount} open positions to DB for user ${userId}`);
+      await db.saveOpenPositions(userId, engine.openBuyPositions, "bybit");
+      console.log(`[Engine] Saved ${posCount} positions to DB`);
     }
   } catch (e) {
-    console.error(`[Engine] Failed to save positions on stop:`, (e as Error).message);
+    console.error("[Engine] Failed to save positions:", (e as Error).message);
   }
 
   engines.delete(userId);
   engineCycles.delete(userId);
-
   await db.updateBotState(userId, { isRunning: false });
   console.log(`[Engine] Stopped for user ${userId}`);
   return { success: true };
@@ -3278,61 +2355,67 @@ export function isEngineRunning(userId: number): boolean {
   return engines.has(userId);
 }
 
-// Get open positions with unrealized PnL for dashboard
-export function getOpenPositions(userId: number): { grid: { symbol: string; buyPrice: number; currentPrice: number; qty: string; unrealizedPnl: number; holdTime: number; highestPrice: number }[]; futures: { symbol: string; entryPrice: number; currentPrice: number; qty: string; leverage: number; unrealizedPnl: number; holdTime: number }[] } {
-  const engine = engines.get(userId);
-  if (!engine) return { grid: [], futures: [] };
+export function getEngineCycles(userId: number): number {
+  return engineCycles.get(userId) ?? 0;
+}
 
-  const gridPositions: { symbol: string; buyPrice: number; currentPrice: number; qty: string; unrealizedPnl: number; holdTime: number; highestPrice: number }[] = [];
+export function getOpenPositions(userId: number): { grid: { symbol: string; buyPrice: number; currentPrice: number; qty: string; unrealizedPnl: number; holdTime: number; highestPrice: number }[]; futures: { symbol: string; entryPrice: number; currentPrice: number; qty: string; leverage: number; unrealizedPnl: number; holdTime: number }[]; shorts: { symbol: string; entryPrice: number; currentPrice: number; qty: string; unrealizedPnl: number; holdTime: number; lowestPrice: number; strategy: string }[] } {
+  const engine = engines.get(userId);
+  if (!engine) return { grid: [], futures: [], shorts: [] };
+
+  const gridPositions: any[] = [];
   for (const [symbol, positions] of Object.entries(engine.openBuyPositions)) {
     const currentPrice = engine.lastPrices[symbol] ?? livePrices.get(symbol)?.lastPrice ?? 0;
     for (const pos of positions) {
-      const unrealizedPnl = (currentPrice - pos.buyPrice) * parseFloat(pos.qty);
       gridPositions.push({
-        symbol,
-        buyPrice: pos.buyPrice,
-        currentPrice,
-        qty: pos.qty,
-        unrealizedPnl,
+        symbol, buyPrice: pos.buyPrice, currentPrice, qty: pos.qty,
+        unrealizedPnl: (currentPrice - pos.buyPrice) * parseFloat(pos.qty),
         holdTime: Date.now() - (pos.openedAt ?? Date.now()),
         highestPrice: pos.highestPrice ?? currentPrice,
       });
     }
   }
 
-  const futuresPos: { symbol: string; entryPrice: number; currentPrice: number; qty: string; leverage: number; unrealizedPnl: number; holdTime: number }[] = [];
-  for (const [symbol, positions] of Object.entries(engine.futuresPositions)) {
+  // Scalp positions shown as grid for simplicity
+  for (const [symbol, positions] of Object.entries(engine.scalpPositions)) {
     const currentPrice = engine.lastPrices[symbol] ?? livePrices.get(symbol)?.lastPrice ?? 0;
     for (const pos of positions) {
-      const unrealizedPnl = (currentPrice - pos.entryPrice) * parseFloat(pos.qty) * pos.leverage;
-      futuresPos.push({
-        symbol,
-        entryPrice: pos.entryPrice,
-        currentPrice,
-        qty: pos.qty,
-        leverage: pos.leverage,
-        unrealizedPnl,
+      gridPositions.push({
+        symbol, buyPrice: pos.buyPrice, currentPrice, qty: pos.qty,
+        unrealizedPnl: (currentPrice - pos.buyPrice) * parseFloat(pos.qty),
         holdTime: Date.now() - pos.openedAt,
+        highestPrice: pos.highestPrice ?? currentPrice,
       });
     }
   }
 
-  return { grid: gridPositions, futures: futuresPos };
+  // Short positions
+  const shortPositions: any[] = [];
+  for (const [symbol, positions] of Object.entries(engine.shortPositions)) {
+    const currentPrice = engine.lastPrices[symbol] ?? livePrices.get(symbol)?.lastPrice ?? 0;
+    for (const pos of positions) {
+      shortPositions.push({
+        symbol, entryPrice: pos.entryPrice, currentPrice, qty: pos.qty,
+        unrealizedPnl: (pos.entryPrice - currentPrice) * parseFloat(pos.qty),
+        holdTime: Date.now() - pos.openedAt,
+        lowestPrice: pos.lowestPrice ?? currentPrice,
+        strategy: pos.strategy,
+      });
+    }
+  }
+
+  return { grid: gridPositions, futures: [], shorts: shortPositions };
 }
 
-// ─── Multi-Exchange WebSocket Price Feed ───
+// ═══════════════════════════════════════════════════════════════
+// ─── WEBSOCKET PRICE FEED (Bybit only) ───
+// ═══════════════════════════════════════════════════════════════
 let wsSpot: WebSocket | null = null;
 let wsLinear: WebSocket | null = null;
-let wsKucoin: WebSocket | null = null;
 let wsReconnectTimer: ReturnType<typeof setTimeout> | null = null;
-let wsKucoinReconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let wsInitialized = false;
 
-// v11.0: BEAST MODE — BTC/ETH spot feed
-const SPOT_SYMBOLS = [
-  "BTCUSDT", "ETHUSDT", "SOLUSDT",
-];
-// v11.6: Concentrated — BTC, ETH, SOL, XAU only
+const SPOT_SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT"];
 const LINEAR_SYMBOLS = ["XAUUSDT", "BTCUSDT", "ETHUSDT", "SOLUSDT"];
 
 function parseWsTickerMsg(data: Buffer | string): void {
@@ -3342,7 +2425,7 @@ function parseWsTickerMsg(data: Buffer | string): void {
     const t = msg.data;
     if (!t.symbol || !t.lastPrice) return;
     const existing = livePrices.get(t.symbol);
-    const ticker: TickerData = {
+    livePrices.set(t.symbol, {
       symbol: t.symbol,
       lastPrice: parseFloat(t.lastPrice),
       bid1Price: parseFloat(t.bid1Price ?? t.lastPrice),
@@ -3352,15 +2435,14 @@ function parseWsTickerMsg(data: Buffer | string): void {
       lowPrice24h: parseFloat(t.lowPrice24h ?? existing?.lowPrice24h ?? t.lastPrice),
       volume24h: parseFloat(t.volume24h ?? existing?.volume24h ?? "0"),
       turnover24h: parseFloat(t.turnover24h ?? existing?.turnover24h ?? "0"),
-    };
-    livePrices.set(t.symbol, ticker);
-  } catch { /* ignore parse errors */ }
+    });
+  } catch { /* ignore */ }
 }
 
 function connectBybitWS(url: string, symbols: string[], label: string): WebSocket {
   const ws = new WebSocket(url);
   ws.on("open", () => {
-    console.log(`[PriceFeed] ${label} WS connected — subscribing to ${symbols.length} symbols`);
+    console.log(`[PriceFeed] ${label} WS connected — ${symbols.length} symbols`);
     const args = symbols.map(s => `tickers.${s}`);
     for (let i = 0; i < args.length; i += 10) {
       ws.send(JSON.stringify({ op: "subscribe", args: args.slice(i, i + 10) }));
@@ -3370,146 +2452,33 @@ function connectBybitWS(url: string, symbols: string[], label: string): WebSocke
     parseWsTickerMsg(data as Buffer);
     if (!wsInitialized && livePrices.size >= 2) {
       wsInitialized = true;
-      console.log(`[PriceFeed] Initial prices loaded via WebSocket (${livePrices.size} symbols)`);
+      console.log(`[PriceFeed] Initial prices loaded (${livePrices.size} symbols)`);
     }
   });
-  ws.on("error", (e) => {
-    console.error(`[PriceFeed] ${label} WS error:`, e.message);
-  });
+  ws.on("error", (e) => console.error(`[PriceFeed] ${label} error:`, e.message));
   ws.on("close", () => {
-    console.warn(`[PriceFeed] ${label} WS closed — reconnecting in 5s...`);
+    console.warn(`[PriceFeed] ${label} closed — reconnecting in 5s`);
     if (wsReconnectTimer) clearTimeout(wsReconnectTimer);
     wsReconnectTimer = setTimeout(() => startBybitWebSocketFeed(), 5000);
   });
   const pingInterval = setInterval(() => {
-    if (ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ op: "ping" }));
-    } else {
-      clearInterval(pingInterval);
-    }
+    if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ op: "ping" }));
+    else clearInterval(pingInterval);
   }, 20_000);
   return ws;
 }
 
 export function startBackgroundPriceFeed() {
   startBybitWebSocketFeed();
-  startKuCoinWebSocketFeed();
 }
 
 function startBybitWebSocketFeed() {
   if (wsSpot && wsSpot.readyState !== WebSocket.CLOSED) wsSpot.terminate();
   if (wsLinear && wsLinear.readyState !== WebSocket.CLOSED) wsLinear.terminate();
-
-  console.log("[PriceFeed] Starting Bybit WebSocket price feed...");
+  console.log("[PriceFeed] Starting Bybit WebSocket feed...");
   wsSpot = connectBybitWS("wss://stream.bybit.com/v5/public/spot", SPOT_SYMBOLS, "Spot");
   wsLinear = connectBybitWS("wss://stream.bybit.com/v5/public/linear", LINEAR_SYMBOLS, "Linear");
-
-  updateSP500Price();
-  setInterval(updateSP500Price, 60_000);
-}
-
-async function getKuCoinWsToken(): Promise<{ token: string; endpoint: string } | null> {
-  try {
-    const res = await fetch("https://api.kucoin.com/api/v1/bullet-public", { method: "POST" });
-    const json = await res.json() as any;
-    if (json.code === "200000" && json.data?.token && json.data?.instanceServers?.[0]) {
-      return { token: json.data.token, endpoint: json.data.instanceServers[0].endpoint };
-    }
-  } catch (e) {
-    console.error("[PriceFeed] KuCoin token fetch failed:", (e as Error).message);
-  }
-  return null;
-}
-
-function parseKuCoinTickerMsg(data: Buffer | string): void {
-  try {
-    const msg = JSON.parse(data.toString()) as any;
-    if (msg.type !== "message" || !msg.data) return;
-    const t = msg.data;
-    const rawSymbol = msg.topic?.split(":")[1];
-    if (!rawSymbol) return;
-    const symbol = rawSymbol.replace("-", "");
-    const existing = livePrices.get(symbol);
-    const lastPrice = parseFloat(t.price ?? "0");
-    if (lastPrice <= 0) return;
-    const ticker: TickerData = {
-      symbol, lastPrice,
-      bid1Price: parseFloat(t.bestBid ?? String(lastPrice)),
-      ask1Price: parseFloat(t.bestAsk ?? String(lastPrice)),
-      price24hPcnt: existing?.price24hPcnt ?? 0,
-      highPrice24h: existing?.highPrice24h ?? lastPrice,
-      lowPrice24h: existing?.lowPrice24h ?? lastPrice,
-      volume24h: parseFloat(t.size ?? existing?.volume24h ?? "0"),
-      turnover24h: existing?.turnover24h ?? 0,
-    };
-    livePrices.set(symbol, ticker);
-  } catch { /* ignore */ }
-}
-
-async function startKuCoinWebSocketFeed() {
-  if (wsKucoin && wsKucoin.readyState !== WebSocket.CLOSED) wsKucoin.terminate();
-
-  const tokenData = await getKuCoinWsToken();
-  if (!tokenData) {
-    console.warn("[PriceFeed] KuCoin WS token unavailable — retrying in 30s");
-    wsKucoinReconnectTimer = setTimeout(() => startKuCoinWebSocketFeed(), 30_000);
-    return;
-  }
-
-  const connectId = Date.now();
-  const wsUrl = `${tokenData.endpoint}?token=${tokenData.token}&connectId=${connectId}`;
-  console.log("[PriceFeed] Starting KuCoin WebSocket price feed...");
-
-  const ws = new WebSocket(wsUrl);
-  wsKucoin = ws;
-
-  ws.on("open", () => {
-    console.log(`[PriceFeed] KuCoin WS connected — subscribing to ${SPOT_SYMBOLS.length} symbols`);
-    const kucoinSymbols = SPOT_SYMBOLS.map(s => s.replace("USDT", "-USDT"));
-    for (let i = 0; i < kucoinSymbols.length; i += 10) {
-      const batch = kucoinSymbols.slice(i, i + 10);
-      ws.send(JSON.stringify({
-        id: Date.now() + i, type: "subscribe",
-        topic: `/market/ticker:${batch.join(",")}`,
-        privateChannel: false, response: true,
-      }));
-    }
-  });
-
-  ws.on("message", (data) => {
-    const msg = JSON.parse(data.toString()) as any;
-    if (msg.type === "pong" || msg.type === "welcome" || msg.type === "ack") return;
-    parseKuCoinTickerMsg(data as Buffer);
-  });
-
-  ws.on("error", (e) => {
-    console.error("[PriceFeed] KuCoin WS error:", e.message);
-  });
-
-  ws.on("close", () => {
-    console.warn("[PriceFeed] KuCoin WS closed — reconnecting in 10s...");
-    if (wsKucoinReconnectTimer) clearTimeout(wsKucoinReconnectTimer);
-    wsKucoinReconnectTimer = setTimeout(() => startKuCoinWebSocketFeed(), 10_000);
-  });
-
-  const pingInterval = setInterval(() => {
-    if (ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ id: Date.now(), type: "ping" }));
-    } else {
-      clearInterval(pingInterval);
-    }
-  }, 20_000);
-}
-
-async function updateSP500Price() {
-  const sp500 = await fetchSP500Price();
-  if (sp500) {
-    livePrices.set("SP500", sp500);
-    // v11.0: Also set SP500USDT so strategies can find it by their symbol key
-    livePrices.set("SP500USDT", { ...sp500, symbol: "SP500USDT" });
-  }
 }
 
 // Auto-start on module load
 startBybitWebSocketFeed();
-startKuCoinWebSocketFeed();

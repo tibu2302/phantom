@@ -271,7 +271,14 @@ function StrategyConfig({ strategy, onClose }: { strategy: any; onClose: () => v
 
 // ─── Strategy Card ───
 function StrategyCard({ s, expandedChart, expandedConfig, setExpandedChart, setExpandedConfig, toggleMut }: any) {
-  const stratIcon = (type: string | null) => type === "grid" ? Grid3X3 : type === "futures" ? TrendingUp : LineChart;
+  const stratIcon = (type: string | null) => {
+    if (type === "grid") return Grid3X3;
+    if (type === "futures") return TrendingUp;
+    if (type === "short_scalping") return TrendingUp;
+    if (type === "mean_reversion") return Activity;
+    if (type === "bidirectional_grid") return Grid3X3;
+    return LineChart;
+  };
   const marketLabel = (m: string | null) => m === "tradfi" ? "TradFi" : "Crypto";
   const Icon = stratIcon(s.strategyType);
   const pnl = parseFloat(String(s.pnl ?? "0"));
@@ -301,8 +308,12 @@ function StrategyCard({ s, expandedChart, expandedConfig, setExpandedChart, setE
             <div
               className="h-11 w-11 rounded-xl flex items-center justify-center"
               style={{
-                background: s.strategyType === "grid"
+                background: s.strategyType === "grid" || s.strategyType === "bidirectional_grid"
                   ? "linear-gradient(135deg, oklch(0.72 0.19 160 / 0.15), oklch(0.72 0.19 160 / 0.05))"
+                  : s.strategyType === "short_scalping"
+                  ? "linear-gradient(135deg, oklch(0.7 0.2 25 / 0.15), oklch(0.7 0.2 25 / 0.05))"
+                  : s.strategyType === "mean_reversion"
+                  ? "linear-gradient(135deg, oklch(0.75 0.15 280 / 0.15), oklch(0.75 0.15 280 / 0.05))"
                   : s.strategyType === "futures"
                   ? "linear-gradient(135deg, oklch(0.8 0.15 85 / 0.15), oklch(0.8 0.15 85 / 0.05))"
                   : "linear-gradient(135deg, oklch(0.75 0.14 200 / 0.15), oklch(0.75 0.14 200 / 0.05))",
@@ -312,8 +323,12 @@ function StrategyCard({ s, expandedChart, expandedConfig, setExpandedChart, setE
               <Icon
                 className="h-5 w-5"
                 style={{
-                  color: s.strategyType === "grid"
+                  color: s.strategyType === "grid" || s.strategyType === "bidirectional_grid"
                     ? "oklch(0.72 0.19 160)"
+                    : s.strategyType === "short_scalping"
+                    ? "oklch(0.7 0.2 25)"
+                    : s.strategyType === "mean_reversion"
+                    ? "oklch(0.75 0.15 280)"
                     : s.strategyType === "futures"
                     ? "oklch(0.8 0.15 85)"
                     : "oklch(0.75 0.14 200)",
@@ -327,7 +342,7 @@ function StrategyCard({ s, expandedChart, expandedConfig, setExpandedChart, setE
                   variant="outline"
                   className="text-[9px] px-1.5 py-0 h-4 font-bold border-white/10"
                 >
-                  {(s.strategyType ?? "grid").toUpperCase()}
+                  {({ grid: "GRID", scalping: "SCALPING", short_scalping: "SHORT", mean_reversion: "MEAN REV", bidirectional_grid: "BI-GRID", futures: "FUTURES" } as Record<string, string>)[s.strategyType ?? "grid"] ?? (s.strategyType ?? "grid").toUpperCase()}
                 </Badge>
                 <Badge
                   variant="outline"

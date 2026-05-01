@@ -325,7 +325,7 @@ export async function loadOpenPositions(userId: number, exchange: string): Promi
         buyPrice: bp,
         qty: row.qty,
         tradeAmount: row.tradeAmount ? parseFloat(row.tradeAmount) : bp * q, // use saved tradeAmount or reconstruct
-        category: (row.strategyType === "futures" || row.strategyType === "scalping") ? "linear" : "spot",
+        category: "linear", // v12.0: All trading is on linear perpetuals
         gridLevelPrice: bp, // approximate: use buy price as grid level
         highestPrice: row.highestPrice ? parseFloat(row.highestPrice) : undefined,
         openedAt: row.openedAt.getTime(),

@@ -14,7 +14,7 @@ const fmtPrice = (n: number) => {
 
 type PeriodFilter = "all" | "today" | "7d" | "30d" | "year";
 type ResultFilter = "all" | "wins" | "losses";
-type StrategyFilter = "all" | "grid" | "scalping" | "futures";
+type StrategyFilter = "all" | "grid" | "scalping" | "futures" | "short_scalping" | "mean_reversion" | "bidirectional_grid";
 
 export default function Trades() {
   const { data: trades, isLoading } = trpc.trades.list.useQuery({ limit: 5000 });
@@ -139,8 +139,8 @@ export default function Trades() {
         <div className="flex-1">
           <p className="text-[10px] text-muted-foreground mb-1.5 uppercase tracking-wider font-medium">Estrategia</p>
           <div className="flex gap-1.5 flex-wrap">
-            {([["all", "Todas"], ["grid", "Grid"], ["scalping", "Scalp"], ["futures", "Futures"]] as const).map(([key, label]) => (
-              <Button key={key} size="sm" variant={strategy === key ? "default" : "outline"} onClick={() => setStrategy(key)}
+            {([["all", "Todas"], ["grid", "Grid"], ["scalping", "Scalp"], ["short_scalping", "Short"], ["mean_reversion", "MeanRev"], ["bidirectional_grid", "BiGrid"], ["futures", "Futures"]] as const).map(([key, label]) => (
+              <Button key={key} size="sm" variant={strategy === key ? "default" : "outline"} onClick={() => setStrategy(key as StrategyFilter)}
                 className={`text-[11px] h-7 px-2.5 ${strategy === key ? "bg-primary text-primary-foreground" : "bg-transparent"}`}>{label}</Button>
             ))}
           </div>
@@ -241,7 +241,7 @@ export default function Trades() {
                     <Badge variant={isBuy ? "default" : "destructive"} className="text-[10px] px-2">{isBuy ? "COMPRA" : "VENTA"}</Badge>
                     <span className="font-bold text-base">{t.symbol?.replace("USDT", "")}</span>
                     <Badge variant="outline" className="text-[9px]">
-                      {t.strategy === "grid" ? "Grid" : t.strategy === "scalping" ? "Scalping" : t.strategy === "futures" ? "Futures" : t.strategy}
+                      {({ grid: "Grid", scalping: "Scalping", short_scalping: "Short", mean_reversion: "MeanRev", bidirectional_grid: "BiGrid", futures: "Futures" } as Record<string, string>)[t.strategy ?? ""] ?? t.strategy}
                     </Badge>
                   </div>
                   <span className={`text-sm font-bold tabular-nums ${pnl >= 0 ? "text-[oklch(0.72_0.19_160)]" : "text-[oklch(0.63_0.24_25)]"}`}>
@@ -294,7 +294,7 @@ export default function Trades() {
                       </td>
                       <td className="p-3">
                         <Badge variant="outline" className="text-[10px]">
-                          {t.strategy === "grid" ? "Grid" : t.strategy === "scalping" ? "Scalping" : t.strategy === "futures" ? "Futures" : t.strategy}
+                          {({ grid: "Grid", scalping: "Scalping", short_scalping: "Short", mean_reversion: "MeanRev", bidirectional_grid: "BiGrid", futures: "Futures" } as Record<string, string>)[t.strategy ?? ""] ?? t.strategy}
                         </Badge>
                       </td>
                       <td className="p-3 text-xs text-muted-foreground">{new Date(t.createdAt).toLocaleString()}</td>
