@@ -96,7 +96,9 @@ interface EngineState {
 
 // ─── Constants ───
 const LEVERAGE = 5; // v12.0: Fixed 5x leverage for all linear positions
-const MIN_PROFIT_PCT = 0.001; // 0.1% minimum net profit
+const MIN_PROFIT_PCT = 0.0025; // 0.25% minimum net profit (must exceed 2x fees)
+const MIN_TRADE_AMOUNT = 200; // $200 minimum trade size (small trades lose to fees)
+const MAX_HOLD_HOURS = 4; // Force close after 4 hours if underwater
 const EMERGENCY_STOP_THRESHOLD = -500;
 const WARNING_THRESHOLD = -300;
 
@@ -1019,7 +1021,12 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
       const baseTradeAmount = (balance * allocation / 100) / (levels.length / 2);
       const gridBoost = (smartScore?.confidence ?? 50) > 70 ? 2.0 : (smartScore?.confidence ?? 50) > 50 ? 1.5 : 1.2;
       const adaptiveSizing = getAdaptiveState();
-      const tradeAmount = baseTradeAmount * positionSizeMultiplier * gridBoost * adaptiveSizing.aggressiveness;
+      let tradeAmount = baseTradeAmount * positionSizeMultiplier * gridBoost * adaptiveSizing.aggressiveness;
+      // v12.0: Enforce minimum trade amount to avoid fee destruction
+      if (tradeAmount < MIN_TRADE_AMOUNT) {
+        console.log(`[Grid] ${symbol} SKIP level: trade $${tradeAmount.toFixed(0)} < min $${MIN_TRADE_AMOUNT}`);
+        continue;
+      }
       const qty = (tradeAmount / price).toFixed(6);
 
       const orderId = await placeOrder(engine, symbol, level.side, qty, category);
@@ -1338,6 +1345,12 @@ async function runScalpingStrategy(engine: EngineState, symbol: string, category
   const balance = parseFloat(state?.currentBalance ?? "5000");
   const baseAmount = (balance * allocation / 100) * 0.15;
   const tradeAmount = baseAmount * positionSizeMultiplier * scalpBoost * xauBoost * timingMultiplier;
+
+  // v12.0: Enforce minimum trade amount to avoid fee destruction
+  if (tradeAmount < MIN_TRADE_AMOUNT) {
+    console.log(`[Scalp] ${symbol} SKIP: trade $${tradeAmount.toFixed(0)} < min $${MIN_TRADE_AMOUNT}`);
+    return;
+  }
   const qty = (tradeAmount / price).toFixed(6);
 
   const orderId = await placeOrder(engine, symbol, "Buy", qty, category);
@@ -1545,6 +1558,12 @@ async function runShortScalpingStrategy(engine: EngineState, symbol: string, cat
   const balance = parseFloat(state?.currentBalance ?? "5000");
   const baseAmount = (balance * allocation / 100) * 0.10; // 10% per position (conservative)
   const tradeAmount = baseAmount * positionSizeMultiplier;
+
+  // v12.0: Enforce minimum trade amount
+  if (tradeAmount < MIN_TRADE_AMOUNT) {
+    console.log(`[ShortScalp] ${symbol} SKIP: trade $${tradeAmount.toFixed(0)} < min $${MIN_TRADE_AMOUNT}`);
+    return;
+  }
   const qty = (tradeAmount / price).toFixed(6);
 
   // Open SHORT (Sell without reduceOnly)
@@ -1705,6 +1724,12 @@ async function runMeanReversionStrategy(engine: EngineState, symbol: string, cat
 
   const baseAmount = (balance * allocation / 100) * 0.12;
   const tradeAmount = baseAmount * positionSizeMultiplier * (meanRevSignal.confidence / 60);
+
+  // v12.0: Enforce minimum trade amount
+  if (tradeAmount < MIN_TRADE_AMOUNT) {
+    console.log(`[MeanRev] ${symbol} SKIP: trade $${tradeAmount.toFixed(0)} < min $${MIN_TRADE_AMOUNT}`);
+    return;
+  }
   const qty = (tradeAmount / price).toFixed(6);
 
   if (meanRevSignal.direction === "long" && meanRevLongs.length < maxLongPositions) {
@@ -1946,6 +1971,9 @@ async function runBidirectionalGridStrategy(engine: EngineState, symbol: string,
     const lastLongPrice = biGridLongs.length > 0 ? Math.min(...biGridLongs.map(p => p.buyPrice)) : price * (1 + gridSpreadPct);
     if (price < lastLongPrice * (1 - gridSpreadPct)) {
       const tradeAmount = baseAmount * positionSizeMultiplier * longRatio;
+      if (tradeAmount < MIN_TRADE_AMOUNT) {
+        console.log(`[BiGrid] ${symbol} SKIP long: trade $${tradeAmount.toFixed(0)} < min $${MIN_TRADE_AMOUNT}`);
+      } else {
       const qty = (tradeAmount / price).toFixed(6);
       const orderId = await placeOrder(engine, symbol, "Buy", qty, "linear");
       if (orderId) {
@@ -1959,6 +1987,7 @@ async function runBidirectionalGridStrategy(engine: EngineState, symbol: string,
         await db.insertTrade({ userId: engine.userId, symbol, side: "buy", price: price.toString(), qty, pnl: "0.00", strategy: "bidirectional_grid", orderId, simulated: engine.simulationMode });
         console.log(`[BiGrid] BUY LONG ${symbol} @ ${price.toFixed(2)} qty=${qty} ratio=L${(longRatio*100).toFixed(0)}/S${(shortRatio*100).toFixed(0)}`);
       }
+      } // close else for MIN_TRADE_AMOUNT check
     }
   }
 
@@ -1967,6 +1996,9 @@ async function runBidirectionalGridStrategy(engine: EngineState, symbol: string,
     const lastShortPrice = currentBiGridShorts.length > 0 ? Math.max(...currentBiGridShorts.map(p => p.entryPrice)) : price * (1 - gridSpreadPct);
     if (price > lastShortPrice * (1 + gridSpreadPct)) {
       const tradeAmount = baseAmount * positionSizeMultiplier * shortRatio;
+      if (tradeAmount < MIN_TRADE_AMOUNT) {
+        console.log(`[BiGrid] ${symbol} SKIP short: trade $${tradeAmount.toFixed(0)} < min $${MIN_TRADE_AMOUNT}`);
+      } else {
       const qty = (tradeAmount / price).toFixed(6);
       const orderId = await placeOrder(engine, symbol, "Sell", qty, "linear", { isOpenShort: true });
       if (orderId) {
@@ -1978,6 +2010,7 @@ async function runBidirectionalGridStrategy(engine: EngineState, symbol: string,
         await db.insertTrade({ userId: engine.userId, symbol, side: "sell", price: price.toString(), qty, pnl: "0.00", strategy: "bidirectional_grid", orderId, simulated: engine.simulationMode });
         console.log(`[BiGrid] OPEN SHORT ${symbol} @ ${price.toFixed(2)} qty=${qty} ratio=L${(longRatio*100).toFixed(0)}/S${(shortRatio*100).toFixed(0)}`);
       }
+      } // close else for MIN_TRADE_AMOUNT check
     }
   }
 }
@@ -2109,18 +2142,26 @@ async function closeStalePositions(engine: EngineState) {
     const staleHours = item.strategy === "scalping" ? 4 : 12;
     if (holdHours < staleHours) continue;
 
-    // Only close if in profit (no stop-loss philosophy)
-    if (profitPct <= 0) {
-      console.log(`[Stale] ${item.symbol} ${item.strategy} held ${holdHours.toFixed(1)}h at ${(profitPct * 100).toFixed(2)}% — HOLD (no stop-loss)`);
-      continue;
-    }
-
+    // v12.0: FORCE CLOSE underwater positions after MAX_HOLD_HOURS
+    // This prevents capital being locked in losing positions forever
     const qty = item.strategy === "scalping" ? (item.pos as ScalpPosition).qty : (item.pos as OpenBuyPosition).qty;
     const tradeAmount = buyPrice * parseFloat(qty);
     const grossPnl = (price - buyPrice) * parseFloat(qty);
     const pnl = calcNetPnl(grossPnl, tradeAmount, "linear", true, "bybit", Date.now() - openedAt);
 
-    if (pnl <= tradeAmount * MIN_PROFIT_PCT) continue;
+    if (profitPct <= 0) {
+      // FORCE CLOSE if held too long underwater (capital recovery)
+      if (holdHours >= MAX_HOLD_HOURS * 2) {
+        console.log(`[Stale] ${item.symbol} ${item.strategy} FORCE CLOSE after ${holdHours.toFixed(1)}h at ${(profitPct * 100).toFixed(2)}% — cutting loss`);
+        // Fall through to close logic below
+      } else {
+        console.log(`[Stale] ${item.symbol} ${item.strategy} held ${holdHours.toFixed(1)}h at ${(profitPct * 100).toFixed(2)}% — waiting (max ${MAX_HOLD_HOURS * 2}h)`);
+        continue;
+      }
+    } else {
+      // In profit — only close if profit exceeds minimum
+      if (pnl <= tradeAmount * MIN_PROFIT_PCT) continue;
+    }
 
     const orderId = await placeOrder(engine, item.symbol, "Sell", qty, "linear");
     if (orderId) {
