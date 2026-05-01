@@ -56,12 +56,24 @@ interface ScalpPosition {
   symbol: string; buyPrice: number; qty: string; orderId: string;
   exchange: string; category: "spot" | "linear";
   openedAt: number; highestPrice?: number;
+  // v12.2: DCA Recovery fields
+  dcaEntries?: number;       // How many DCA entries done (0 = original)
+  avgCostPrice?: number;     // Weighted average cost after DCA
+  totalQty?: string;         // Total qty including DCA buys
+  totalCost?: number;        // Total USD invested including DCA
+  lastDcaAt?: number;        // Timestamp of last DCA entry
 }
 
 interface ShortPosition {
   symbol: string; entryPrice: number; qty: string; orderId: string;
   exchange: string; category: "linear";
   openedAt: number; lowestPrice?: number; strategy: "short_scalping" | "bidirectional_grid" | "mean_reversion";
+  // v12.2: DCA Recovery for shorts
+  dcaEntries?: number;
+  avgCostPrice?: number;
+  totalQty?: string;
+  totalCost?: number;
+  lastDcaAt?: number;
 }
 
 interface GridLevel {
@@ -108,10 +120,15 @@ const GRID_MAX_ALLOCATION_PCT = 30; // Cap grid allocation to prevent fee destru
 const SCALPING_BOOST_MULTIPLIER = 1.5; // Boost scalping (best performer)
 const AI_MIN_CONFIDENCE_REAL = 40; // Higher confidence threshold for real trades
 const AI_MIN_CONFIDENCE_SIM = 20; // Lower threshold for simulation
-const DYNAMIC_STOP_LOSS_BASE = -0.015; // -1.5% base stop loss
-const DYNAMIC_STOP_LOSS_TIGHT = -0.008; // -0.8% tight stop (high volatility)
+// v12.2: NEVER SELL AT LOSS — DCA Recovery System
+const DCA_MAX_ENTRIES = 3;              // Max 3 DCA entries per position (original + 3 = 4 total)
+const DCA_MIN_DIP_PCT = 0.015;         // Min 1.5% further dip before DCA
+const DCA_COOLDOWN_MS = 10 * 60 * 1000; // 10 min between DCA entries
+const DCA_MAX_TOTAL_EXPOSURE = 0.15;   // Max 15% of balance in one DCA chain
+const BREAKEVEN_BUFFER_PCT = 0.003;    // Sell at breakeven + 0.3% (to cover fees)
 const TRAILING_ACTIVATION_PCT = 0.003; // Activate trailing at +0.3% profit
-const TRAILING_DISTANCE_PCT = 0.002; // Trail 0.2% behind peak
+const TRAILING_DISTANCE_PCT = 0.002;   // Trail 0.2% behind peak
+const EMERGENCY_CUT_PCT = -0.08;       // ONLY cut at -8% (catastrophic protection, almost never hit)
 
 // ─── AI Performance Tracker (auto-adjusts allocations) ───
 interface StrategyPerformance {
@@ -173,24 +190,98 @@ function getAIPerformanceMultiplier(stratKey: string): number {
   return 0.4; // Heavy loser = 60% smaller
 }
 
-// ─── AI Dynamic Stop Loss Calculator ───
-function calculateDynamicStopLoss(symbol: string, atr: number, price: number, regime: string): number {
-  // ATR-based stop loss: adapts to current volatility
-  const atrPct = atr / price;
-  let stopPct = DYNAMIC_STOP_LOSS_BASE;
+// ─── v12.2: AI Smart Recovery System (Never Sell at Loss) ───
+// Instead of stop losses, we DCA down and sell at breakeven+
+
+function shouldDCADown(
+  pos: ScalpPosition | OpenBuyPosition,
+  currentPrice: number,
+  balance: number
+): { shouldDCA: boolean; dcaAmount: number; reason: string } {
+  const avgCost = (pos as ScalpPosition).avgCostPrice ?? (pos as ScalpPosition).buyPrice ?? (pos as OpenBuyPosition).buyPrice;
+  const dcaEntries = (pos as ScalpPosition).dcaEntries ?? 0;
+  const lastDcaAt = (pos as ScalpPosition).lastDcaAt ?? 0;
+  const totalCost = (pos as ScalpPosition).totalCost ?? (avgCost * parseFloat((pos as ScalpPosition).qty ?? (pos as OpenBuyPosition).qty));
   
-  // Tighter stops in high volatility (protect capital)
-  if (atrPct > 0.02) stopPct = DYNAMIC_STOP_LOSS_TIGHT;
-  else if (atrPct > 0.01) stopPct = -0.012;
-  
-  // Regime adjustments
-  if (regime === "strong_trend_up" || regime === "strong_trend_down") {
-    stopPct *= 1.3; // Wider stops in strong trends (more room)
-  } else if (regime === "ranging") {
-    stopPct *= 0.8; // Tighter stops in ranging (less room)
+  // Max DCA entries reached
+  if (dcaEntries >= DCA_MAX_ENTRIES) {
+    return { shouldDCA: false, dcaAmount: 0, reason: `Max DCA entries (${DCA_MAX_ENTRIES}) reached` };
   }
   
-  return Math.max(-0.03, Math.min(-0.005, stopPct)); // Clamp between -3% and -0.5%
+  // Cooldown between DCA entries
+  if (Date.now() - lastDcaAt < DCA_COOLDOWN_MS) {
+    return { shouldDCA: false, dcaAmount: 0, reason: "DCA cooldown active" };
+  }
+  
+  // Check total exposure limit
+  if (totalCost >= balance * DCA_MAX_TOTAL_EXPOSURE) {
+    return { shouldDCA: false, dcaAmount: 0, reason: `Exposure limit ${(DCA_MAX_TOTAL_EXPOSURE * 100).toFixed(0)}% reached` };
+  }
+  
+  // Only DCA if price dropped enough from average cost
+  const dipFromAvg = (avgCost - currentPrice) / avgCost;
+  if (dipFromAvg < DCA_MIN_DIP_PCT) {
+    return { shouldDCA: false, dcaAmount: 0, reason: `Dip ${(dipFromAvg * 100).toFixed(2)}% < min ${(DCA_MIN_DIP_PCT * 100).toFixed(1)}%` };
+  }
+  
+  // DCA amount: same as original or smaller (decreasing DCA)
+  // Entry 1: 100% of original, Entry 2: 75%, Entry 3: 50%
+  const originalAmount = totalCost / (dcaEntries + 1);
+  const dcaMultiplier = dcaEntries === 0 ? 1.0 : dcaEntries === 1 ? 0.75 : 0.5;
+  let dcaAmount = Math.max(MIN_TRADE_AMOUNT, originalAmount * dcaMultiplier);
+  
+  // Don't exceed exposure limit
+  const maxAllowed = (balance * DCA_MAX_TOTAL_EXPOSURE) - totalCost;
+  dcaAmount = Math.min(dcaAmount, maxAllowed);
+  
+  if (dcaAmount < MIN_TRADE_AMOUNT) {
+    return { shouldDCA: false, dcaAmount: 0, reason: "DCA amount below minimum" };
+  }
+  
+  return {
+    shouldDCA: true,
+    dcaAmount,
+    reason: `DCA #${dcaEntries + 1}: dip ${(dipFromAvg * 100).toFixed(1)}% from avg $${avgCost.toFixed(2)}, adding $${dcaAmount.toFixed(0)}`
+  };
+}
+
+function getBreakevenPrice(pos: ScalpPosition): number {
+  const avgCost = pos.avgCostPrice ?? pos.buyPrice;
+  // Breakeven = average cost + fees buffer (0.3% to cover round-trip fees)
+  return avgCost * (1 + BREAKEVEN_BUFFER_PCT);
+}
+
+function shouldDCAShort(
+  pos: ShortPosition,
+  currentPrice: number,
+  balance: number
+): { shouldDCA: boolean; dcaAmount: number; reason: string } {
+  const avgCost = pos.avgCostPrice ?? pos.entryPrice;
+  const dcaEntries = pos.dcaEntries ?? 0;
+  const lastDcaAt = pos.lastDcaAt ?? 0;
+  const totalCost = pos.totalCost ?? (avgCost * parseFloat(pos.qty));
+  
+  if (dcaEntries >= DCA_MAX_ENTRIES) return { shouldDCA: false, dcaAmount: 0, reason: "Max DCA" };
+  if (Date.now() - lastDcaAt < DCA_COOLDOWN_MS) return { shouldDCA: false, dcaAmount: 0, reason: "Cooldown" };
+  if (totalCost >= balance * DCA_MAX_TOTAL_EXPOSURE) return { shouldDCA: false, dcaAmount: 0, reason: "Exposure limit" };
+  
+  // For shorts: price went UP (against us)
+  const riseFromAvg = (currentPrice - avgCost) / avgCost;
+  if (riseFromAvg < DCA_MIN_DIP_PCT) return { shouldDCA: false, dcaAmount: 0, reason: "Not enough rise" };
+  
+  const originalAmount = totalCost / (dcaEntries + 1);
+  const dcaMultiplier = dcaEntries === 0 ? 1.0 : dcaEntries === 1 ? 0.75 : 0.5;
+  let dcaAmount = Math.max(MIN_TRADE_AMOUNT, originalAmount * dcaMultiplier);
+  const maxAllowed = (balance * DCA_MAX_TOTAL_EXPOSURE) - totalCost;
+  dcaAmount = Math.min(dcaAmount, maxAllowed);
+  if (dcaAmount < MIN_TRADE_AMOUNT) return { shouldDCA: false, dcaAmount: 0, reason: "Below minimum" };
+  
+  return { shouldDCA: true, dcaAmount, reason: `Short DCA #${dcaEntries + 1}: rise ${(riseFromAvg * 100).toFixed(1)}%` };
+}
+
+function getShortBreakevenPrice(pos: ShortPosition): number {
+  const avgCost = pos.avgCostPrice ?? pos.entryPrice;
+  return avgCost * (1 - BREAKEVEN_BUFFER_PCT); // For shorts: breakeven is BELOW entry
 }
 
 // ─── Bybit Linear Perpetual Lot Sizes (from official Trading Parameters) ───
@@ -987,9 +1078,56 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
     const profitPct = (price - pos.buyPrice) / pos.buyPrice;
     const holdTimeMs = Date.now() - (pos.openedAt ?? Date.now());
 
-    // NO STOP-LOSS — HOLD until profit
-    if (profitPct < 0 && holdTimeMs > 3600000) {
-      console.log(`[Grid] ${symbol} HOLD — ${((-profitPct) * 100).toFixed(2)}% loss, held ${(holdTimeMs / 3600000).toFixed(1)}h`);
+    // v12.2: NEVER SELL AT LOSS — DCA Recovery for grid positions
+    if (profitPct < 0) {
+      const avgCost = (pos as any).avgCostPrice ?? pos.buyPrice;
+      const profitFromAvg = (price - avgCost) / avgCost;
+      const breakevenPx = avgCost * (1 + BREAKEVEN_BUFFER_PCT);
+
+      // Breakeven recovery after DCA
+      if ((pos as any).dcaEntries && (pos as any).dcaEntries > 0 && price >= breakevenPx) {
+        const totalQty = (pos as any).totalQty ?? pos.qty;
+        const totalCostVal = (pos as any).totalCost ?? (pos.buyPrice * parseFloat(pos.qty));
+        const grossPnl = (price - avgCost) * parseFloat(totalQty);
+        const pnl = calcNetPnl(grossPnl, totalCostVal, category, true, "bybit", holdTimeMs);
+        positionsToSell.push({ pos: { ...pos, qty: totalQty }, reason: `DCA RECOVERY (avg=$${avgCost.toFixed(2)}, DCA=${(pos as any).dcaEntries}, pnl=$${pnl.toFixed(2)})` });
+        openPositions.splice(i, 1);
+        continue;
+      }
+
+      // Emergency cut at -8% only
+      if (profitFromAvg <= EMERGENCY_CUT_PCT) {
+        const totalQty = (pos as any).totalQty ?? pos.qty;
+        positionsToSell.push({ pos: { ...pos, qty: totalQty }, reason: `EMERGENCY CUT (${(profitFromAvg * 100).toFixed(1)}%)` });
+        openPositions.splice(i, 1);
+        continue;
+      }
+
+      // DCA down: buy more at lower price
+      try {
+        const balance = parseFloat((await db.getOrCreateBotState(engine.userId))?.currentBalance ?? "5000");
+        const dcaCheck = shouldDCADown(pos as any, price, balance);
+        if (dcaCheck.shouldDCA) {
+          const dcaResult = normalizeLinearQty(symbol, dcaCheck.dcaAmount / price);
+          if (dcaResult.valid) {
+            const orderId = await placeOrder(engine, symbol, "Buy", dcaResult.qty, category);
+            if (orderId) {
+              const oldQty = parseFloat((pos as any).totalQty ?? pos.qty);
+              const oldCost = (pos as any).totalCost ?? (pos.buyPrice * parseFloat(pos.qty));
+              const newQty = oldQty + parseFloat(dcaResult.qty);
+              const newCost = oldCost + (price * parseFloat(dcaResult.qty));
+              (pos as any).dcaEntries = ((pos as any).dcaEntries ?? 0) + 1;
+              (pos as any).avgCostPrice = newCost / newQty;
+              (pos as any).totalQty = newQty.toString();
+              (pos as any).totalCost = newCost;
+              (pos as any).lastDcaAt = Date.now();
+              console.log(`[Grid] 📊 DCA #${(pos as any).dcaEntries} ${symbol} @ ${price.toFixed(2)} qty=${dcaResult.qty} newAvg=$${(pos as any).avgCostPrice.toFixed(2)} breakeven=$${(avgCost * (1 + BREAKEVEN_BUFFER_PCT)).toFixed(2)}`);
+            }
+          }
+        } else if (holdTimeMs > 3600000) {
+          console.log(`[Grid] ${symbol} HOLD — ${((-profitFromAvg) * 100).toFixed(2)}% loss, DCA=${(pos as any).dcaEntries ?? 0} (${dcaCheck.reason})`);
+        }
+      } catch { /* silent */ }
     }
 
     // TIME-PROFIT
@@ -1338,34 +1476,54 @@ async function runScalpingStrategy(engine: EngineState, symbol: string, category
     const profitPct = (price - pos.buyPrice) / pos.buyPrice;
     const holdMs = Date.now() - pos.openedAt;
 
-    // v12.1: AI DYNAMIC STOP LOSS — cut losses based on ATR volatility
+    // v12.2: NEVER SELL AT LOSS — DCA Recovery System
     if (profitPct < 0) {
-      // Calculate ATR-based dynamic stop
-      let dynamicStop = DYNAMIC_STOP_LOSS_BASE;
-      try {
-        const kl = await fetchKlines(engine.client, symbol, "5", 30, category);
-        if (kl.highs.length >= 14) {
-          let atrSum = 0;
-          for (let j = kl.highs.length - 14; j < kl.highs.length; j++) {
-            atrSum += kl.highs[j] - kl.lows[j];
-          }
-          const atr = atrSum / 14;
-          dynamicStop = calculateDynamicStopLoss(symbol, atr, price, marketRegime);
-        }
-      } catch { /* use default */ }
+      const avgCost = pos.avgCostPrice ?? pos.buyPrice;
+      const breakevenPrice = getBreakevenPrice(pos);
+      const profitFromAvg = (price - avgCost) / avgCost;
 
-      if (profitPct <= dynamicStop) {
-        // HIT STOP LOSS — close immediately
-        const qty = pos.qty;
-        const tradeAmount = pos.buyPrice * parseFloat(qty);
-        const grossPnl = (price - pos.buyPrice) * parseFloat(qty);
-        const pnl = calcNetPnl(grossPnl, tradeAmount, category, true, "bybit", holdMs);
-        const orderId = await placeOrder(engine, symbol, "Sell", qty, category);
+      // Check if price recovered to breakeven (after DCA lowered avg cost)
+      if (pos.dcaEntries && pos.dcaEntries > 0 && price >= breakevenPrice) {
+        // BREAKEVEN EXIT — sell everything at breakeven+ (no loss!)
+        const totalQty = pos.totalQty ?? pos.qty;
+        const totalCostVal = pos.totalCost ?? (pos.buyPrice * parseFloat(pos.qty));
+        const grossPnl = (price - avgCost) * parseFloat(totalQty);
+        const pnl = calcNetPnl(grossPnl, totalCostVal, category, true, "bybit", holdMs);
+        const orderId = await placeOrder(engine, symbol, "Sell", totalQty, category);
+        if (orderId) {
+          positions.splice(i, 1);
+          recordTradeResult(symbol, "scalping", true);
+          updateStrategyPerformance(`scalping_${symbol}`, pnl);
+          await db.insertTrade({ userId: engine.userId, symbol, side: "sell", price: price.toString(), qty: totalQty, pnl: pnl.toFixed(2), strategy: "scalping", orderId, simulated: engine.simulationMode });
+          const cs = await db.getOrCreateBotState(engine.userId);
+          if (cs) {
+            await db.updateBotState(engine.userId, {
+              totalPnl: (parseFloat(cs.totalPnl ?? "0") + pnl).toFixed(2),
+              todayPnl: (parseFloat(cs.todayPnl ?? "0") + pnl).toFixed(2),
+              currentBalance: (parseFloat(cs.currentBalance ?? "5000") + pnl).toFixed(2),
+              totalTrades: (cs.totalTrades ?? 0) + 1,
+              winningTrades: (cs.winningTrades ?? 0) + 1,
+            });
+          }
+          if (strat) await db.updateStrategyStats(strat.id, pnl, true);
+          console.log(`[Scalp] ✅ BREAKEVEN RECOVERY ${symbol} @ ${price.toFixed(2)} avg=${avgCost.toFixed(2)} DCA=${pos.dcaEntries} pnl=$${pnl.toFixed(2)}`);
+          await sendTelegramNotification(engine, `✅ <b>PHANTOM Recovery!</b>\nPar: ${symbol}\nRecuperado con DCA x${pos.dcaEntries}\nPnL: <b>$${pnl.toFixed(2)}</b>\nAvg: $${avgCost.toFixed(2)} → Exit: $${price.toFixed(2)}`);
+        }
+        continue;
+      }
+
+      // EMERGENCY CUT — only at catastrophic -8% (almost never happens)
+      if (profitFromAvg <= EMERGENCY_CUT_PCT) {
+        const totalQty = pos.totalQty ?? pos.qty;
+        const totalCostVal = pos.totalCost ?? (pos.buyPrice * parseFloat(pos.qty));
+        const grossPnl = (price - avgCost) * parseFloat(totalQty);
+        const pnl = calcNetPnl(grossPnl, totalCostVal, category, true, "bybit", holdMs);
+        const orderId = await placeOrder(engine, symbol, "Sell", totalQty, category);
         if (orderId) {
           positions.splice(i, 1);
           recordTradeResult(symbol, "scalping", false);
           updateStrategyPerformance(`scalping_${symbol}`, pnl);
-          await db.insertTrade({ userId: engine.userId, symbol, side: "sell", price: price.toString(), qty, pnl: pnl.toFixed(2), strategy: "scalping", orderId, simulated: engine.simulationMode });
+          await db.insertTrade({ userId: engine.userId, symbol, side: "sell", price: price.toString(), qty: totalQty, pnl: pnl.toFixed(2), strategy: "scalping", orderId, simulated: engine.simulationMode });
           const cs = await db.getOrCreateBotState(engine.userId);
           if (cs) {
             await db.updateBotState(engine.userId, {
@@ -1376,13 +1534,42 @@ async function runScalpingStrategy(engine: EngineState, symbol: string, category
             });
           }
           if (strat) await db.updateStrategyStats(strat.id, pnl, false);
-          console.log(`[Scalp] ⚠️ STOP LOSS ${symbol} @ ${price.toFixed(2)} loss=${(profitPct * 100).toFixed(2)}% stop=${(dynamicStop * 100).toFixed(2)}% pnl=$${pnl.toFixed(2)}`);
-          await sendTelegramNotification(engine, `⚠️ <b>PHANTOM Stop Loss</b>\nPar: ${symbol}\nPérdida: $${pnl.toFixed(2)}\nStop: ${(dynamicStop * 100).toFixed(1)}% (ATR-dinámico)`);
+          console.log(`[Scalp] 🚨 EMERGENCY CUT ${symbol} @ ${price.toFixed(2)} loss=${(profitFromAvg * 100).toFixed(2)}% pnl=$${pnl.toFixed(2)}`);
+          await sendTelegramNotification(engine, `🚨 <b>EMERGENCY CUT</b>\nPar: ${symbol}\nPérdida: $${pnl.toFixed(2)} (${(profitFromAvg * 100).toFixed(1)}%)\nProtección catastrófica activada`);
         }
-      } else {
-        if (holdMs > 1800000) {
-          console.log(`[Scalp] ${symbol} HOLD — ${((-profitPct) * 100).toFixed(2)}% loss (stop=${(dynamicStop * 100).toFixed(1)}%), held ${(holdMs / 60000).toFixed(0)}m`);
+        continue;
+      }
+
+      // DCA DOWN — buy more at lower price to reduce average cost
+      try {
+        const balance = parseFloat((await db.getOrCreateBotState(engine.userId))?.currentBalance ?? "5000");
+        const dcaCheck = shouldDCADown(pos, price, balance);
+        if (dcaCheck.shouldDCA) {
+          const dcaResult2 = normalizeLinearQty(symbol, dcaCheck.dcaAmount / price);
+          if (dcaResult2.valid) {
+            const orderId = await placeOrder(engine, symbol, "Buy", dcaResult2.qty, category);
+            if (orderId) {
+              // Update position with new DCA data
+              const oldQty = parseFloat(pos.totalQty ?? pos.qty);
+              const oldCost = pos.totalCost ?? (pos.buyPrice * parseFloat(pos.qty));
+              const newQty = oldQty + parseFloat(dcaResult2.qty);
+              const newCost = oldCost + (price * parseFloat(dcaResult2.qty));
+              pos.dcaEntries = (pos.dcaEntries ?? 0) + 1;
+              pos.avgCostPrice = newCost / newQty;
+              pos.totalQty = newQty.toString();
+              pos.totalCost = newCost;
+              pos.lastDcaAt = Date.now();
+              console.log(`[Scalp] 📊 DCA #${pos.dcaEntries} ${symbol} @ ${price.toFixed(2)} qty=${dcaResult2.qty} newAvg=$${pos.avgCostPrice.toFixed(2)} breakeven=$${getBreakevenPrice(pos).toFixed(2)}`);
+              await sendTelegramNotification(engine, `📊 <b>DCA Recovery</b>\nPar: ${symbol}\nDCA #${pos.dcaEntries}\nPrecio: $${price.toFixed(2)}\nNuevo promedio: $${pos.avgCostPrice.toFixed(2)}\nBreakeven: $${getBreakevenPrice(pos).toFixed(2)}`);
+            }
+          }
+        } else {
+          if (holdMs > 1800000) {
+            console.log(`[Scalp] ${symbol} HOLD — ${((-profitFromAvg) * 100).toFixed(2)}% loss, avg=$${avgCost.toFixed(2)}, DCA=${pos.dcaEntries ?? 0} (${dcaCheck.reason})`);
+          }
         }
+      } catch (e) {
+        console.log(`[Scalp] DCA check error for ${symbol}: ${e}`);
       }
       continue;
     }
@@ -1595,38 +1782,95 @@ async function runShortScalpingStrategy(engine: EngineState, symbol: string, cat
     const holdMs = Date.now() - pos.openedAt;
 
     // NO STOP-LOSS philosophy for shorts too — hold until profit
-    // But add a safety cap: if price rises 3% above entry, cut loss
-    if (profitPct < -0.03) {
-      const qty = pos.qty;
-      const tradeAmount = pos.entryPrice * parseFloat(qty);
-      const grossPnl = (pos.entryPrice - price) * parseFloat(qty); // negative
-      const pnl = calcNetPnl(grossPnl, tradeAmount, "linear", true, "bybit", holdMs);
-      const orderId = await placeOrder(engine, symbol, "Buy", qty, "linear", { reduceOnly: true });
-      if (orderId) {
-        const allShorts = engine.shortPositions[symbol] ?? [];
-        const idx = allShorts.findIndex(p => p.orderId === pos.orderId);
-        if (idx >= 0) allShorts.splice(idx, 1);
-        recordTradeResult(symbol, "short_scalping", false);
-        updateStrategyPerformance(`short_scalping_${symbol}`, pnl);
-        await db.insertTrade({ userId: engine.userId, symbol, side: "buy", price: price.toString(), qty, pnl: pnl.toFixed(2), strategy: "short_scalping", orderId, simulated: engine.simulationMode });
-        const cs = await db.getOrCreateBotState(engine.userId);
-        if (cs) {
-          await db.updateBotState(engine.userId, {
-            totalPnl: (parseFloat(cs.totalPnl ?? "0") + pnl).toFixed(2),
-            todayPnl: (parseFloat(cs.todayPnl ?? "0") + pnl).toFixed(2),
-            currentBalance: (parseFloat(cs.currentBalance ?? "5000") + pnl).toFixed(2),
-            totalTrades: (cs.totalTrades ?? 0) + 1,
-            winningTrades: (cs.winningTrades ?? 0) + (pnl > 0 ? 1 : 0),
-          });
+    // v12.2: NEVER SELL AT LOSS for shorts — DCA Recovery
+    if (profitPct < 0) {
+      const avgCost = pos.avgCostPrice ?? pos.entryPrice;
+      const profitFromAvg = (avgCost - price) / avgCost;
+
+      // Breakeven recovery after DCA
+      if (pos.dcaEntries && pos.dcaEntries > 0 && price <= getShortBreakevenPrice(pos)) {
+        const totalQty = pos.totalQty ?? pos.qty;
+        const totalCostVal = pos.totalCost ?? (pos.entryPrice * parseFloat(pos.qty));
+        const grossPnl = (avgCost - price) * parseFloat(totalQty);
+        const pnl = calcNetPnl(grossPnl, totalCostVal, "linear", true, "bybit", holdMs);
+        const orderId = await placeOrder(engine, symbol, "Buy", totalQty, "linear", { reduceOnly: true });
+        if (orderId) {
+          const allShorts = engine.shortPositions[symbol] ?? [];
+          const idx = allShorts.findIndex(p => p.orderId === pos.orderId);
+          if (idx >= 0) allShorts.splice(idx, 1);
+          recordTradeResult(symbol, "short_scalping", true);
+          updateStrategyPerformance(`short_scalping_${symbol}`, pnl);
+          await db.insertTrade({ userId: engine.userId, symbol, side: "buy", price: price.toString(), qty: totalQty, pnl: pnl.toFixed(2), strategy: "short_scalping", orderId, simulated: engine.simulationMode });
+          const cs = await db.getOrCreateBotState(engine.userId);
+          if (cs) {
+            await db.updateBotState(engine.userId, {
+              totalPnl: (parseFloat(cs.totalPnl ?? "0") + pnl).toFixed(2),
+              todayPnl: (parseFloat(cs.todayPnl ?? "0") + pnl).toFixed(2),
+              currentBalance: (parseFloat(cs.currentBalance ?? "5000") + pnl).toFixed(2),
+              totalTrades: (cs.totalTrades ?? 0) + 1,
+              winningTrades: (cs.winningTrades ?? 0) + 1,
+            });
+          }
+          if (strat) await db.updateStrategyStats(strat.id, pnl, true);
+          console.log(`[ShortScalp] ✅ BREAKEVEN RECOVERY ${symbol} @ ${price.toFixed(2)} DCA=${pos.dcaEntries} pnl=$${pnl.toFixed(2)}`);
         }
-        if (strat) await db.updateStrategyStats(strat.id, pnl, pnl > 0);
-        console.log(`[ShortScalp] STOP-LOSS ${symbol} @ ${price.toFixed(2)} entry=${pos.entryPrice.toFixed(2)} pnl=$${pnl.toFixed(2)}`);
-        await sendTelegramNotification(engine, `🔴 <b>PHANTOM Short Stop</b>\nPar: ${symbol}\nEntrada: $${pos.entryPrice.toFixed(2)}\nSalida: $${price.toFixed(2)}\nPérdida: <b>$${pnl.toFixed(2)}</b>`);
+        continue;
       }
+
+      // Emergency cut at -8% only
+      if (profitFromAvg <= EMERGENCY_CUT_PCT) {
+        const totalQty = pos.totalQty ?? pos.qty;
+        const totalCostVal = pos.totalCost ?? (pos.entryPrice * parseFloat(pos.qty));
+        const grossPnl = (avgCost - price) * parseFloat(totalQty);
+        const pnl = calcNetPnl(grossPnl, totalCostVal, "linear", true, "bybit", holdMs);
+        const orderId = await placeOrder(engine, symbol, "Buy", totalQty, "linear", { reduceOnly: true });
+        if (orderId) {
+          const allShorts = engine.shortPositions[symbol] ?? [];
+          const idx = allShorts.findIndex(p => p.orderId === pos.orderId);
+          if (idx >= 0) allShorts.splice(idx, 1);
+          recordTradeResult(symbol, "short_scalping", false);
+          updateStrategyPerformance(`short_scalping_${symbol}`, pnl);
+          await db.insertTrade({ userId: engine.userId, symbol, side: "buy", price: price.toString(), qty: totalQty, pnl: pnl.toFixed(2), strategy: "short_scalping", orderId, simulated: engine.simulationMode });
+          const cs = await db.getOrCreateBotState(engine.userId);
+          if (cs) {
+            await db.updateBotState(engine.userId, {
+              totalPnl: (parseFloat(cs.totalPnl ?? "0") + pnl).toFixed(2),
+              todayPnl: (parseFloat(cs.todayPnl ?? "0") + pnl).toFixed(2),
+              currentBalance: (parseFloat(cs.currentBalance ?? "5000") + pnl).toFixed(2),
+              totalTrades: (cs.totalTrades ?? 0) + 1,
+            });
+          }
+          if (strat) await db.updateStrategyStats(strat.id, pnl, false);
+          console.log(`[ShortScalp] 🚨 EMERGENCY CUT ${symbol} @ ${price.toFixed(2)} loss=${(profitFromAvg * 100).toFixed(2)}%`);
+        }
+        continue;
+      }
+
+      // DCA for shorts: sell more at higher price
+      try {
+        const balance = parseFloat((await db.getOrCreateBotState(engine.userId))?.currentBalance ?? "5000");
+        const dcaCheck = shouldDCAShort(pos, price, balance);
+        if (dcaCheck.shouldDCA) {
+          const dcaResult3 = normalizeLinearQty(symbol, dcaCheck.dcaAmount / price);
+          if (dcaResult3.valid) {
+            const orderId = await placeOrder(engine, symbol, "Sell", dcaResult3.qty, "linear", { isOpenShort: true });
+            if (orderId) {
+              const oldQty = parseFloat(pos.totalQty ?? pos.qty);
+              const oldCost = pos.totalCost ?? (pos.entryPrice * parseFloat(pos.qty));
+              const newQty = oldQty + parseFloat(dcaResult3.qty);
+              const newCost = oldCost + (price * parseFloat(dcaResult3.qty));
+              pos.dcaEntries = (pos.dcaEntries ?? 0) + 1;
+              pos.avgCostPrice = newCost / newQty;
+              pos.totalQty = newQty.toString();
+              pos.totalCost = newCost;
+              pos.lastDcaAt = Date.now();
+              console.log(`[ShortScalp] 📊 DCA #${pos.dcaEntries} ${symbol} @ ${price.toFixed(2)} newAvg=$${pos.avgCostPrice.toFixed(2)}`);
+            }
+          }
+        }
+      } catch { /* silent */ }
       continue;
     }
-
-    if (profitPct < 0) continue; // underwater, hold
 
     // Track lowest price for trailing
     if (!pos.lowestPrice || price < pos.lowestPrice) pos.lowestPrice = price;
@@ -2090,31 +2334,76 @@ async function runBidirectionalGridStrategy(engine: EngineState, symbol: string,
       }
     }
 
-    // Safety stop for shorts at -3%
-    if (profitPct < -0.03) {
-      const qty = pos.qty;
-      const tradeAmount = pos.entryPrice * parseFloat(qty);
-      const grossPnl = (pos.entryPrice - price) * parseFloat(qty);
-      const pnl = calcNetPnl(grossPnl, tradeAmount, "linear", true, "bybit");
-      const orderId = await placeOrder(engine, symbol, "Buy", qty, "linear", { reduceOnly: true });
-      if (orderId) {
-        const allShorts = engine.shortPositions[symbol] ?? [];
-        const idx = allShorts.findIndex(p => p.orderId === pos.orderId);
-        if (idx >= 0) allShorts.splice(idx, 1);
-        recordTradeResult(symbol, "bidirectional_grid", false);
-        updateStrategyPerformance(`bidirectional_grid_${symbol}`, pnl);
-        await db.insertTrade({ userId: engine.userId, symbol, side: "buy", price: price.toString(), qty, pnl: pnl.toFixed(2), strategy: "bidirectional_grid", orderId, simulated: engine.simulationMode });
-        const cs = await db.getOrCreateBotState(engine.userId);
-        if (cs) {
-          await db.updateBotState(engine.userId, {
-            totalPnl: (parseFloat(cs.totalPnl ?? "0") + pnl).toFixed(2),
-            todayPnl: (parseFloat(cs.todayPnl ?? "0") + pnl).toFixed(2),
-            currentBalance: (parseFloat(cs.currentBalance ?? "5000") + pnl).toFixed(2),
-            totalTrades: (cs.totalTrades ?? 0) + 1,
-            winningTrades: (cs.winningTrades ?? 0) + (pnl > 0 ? 1 : 0),
-          });
+    // v12.2: NEVER sell shorts at loss — DCA recovery
+    if (profitPct < 0) {
+      const avgCost = pos.avgCostPrice ?? pos.entryPrice;
+      const profitFromAvg = (avgCost - price) / avgCost;
+
+      // Breakeven recovery after DCA
+      if (pos.dcaEntries && pos.dcaEntries > 0 && price <= getShortBreakevenPrice(pos)) {
+        const totalQty = pos.totalQty ?? pos.qty;
+        const totalCostVal = pos.totalCost ?? (pos.entryPrice * parseFloat(pos.qty));
+        const grossPnl = (avgCost - price) * parseFloat(totalQty);
+        const pnl = calcNetPnl(grossPnl, totalCostVal, "linear", true, "bybit");
+        const orderId = await placeOrder(engine, symbol, "Buy", totalQty, "linear", { reduceOnly: true });
+        if (orderId) {
+          const allShorts = engine.shortPositions[symbol] ?? [];
+          const idx = allShorts.findIndex(p => p.orderId === pos.orderId);
+          if (idx >= 0) allShorts.splice(idx, 1);
+          recordTradeResult(symbol, "bidirectional_grid", true);
+          updateStrategyPerformance(`bidirectional_grid_${symbol}`, pnl);
+          await db.insertTrade({ userId: engine.userId, symbol, side: "buy", price: price.toString(), qty: totalQty, pnl: pnl.toFixed(2), strategy: "bidirectional_grid", orderId, simulated: engine.simulationMode });
+          const cs = await db.getOrCreateBotState(engine.userId);
+          if (cs) {
+            await db.updateBotState(engine.userId, {
+              totalPnl: (parseFloat(cs.totalPnl ?? "0") + pnl).toFixed(2),
+              todayPnl: (parseFloat(cs.todayPnl ?? "0") + pnl).toFixed(2),
+              currentBalance: (parseFloat(cs.currentBalance ?? "5000") + pnl).toFixed(2),
+              totalTrades: (cs.totalTrades ?? 0) + 1,
+              winningTrades: (cs.winningTrades ?? 0) + 1,
+            });
+          }
+          console.log(`[BiGrid] ✅ SHORT RECOVERY ${symbol} @ ${price.toFixed(2)} DCA=${pos.dcaEntries} pnl=$${pnl.toFixed(2)}`);
         }
-        console.log(`[BiGrid] STOP SHORT ${symbol} @ ${price.toFixed(2)} pnl=$${pnl.toFixed(2)}`);
+      } else if (profitFromAvg <= EMERGENCY_CUT_PCT) {
+        // Emergency only at -8%
+        const totalQty = pos.totalQty ?? pos.qty;
+        const grossPnl = (avgCost - price) * parseFloat(totalQty);
+        const pnl = calcNetPnl(grossPnl, avgCost * parseFloat(totalQty), "linear", true, "bybit");
+        const orderId = await placeOrder(engine, symbol, "Buy", totalQty, "linear", { reduceOnly: true });
+        if (orderId) {
+          const allShorts = engine.shortPositions[symbol] ?? [];
+          const idx = allShorts.findIndex(p => p.orderId === pos.orderId);
+          if (idx >= 0) allShorts.splice(idx, 1);
+          recordTradeResult(symbol, "bidirectional_grid", false);
+          updateStrategyPerformance(`bidirectional_grid_${symbol}`, pnl);
+          await db.insertTrade({ userId: engine.userId, symbol, side: "buy", price: price.toString(), qty: totalQty, pnl: pnl.toFixed(2), strategy: "bidirectional_grid", orderId, simulated: engine.simulationMode });
+          console.log(`[BiGrid] 🚨 EMERGENCY CUT SHORT ${symbol} @ ${price.toFixed(2)} loss=${(profitFromAvg * 100).toFixed(2)}%`);
+        }
+      } else {
+        // DCA: sell more at higher price to raise avg
+        try {
+          const balance = parseFloat((await db.getOrCreateBotState(engine.userId))?.currentBalance ?? "5000");
+          const dcaCheck = shouldDCAShort(pos, price, balance);
+          if (dcaCheck.shouldDCA) {
+            const dcaResult4 = normalizeLinearQty(symbol, dcaCheck.dcaAmount / price);
+            if (dcaResult4.valid) {
+              const orderId = await placeOrder(engine, symbol, "Sell", dcaResult4.qty, "linear", { isOpenShort: true });
+              if (orderId) {
+                const oldQty = parseFloat(pos.totalQty ?? pos.qty);
+                const oldCost = pos.totalCost ?? (pos.entryPrice * parseFloat(pos.qty));
+                const newQty = oldQty + parseFloat(dcaResult4.qty);
+                const newCost = oldCost + (price * parseFloat(dcaResult4.qty));
+                pos.dcaEntries = (pos.dcaEntries ?? 0) + 1;
+                pos.avgCostPrice = newCost / newQty;
+                pos.totalQty = newQty.toString();
+                pos.totalCost = newCost;
+                pos.lastDcaAt = Date.now();
+                console.log(`[BiGrid] 📊 Short DCA #${pos.dcaEntries} ${symbol} @ ${price.toFixed(2)} newAvg=$${pos.avgCostPrice.toFixed(2)}`);
+              }
+            }
+          }
+        } catch { /* silent */ }
       }
     }
   }
@@ -2316,14 +2605,12 @@ async function closeStalePositions(engine: EngineState) {
     const pnl = calcNetPnl(grossPnl, tradeAmount, "linear", true, "bybit", Date.now() - openedAt);
 
     if (profitPct <= 0) {
-      // FORCE CLOSE if held too long underwater (capital recovery)
-      if (holdHours >= MAX_HOLD_HOURS * 2) {
-        console.log(`[Stale] ${item.symbol} ${item.strategy} FORCE CLOSE after ${holdHours.toFixed(1)}h at ${(profitPct * 100).toFixed(2)}% — cutting loss`);
-        // Fall through to close logic below
-      } else {
-        console.log(`[Stale] ${item.symbol} ${item.strategy} held ${holdHours.toFixed(1)}h at ${(profitPct * 100).toFixed(2)}% — waiting (max ${MAX_HOLD_HOURS * 2}h)`);
-        continue;
+      // v12.2: NEVER close at loss — DCA recovery handles underwater positions
+      // Only log status, let the strategy's DCA system handle recovery
+      if (holdHours > 4) {
+        console.log(`[Stale] ${item.symbol} ${item.strategy} held ${holdHours.toFixed(1)}h at ${(profitPct * 100).toFixed(2)}% — DCA recovery active, NOT closing at loss`);
       }
+      continue; // NEVER close at loss
     } else {
       // In profit — only close if profit exceeds minimum
       if (pnl <= tradeAmount * MIN_PROFIT_PCT) continue;
