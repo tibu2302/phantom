@@ -15,6 +15,7 @@ import {
   updateDrawdownState, getDrawdownMultiplier,
   updateArbPrice, type MasterSignal,
   detectMeanReversion as detectMeanReversionMI, detectBreakout as detectBreakoutMI,
+  multiTimeframeAnalysis, detectSqueeze, getFundingRateSignal, detectVolumeSpike,
 } from "./marketIntelligence";
 import {
   recordTradeForTuning, getAdaptiveState, recordTradeResult as recordTradeResultOptimizer,
@@ -23,6 +24,7 @@ import {
 import {
   getMarketTimingSignal, analyzeVolumeProfile, detectBreakoutSignal,
   detectMeanReversion as detectMeanReversionPM, recordTradeForTiming,
+  analyzeMultiTFAlignment, analyzeLiquidity, getProfitMaximizerSignal,
 } from "./profitMaximizer";
 import {
   analyzeStrategyPerformance, rebalanceCapital, checkAutoReinvest,
@@ -32,9 +34,9 @@ import { analyzeStalePosition } from "./profitMaximizer";
 import {
   fetchFearGreedIndex, getFearGreedSignal,
   recordTradeForLearning, getLearnedWeights,
-  detectAnomaly,
+  detectAnomaly, getAISignal, detectCandlePatterns, getRLMultiplier, analyzeSentiment,
 } from "./aiEngine";
-import { updatePairPrice } from "./advancedStrategies";
+import { updatePairPrice, getAdvancedStrategySignal, calculateSmartExit, updateMomentumData, detectMomentumCascade } from "./advancedStrategies";
 import { kellyOptimalSize } from "./marketIntelligence";
 
 // ─── Types ───
@@ -334,56 +336,317 @@ async function ensureLeverage(client: RestClientV5, symbol: string, leverage: nu
   }
 }
 
-// ─── AI Intelligence Layer ───
-// v12.0: Connect Fear&Greed, Kelly Criterion, and learned weights to actual trading decisions
-function getAIMultipliers(symbol: string, strategy: string, confidence: number, tradeAmount: number, balance: number): { sizeMultiplier: number; confidenceBoost: number; reasons: string[] } {
+// ═══════════════════════════════════════════════════════════════
+// AI SUPER GATE v12.0 — ALL AI modules connected
+// Integrates: F&G, Kelly, Learned Weights, Sentiment, Candle Patterns,
+// RL Multiplier, Multi-TF Analysis, Squeeze Detection, Funding Rate,
+// Volume Spikes, Profit Maximizer Signal, Advanced Strategy Signal,
+// Anomaly Detection — MAXIMUM AI INTELLIGENCE
+// ═══════════════════════════════════════════════════════════════
+interface AISuperGateResult {
+  sizeMultiplier: number;
+  confidenceBoost: number;
+  blocked: boolean;
+  blockReason: string;
+  direction: "buy" | "sell" | "neutral";
+  reasons: string[];
+  // Sub-signals for logging
+  sentimentScore: number;
+  fgScore: number;
+  patternSignal: string;
+  rlMultiplier: number;
+  mtfDirection: string;
+  squeezeType: string;
+  fundingDirection: string;
+  volumeSpikeDetected: boolean;
+  anomalyDetected: boolean;
+}
+
+async function runAISuperGate(
+  engine: EngineState,
+  symbol: string,
+  strategy: string,
+  klines: { closes: number[]; highs: number[]; lows: number[]; volumes: number[]; opens: number[] },
+  price: number,
+  category: "spot" | "linear",
+  tradeAmount: number,
+  balance: number,
+  regime: string
+): Promise<AISuperGateResult> {
   const reasons: string[] = [];
   let sizeMultiplier = 1.0;
   let confidenceBoost = 0;
+  let blocked = false;
+  let blockReason = "";
+  let buyPoints = 0;
+  let sellPoints = 0;
+  let sentimentScore = 0;
+  let fgScore = 0;
+  let patternSignal = "none";
+  let rlMult = 1.0;
+  let mtfDir = "neutral";
+  let squeezeType = "none";
+  let fundingDir = "neutral";
+  let volSpikeDetected = false;
+  let anomalyDetected = false;
 
-  // 1. Fear & Greed Index influence
+  // ── 1. FEAR & GREED INDEX ──
   try {
-    const fgSignal = getFearGreedSignal(null); // uses cached value
+    const fgSignal = getFearGreedSignal(null);
+    fgScore = fgSignal.strength;
     if (fgSignal.strength > 30) {
       if (fgSignal.direction === "buy") {
         sizeMultiplier *= 1.15;
+        buyPoints += fgSignal.strength * 0.4;
         confidenceBoost += 5;
-        reasons.push(`F&G: greed → +15% size, +5 conf`);
+        reasons.push(`😱 F&G: ${fgSignal.reason} → +15% size`);
       } else if (fgSignal.direction === "sell") {
         sizeMultiplier *= 0.8;
+        sellPoints += fgSignal.strength * 0.4;
         confidenceBoost -= 5;
-        reasons.push(`F&G: fear → -20% size, -5 conf`);
+        reasons.push(`😱 F&G: ${fgSignal.reason} → -20% size`);
       }
     }
   } catch { /* silent */ }
 
-  // 2. Kelly Criterion for position sizing
+  // ── 2. KELLY CRITERION ──
   try {
     const key = `${symbol}_${strategy}`;
     const data = tradeResults.get(key);
     if (data && data.lastResults.length >= 10) {
       const winRate = data.wins / (data.wins + data.losses);
-      const avgWin = 0.005; // estimated 0.5% avg win
-      const avgLoss = 0.003; // estimated 0.3% avg loss
+      const avgWin = 0.005;
+      const avgLoss = 0.003;
       const kellyFraction = kellyOptimalSize(winRate, avgWin, avgLoss);
       const kellyMultiplier = Math.max(0.5, Math.min(2.0, kellyFraction / (tradeAmount / balance)));
       sizeMultiplier *= kellyMultiplier;
-      reasons.push(`Kelly: ${kellyMultiplier.toFixed(2)}x (WR=${(winRate * 100).toFixed(0)}%)`);
+      reasons.push(`🎯 Kelly: ${kellyMultiplier.toFixed(2)}x (WR=${(winRate * 100).toFixed(0)}%)`);
     }
   } catch { /* silent */ }
 
-  // 3. Learned weights from AI engine (hour-of-day, session patterns)
+  // ── 3. LEARNED WEIGHTS (hour-of-day, session patterns) ──
   try {
     const weights = getLearnedWeights(strategy, symbol);
     if (weights) {
       sizeMultiplier *= weights.sizeMultiplier;
       confidenceBoost += weights.confidenceBoost;
       if (weights.sizeMultiplier !== 1.0 || weights.confidenceBoost !== 0) {
-        reasons.push(`AI-Learn: size=${weights.sizeMultiplier.toFixed(2)}x conf=${weights.confidenceBoost > 0 ? "+" : ""}${weights.confidenceBoost}`);
+        reasons.push(`🧠 AI-Learn: size=${weights.sizeMultiplier.toFixed(2)}x conf=${weights.confidenceBoost > 0 ? "+" : ""}${weights.confidenceBoost}`);
       }
     }
   } catch { /* silent */ }
 
+  // ── 4. SENTIMENT ANALYSIS (crypto news) ──
+  try {
+    const sentiment = await analyzeSentiment(symbol);
+    sentimentScore = sentiment.score;
+    if (sentiment.confidence > 30) {
+      if (sentiment.score > 30) {
+        buyPoints += sentiment.score * 0.3;
+        sizeMultiplier *= 1.1;
+        reasons.push(`📰 Sentiment: ${sentiment.label} (${sentiment.score}) → bullish`);
+      } else if (sentiment.score < -30) {
+        sellPoints += Math.abs(sentiment.score) * 0.3;
+        sizeMultiplier *= 0.9;
+        reasons.push(`📰 Sentiment: ${sentiment.label} (${sentiment.score}) → bearish`);
+      }
+    }
+  } catch { /* silent */ }
+
+  // ── 5. CANDLE PATTERN RECOGNITION ──
+  try {
+    const patterns = detectCandlePatterns(klines);
+    if (patterns.confidence > 30) {
+      patternSignal = patterns.bestPattern;
+      if (patterns.dominantSignal === "buy") {
+        buyPoints += patterns.confidence * 0.5;
+        reasons.push(`🕯️ Pattern: ${patterns.bestPattern} (buy, ${patterns.confidence}%)`);
+      } else if (patterns.dominantSignal === "sell") {
+        sellPoints += patterns.confidence * 0.5;
+        reasons.push(`🕯️ Pattern: ${patterns.bestPattern} (sell, ${patterns.confidence}%)`);
+      }
+    }
+  } catch { /* silent */ }
+
+  // ── 6. REINFORCEMENT LEARNING MULTIPLIER ──
+  try {
+    const session = getCurrentSession().session;
+    const patternNames: string[] = [];
+    rlMult = getRLMultiplier(strategy, symbol, regime, session, fgScore, confidenceBoost + 50, patternNames);
+    sizeMultiplier *= rlMult;
+    if (rlMult < 0.5) reasons.push(`🤖 RL: Reducing (${rlMult.toFixed(2)}x) — setup underperforms`);
+    else if (rlMult > 1.3) reasons.push(`🤖 RL: Boosting (${rlMult.toFixed(2)}x) — setup outperforms`);
+  } catch { /* silent */ }
+
+  // ── 7. MULTI-TIMEFRAME ANALYSIS ──
+  try {
+    const klines5m = await fetchKlines(engine.client, symbol, "5", 60, category);
+    const klines15m = await fetchKlines(engine.client, symbol, "15", 60, category);
+    const klines1h = await fetchKlines(engine.client, symbol, "60", 60, category);
+    if (klines5m.closes.length >= 20 && klines15m.closes.length >= 20 && klines1h.closes.length >= 20) {
+      const mta = multiTimeframeAnalysis(klines5m, klines15m, klines1h, price);
+      mtfDir = mta.direction;
+      if (mta.alignment === "strong") {
+        sizeMultiplier *= mta.boost;
+        if (mta.direction === "buy") buyPoints += mta.confidence * 0.6;
+        else if (mta.direction === "sell") sellPoints += mta.confidence * 0.6;
+        reasons.push(`📊 MTF: ${mta.alignment} ${mta.direction} (5m=${mta.timeframes.tf5m.direction} 15m=${mta.timeframes.tf15m.direction} 1h=${mta.timeframes.tf1h.direction}) boost=${mta.boost.toFixed(1)}x`);
+      } else if (mta.alignment === "conflicting") {
+        sizeMultiplier *= 0.6;
+        reasons.push(`⚠️ MTF: conflicting signals → -40% size`);
+      } else {
+        sizeMultiplier *= mta.boost;
+        if (mta.direction === "buy") buyPoints += mta.confidence * 0.3;
+        else if (mta.direction === "sell") sellPoints += mta.confidence * 0.3;
+        reasons.push(`📊 MTF: ${mta.alignment} ${mta.direction} boost=${mta.boost.toFixed(1)}x`);
+      }
+    }
+  } catch { /* silent */ }
+
+  // ── 8. SQUEEZE DETECTION ──
+  try {
+    const squeeze = detectSqueeze(klines, price);
+    if (squeeze.detected) {
+      squeezeType = squeeze.type;
+      if (squeeze.type === "short_squeeze") {
+        buyPoints += squeeze.strength * 0.7;
+        sizeMultiplier *= 1.3;
+        reasons.push(`🔥 ${squeeze.reason}`);
+      } else if (squeeze.type === "long_squeeze") {
+        sellPoints += squeeze.strength * 0.7;
+        sizeMultiplier *= 1.3;
+        reasons.push(`🔥 ${squeeze.reason}`);
+      }
+    }
+  } catch { /* silent */ }
+
+  // ── 9. FUNDING RATE SIGNAL ──
+  try {
+    if (!engine.simulationMode) {
+      const funding = await getFundingRateSignal(engine.client, symbol);
+      fundingDir = funding.direction;
+      if (funding.strength > 20) {
+        if (funding.direction === "long") {
+          buyPoints += funding.strength * 0.4;
+          reasons.push(`💰 Funding: ${funding.reason}`);
+        } else if (funding.direction === "short") {
+          sellPoints += funding.strength * 0.4;
+          reasons.push(`💰 Funding: ${funding.reason}`);
+        }
+      }
+    }
+  } catch { /* silent */ }
+
+  // ── 10. VOLUME SPIKE DETECTION ──
+  try {
+    const volSpike = detectVolumeSpike(klines, price);
+    if (volSpike.isSpike) {
+      volSpikeDetected = true;
+      sizeMultiplier *= volSpike.boost;
+      if (volSpike.direction === "buy") buyPoints += 20 * volSpike.boost;
+      else if (volSpike.direction === "sell") sellPoints += 20 * volSpike.boost;
+      reasons.push(`📈 VolSpike: ${volSpike.multiplier.toFixed(1)}x avg vol, dir=${volSpike.direction}, boost=${volSpike.boost.toFixed(1)}x`);
+    }
+  } catch { /* silent */ }
+
+  // ── 11. ANOMALY DETECTION ──
+  try {
+    const anomaly = detectAnomaly(klines, price);
+    if (anomaly.detected) {
+      anomalyDetected = true;
+      if (anomaly.action === "block") {
+        blocked = true;
+        blockReason = `Anomaly: ${anomaly.reason}`;
+        reasons.push(`🚨 BLOCKED: ${anomaly.reason}`);
+      } else if (anomaly.action === "reduce") {
+        sizeMultiplier *= 0.5;
+        reasons.push(`⚠️ Anomaly: ${anomaly.reason} → -50% size`);
+      }
+    }
+  } catch { /* silent */ }
+
+  // ── 12. PROFIT MAXIMIZER SIGNAL ──
+  try {
+    const klines5m = await fetchKlines(engine.client, symbol, "5", 30, category);
+    const pmSignal = getProfitMaximizerSignal({
+      klines, klines5m, currentPrice: price,
+      totalUsdt: balance, deployedUsdt: balance * 0.5,
+      openPositionCount: Object.values(engine.openBuyPositions).reduce((s, a) => s + a.length, 0),
+    });
+    sizeMultiplier *= pmSignal.overallBoost;
+    if (pmSignal.topOpportunity !== "None") {
+      reasons.push(`💎 ProfitMax: ${pmSignal.topOpportunity} boost=${pmSignal.overallBoost.toFixed(2)}x`);
+    }
+    // Use sub-signals
+    if (pmSignal.breakout.detected && pmSignal.breakout.confidence > 60) {
+      if (pmSignal.breakout.direction === "long") buyPoints += pmSignal.breakout.confidence * 0.4;
+      else if (pmSignal.breakout.direction === "short") sellPoints += pmSignal.breakout.confidence * 0.4;
+    }
+    if (pmSignal.liquidation.detected && pmSignal.liquidation.confidence > 50) {
+      if (pmSignal.liquidation.direction === "long") buyPoints += 25;
+      else if (pmSignal.liquidation.direction === "short") sellPoints += 25;
+      reasons.push(`💀 Liquidation zone: ${pmSignal.liquidation.reason}`);
+    }
+  } catch { /* silent */ }
+
+  // ── 13. ADVANCED STRATEGY SIGNAL (Momentum Cascade + News + Pairs) ──
+  try {
+    const advSignal = await getAdvancedStrategySignal(symbol, price);
+    if (advSignal.confidence > 20) {
+      sizeMultiplier *= advSignal.sizingMultiplier;
+      if (advSignal.direction === "buy") buyPoints += advSignal.confidence * 0.5;
+      else if (advSignal.direction === "sell") sellPoints += advSignal.confidence * 0.5;
+      for (const r of advSignal.reasons) reasons.push(r);
+    }
+  } catch { /* silent */ }
+
+  // ── FINAL DIRECTION CALCULATION ──
+  const netScore = buyPoints - sellPoints;
+  const direction: "buy" | "sell" | "neutral" = blocked ? "neutral" : netScore > 15 ? "buy" : netScore < -15 ? "sell" : "neutral";
+
+  // High confidence boost
+  if (Math.abs(netScore) > 70) sizeMultiplier *= 1.3;
+  else if (Math.abs(netScore) > 50) sizeMultiplier *= 1.1;
+
+  // Safety cap
+  sizeMultiplier = Math.max(0.2, Math.min(3.0, sizeMultiplier));
+
+  return {
+    sizeMultiplier, confidenceBoost, blocked, blockReason, direction, reasons,
+    sentimentScore, fgScore, patternSignal, rlMultiplier: rlMult,
+    mtfDirection: mtfDir, squeezeType, fundingDirection: fundingDir,
+    volumeSpikeDetected: volSpikeDetected, anomalyDetected,
+  };
+}
+
+// Legacy wrapper for backward compatibility
+function getAIMultipliers(symbol: string, strategy: string, confidence: number, tradeAmount: number, balance: number): { sizeMultiplier: number; confidenceBoost: number; reasons: string[] } {
+  // Synchronous fallback — uses only sync modules
+  const reasons: string[] = [];
+  let sizeMultiplier = 1.0;
+  let confidenceBoost = 0;
+  try {
+    const fgSignal = getFearGreedSignal(null);
+    if (fgSignal.strength > 30) {
+      if (fgSignal.direction === "buy") { sizeMultiplier *= 1.15; confidenceBoost += 5; reasons.push(`F&G: +15%`); }
+      else if (fgSignal.direction === "sell") { sizeMultiplier *= 0.8; confidenceBoost -= 5; reasons.push(`F&G: -20%`); }
+    }
+  } catch { /* silent */ }
+  try {
+    const key = `${symbol}_${strategy}`;
+    const data = tradeResults.get(key);
+    if (data && data.lastResults.length >= 10) {
+      const winRate = data.wins / (data.wins + data.losses);
+      const kellyFraction = kellyOptimalSize(winRate, 0.005, 0.003);
+      const kellyMultiplier = Math.max(0.5, Math.min(2.0, kellyFraction / (tradeAmount / balance)));
+      sizeMultiplier *= kellyMultiplier;
+      reasons.push(`Kelly: ${kellyMultiplier.toFixed(2)}x`);
+    }
+  } catch { /* silent */ }
+  try {
+    const weights = getLearnedWeights(strategy, symbol);
+    if (weights) { sizeMultiplier *= weights.sizeMultiplier; confidenceBoost += weights.confidenceBoost; }
+  } catch { /* silent */ }
   return { sizeMultiplier, confidenceBoost, reasons };
 }
 
@@ -527,13 +790,28 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
     console.warn(`[Grid] ${symbol} Master signal error: ${(e as Error).message}`);
   }
 
-  // ─── v12.0: AI Intelligence Layer ───
+  // ─── v12.0: AI SUPER GATE — ALL 13 AI modules ───
   const state0 = await db.getOrCreateBotState(engine.userId);
   const balance0 = parseFloat(state0?.currentBalance ?? "5000");
-  const aiMult = getAIMultipliers(symbol, "grid", smartScore?.confidence ?? 50, balance0 * 0.05, balance0);
-  positionSizeMultiplier *= aiMult.sizeMultiplier;
-  if (aiMult.reasons.length > 0) {
-    console.log(`[Grid] ${symbol} AI: ${aiMult.reasons.join(" | ")}`);
+  let aiGate: AISuperGateResult | null = null;
+  try {
+    const klines_ai = await fetchKlines(engine.client, symbol, "15", 60, category);
+    aiGate = await runAISuperGate(engine, symbol, "grid", klines_ai, price, category, balance0 * 0.05, balance0, marketRegime);
+    positionSizeMultiplier *= aiGate.sizeMultiplier;
+    if (aiGate.blocked) {
+      console.log(`[Grid] ${symbol} 🚨 AI BLOCKED: ${aiGate.blockReason}`);
+      trendAllowsBuy = false;
+    }
+    if (aiGate.direction === "sell" && aiGate.confidenceBoost > 10) {
+      positionSizeMultiplier *= 0.5;
+    }
+    if (aiGate.reasons.length > 0) {
+      console.log(`[Grid] ${symbol} AI-SuperGate (${aiGate.reasons.length} signals): ${aiGate.reasons.slice(0, 5).join(" | ")}`);
+    }
+  } catch (e) {
+    console.warn(`[Grid] ${symbol} SuperGate error: ${(e as Error).message}`);
+    const aiMult = getAIMultipliers(symbol, "grid", smartScore?.confidence ?? 50, balance0 * 0.05, balance0);
+    positionSizeMultiplier *= aiMult.sizeMultiplier;
   }
 
   // Read strategy config
@@ -889,13 +1167,24 @@ async function runScalpingStrategy(engine: EngineState, symbol: string, category
     positionSizeMultiplier *= masterSignal.sizingMultiplier;
   } catch { /* silent */ }
 
-  // ─── v12.0: AI Intelligence Layer ───
+  // ─── v12.0: AI SUPER GATE — ALL 13 AI modules ───
   const state0 = await db.getOrCreateBotState(engine.userId);
   const balance0 = parseFloat(state0?.currentBalance ?? "5000");
-  const aiMult = getAIMultipliers(symbol, "scalping", smartScore?.confidence ?? 50, balance0 * 0.03, balance0);
-  positionSizeMultiplier *= aiMult.sizeMultiplier;
-  if (aiMult.reasons.length > 0) {
-    console.log(`[Scalp] ${symbol} AI: ${aiMult.reasons.join(" | ")}`);
+  let aiGate: AISuperGateResult | null = null;
+  try {
+    const klines_ai = await fetchKlines(engine.client, symbol, "15", 60, category);
+    aiGate = await runAISuperGate(engine, symbol, "scalping", klines_ai, price, category, balance0 * 0.03, balance0, marketRegime);
+    positionSizeMultiplier *= aiGate.sizeMultiplier;
+    if (aiGate.blocked) {
+      console.log(`[Scalp] ${symbol} 🚨 AI BLOCKED: ${aiGate.blockReason}`);
+    }
+    if (aiGate.reasons.length > 0) {
+      console.log(`[Scalp] ${symbol} AI-SuperGate (${aiGate.reasons.length} signals): ${aiGate.reasons.slice(0, 5).join(" | ")}`);
+    }
+  } catch (e) {
+    console.warn(`[Scalp] ${symbol} SuperGate error: ${(e as Error).message}`);
+    const aiMult = getAIMultipliers(symbol, "scalping", smartScore?.confidence ?? 50, balance0 * 0.03, balance0);
+    positionSizeMultiplier *= aiMult.sizeMultiplier;
   }
 
   // ─── ProfitMaximizer signals ───
@@ -1092,11 +1381,25 @@ async function runShortScalpingStrategy(engine: EngineState, symbol: string, cat
     }
   } catch { /* keep defaults */ }
 
-  // ─── AI Intelligence Layer ───
+  // ─── v12.0: AI SUPER GATE — ALL 13 AI modules ───
   const state0 = await db.getOrCreateBotState(engine.userId);
   const balance0 = parseFloat(state0?.currentBalance ?? "5000");
-  const aiMult = getAIMultipliers(symbol, "short_scalping", smartScore?.confidence ?? 50, balance0 * 0.03, balance0);
-  positionSizeMultiplier *= aiMult.sizeMultiplier;
+  let aiGate: AISuperGateResult | null = null;
+  try {
+    const klines_ai = await fetchKlines(engine.client, symbol, "5", 60, category);
+    aiGate = await runAISuperGate(engine, symbol, "short_scalping", klines_ai, price, category, balance0 * 0.03, balance0, marketRegime);
+    positionSizeMultiplier *= aiGate.sizeMultiplier;
+    if (aiGate.blocked) {
+      console.log(`[ShortScalp] ${symbol} 🚨 AI BLOCKED: ${aiGate.blockReason}`);
+    }
+    if (aiGate.reasons.length > 0) {
+      console.log(`[ShortScalp] ${symbol} AI-SuperGate (${aiGate.reasons.length} signals): ${aiGate.reasons.slice(0, 5).join(" | ")}`);
+    }
+  } catch (e) {
+    console.warn(`[ShortScalp] ${symbol} SuperGate error: ${(e as Error).message}`);
+    const aiMult = getAIMultipliers(symbol, "short_scalping", smartScore?.confidence ?? 50, balance0 * 0.03, balance0);
+    positionSizeMultiplier *= aiMult.sizeMultiplier;
+  }
 
   // ─── Nocturnal Mode ───
   const nocturnal = getNocturnalMultiplier();
@@ -1381,7 +1684,25 @@ async function runMeanReversionStrategy(engine: EngineState, symbol: string, cat
   const allocation = strat?.allocationPct ?? 25;
   const state = await db.getOrCreateBotState(engine.userId);
   const balance = parseFloat(state?.currentBalance ?? "5000");
-  const positionSizeMultiplier = getLossCooldownMultiplier(symbol, "mean_reversion");
+  let positionSizeMultiplier = getLossCooldownMultiplier(symbol, "mean_reversion");
+
+  // ─── v12.0: AI SUPER GATE — ALL 13 AI modules ───
+  let aiGate: AISuperGateResult | null = null;
+  try {
+    const klines_ai = await fetchKlines(engine.client, symbol, "5", 60, category);
+    aiGate = await runAISuperGate(engine, symbol, "mean_reversion", klines_ai, price, category, balance * 0.03, balance, "ranging");
+    positionSizeMultiplier *= aiGate.sizeMultiplier;
+    if (aiGate.blocked) {
+      console.log(`[MeanRev] ${symbol} 🚨 AI BLOCKED: ${aiGate.blockReason}`);
+      return;
+    }
+    if (aiGate.reasons.length > 0) {
+      console.log(`[MeanRev] ${symbol} AI-SuperGate (${aiGate.reasons.length} signals): ${aiGate.reasons.slice(0, 5).join(" | ")}`);
+    }
+  } catch (e) {
+    console.warn(`[MeanRev] ${symbol} SuperGate error: ${(e as Error).message}`);
+  }
+
   const baseAmount = (balance * allocation / 100) * 0.12;
   const tradeAmount = baseAmount * positionSizeMultiplier * (meanRevSignal.confidence / 60);
   const qty = (tradeAmount / price).toFixed(6);
@@ -1446,6 +1767,24 @@ async function runBidirectionalGridStrategy(engine: EngineState, symbol: string,
     }
   } catch { /* keep defaults */ }
 
+  // ─── v12.0: AI SUPER GATE — ALL 13 AI modules ───
+  const state0 = await db.getOrCreateBotState(engine.userId);
+  const balance0 = parseFloat(state0?.currentBalance ?? "5000");
+  let aiGate: AISuperGateResult | null = null;
+  try {
+    const klines_ai = await fetchKlines(engine.client, symbol, "15", 60, category);
+    aiGate = await runAISuperGate(engine, symbol, "bidirectional_grid", klines_ai, price, category, balance0 * 0.05, balance0, marketRegime);
+    positionSizeMultiplier *= aiGate.sizeMultiplier;
+    if (aiGate.blocked) {
+      console.log(`[BiGrid] ${symbol} 🚨 AI BLOCKED: ${aiGate.blockReason}`);
+    }
+    if (aiGate.reasons.length > 0) {
+      console.log(`[BiGrid] ${symbol} AI-SuperGate (${aiGate.reasons.length} signals): ${aiGate.reasons.slice(0, 5).join(" | ")}`);
+    }
+  } catch (e) {
+    console.warn(`[BiGrid] ${symbol} SuperGate error: ${(e as Error).message}`);
+  }
+
   const strats = await db.getUserStrategies(engine.userId);
   const strat = strats.find(s => s.symbol === symbol && s.strategyType === "bidirectional_grid");
   const config = strat?.config as any;
@@ -1454,7 +1793,7 @@ async function runBidirectionalGridStrategy(engine: EngineState, symbol: string,
   const maxShortPositions = Math.max(3, Math.floor((config?.maxOpenPositions ?? 6) * 0.7));
   const trailingPct = (config?.trailingStopPct ?? 0.3) / 100;
 
-  // ─── AI decides long/short ratio based on regime ───
+  // ─── AI decides long/short ratio based on regime + SuperGate direction ───
   let longRatio = 0.5; // 50/50 default
   let shortRatio = 0.5;
   if (marketRegime === "trend_up" || marketRegime === "strong_trend_up") {
@@ -1463,6 +1802,17 @@ async function runBidirectionalGridStrategy(engine: EngineState, symbol: string,
     longRatio = 0.3; shortRatio = 0.7;
   } else if (marketRegime === "volatile") {
     longRatio = 0.5; shortRatio = 0.5;
+  }
+  // SuperGate direction override
+  if (aiGate) {
+    if (aiGate.direction === "buy" && aiGate.confidenceBoost > 5) {
+      longRatio = Math.min(0.85, longRatio + 0.15);
+      shortRatio = 1 - longRatio;
+    } else if (aiGate.direction === "sell" && aiGate.confidenceBoost > 5) {
+      shortRatio = Math.min(0.85, shortRatio + 0.15);
+      longRatio = 1 - shortRatio;
+    }
+    console.log(`[BiGrid] ${symbol} AI ratio: long=${(longRatio * 100).toFixed(0)}% short=${(shortRatio * 100).toFixed(0)}%`);
   }
 
   // ─── Close existing positions ───
@@ -1948,6 +2298,25 @@ export async function startEngine(userId: number, options: {
           } catch { /* silent */ }
         }
       }
+
+      // ─── Update momentum data for cascade detection ───
+      try {
+        for (const sym of Object.keys(engine.lastPrices)) {
+          const kl5 = await fetchKlines(engine.client, sym, "5", 5, "linear");
+          const kl15 = await fetchKlines(engine.client, sym, "15", 5, "linear");
+          const kl1h = await fetchKlines(engine.client, sym, "60", 5, "linear");
+          if (kl5.closes.length >= 2 && kl15.closes.length >= 2 && kl1h.closes.length >= 2) {
+            const c5 = kl5.closes; const c15 = kl15.closes; const c1h = kl1h.closes;
+            const chg5m = ((c5[c5.length - 1] - c5[c5.length - 2]) / c5[c5.length - 2]) * 100;
+            const chg15m = ((c15[c15.length - 1] - c15[c15.length - 2]) / c15[c15.length - 2]) * 100;
+            const chg1h = ((c1h[c1h.length - 1] - c1h[c1h.length - 2]) / c1h[c1h.length - 2]) * 100;
+            const vol = kl5.volumes[kl5.volumes.length - 1] ?? 0;
+            updateMomentumData(sym, chg5m, chg15m, chg1h, vol);
+            updatePairPrice(sym, engine.lastPrices[sym]);
+            if (sym === "BTCUSDT") updateBTCState(engine.lastPrices[sym]);
+          }
+        }
+      } catch { /* silent */ }
 
       // ─── Execute strategies ───
       const strats = await db.getUserStrategies(userId);
