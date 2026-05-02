@@ -807,8 +807,13 @@ async function runAISuperGate(
   }
 
   // v12.1: CONFIDENCE GATE — higher threshold for real trades
-  const minConfidence = engine.simulationMode ? AI_MIN_CONFIDENCE_SIM : AI_MIN_CONFIDENCE_REAL;
-  const totalConfidence = Math.abs(netScore) + confidenceBoost;
+  // XAU/TradFi assets get lower threshold because crypto-specific modules don't apply to them
+  const isTradfiFi = symbol === "XAUUSDT";
+  const baseConfidenceThreshold = isTradfiFi ? 10 : AI_MIN_CONFIDENCE_REAL;
+  const minConfidence = engine.simulationMode ? AI_MIN_CONFIDENCE_SIM : baseConfidenceThreshold;
+  // XAU gets base confidence boost since it's historically profitable and crypto modules don't fire for it
+  const xauBaseConfidence = isTradfiFi ? 25 : 0;
+  const totalConfidence = Math.abs(netScore) + confidenceBoost + xauBaseConfidence;
   if (totalConfidence < minConfidence && !blocked) {
     blocked = true;
     blockReason = `Low AI confidence: ${totalConfidence.toFixed(0)} < ${minConfidence} (${engine.simulationMode ? "sim" : "REAL"} mode)`;
