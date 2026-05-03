@@ -120,7 +120,7 @@ const WARNING_THRESHOLD = -300;
 const XAU_REAL_MODE_BLOCKED = false; // XAU enabled in real mode (profitable with correct sizing)
 const GRID_MAX_ALLOCATION_PCT = 30; // Cap grid allocation to prevent fee destruction
 const SCALPING_BOOST_MULTIPLIER = 2.0; // Boost scalping 2x (best performer, 0 losses in 7 days)
-const AI_MIN_CONFIDENCE_REAL = 20; // Lowered from 40 - bot was blocking too many profitable trades
+const AI_MIN_CONFIDENCE_REAL = 10; // Lowered to 10 - BTC with strong buy MTF was getting blocked at 20
 const AI_MIN_CONFIDENCE_SIM = 10; // Lower threshold for simulation
 // v12.2: NEVER SELL AT LOSS — DCA Recovery System
 const DCA_MAX_ENTRIES = 3;              // Max 3 DCA entries per position (original + 3 = 4 total)
@@ -685,7 +685,8 @@ async function runAISuperGate(
         sizeMultiplier *= mta.boost;
         if (mta.direction === "buy") buyPoints += mta.confidence * 0.6;
         else if (mta.direction === "sell") sellPoints += mta.confidence * 0.6;
-        reasons.push(`📊 MTF: ${mta.alignment} ${mta.direction} (5m=${mta.timeframes.tf5m.direction} 15m=${mta.timeframes.tf15m.direction} 1h=${mta.timeframes.tf1h.direction}) boost=${mta.boost.toFixed(1)}x`);
+        confidenceBoost += 15; // Strong MTF alignment = high confidence, never block these
+        reasons.push(`📊 MTF: strong ${mta.direction} (5m=${mta.timeframes.tf5m.direction} 15m=${mta.timeframes.tf15m.direction} 1h=${mta.timeframes.tf1h.direction}) boost=${mta.boost.toFixed(1)}x +15conf`);
       } else if (mta.alignment === "conflicting") {
         sizeMultiplier *= 0.85; // Reduced penalty from -40% to -15% (was blocking too much)
         reasons.push(`⚠️ MTF: conflicting signals → -15% size`);
