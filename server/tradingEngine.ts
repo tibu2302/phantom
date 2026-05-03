@@ -313,6 +313,9 @@ const LINEAR_LOT_SIZES: Record<string, { minQty: number; stepSize: number }> = {
   OPUSDT:   { minQty: 0.1,    stepSize: 0.1 },
   DOTUSDT:  { minQty: 0.1,    stepSize: 0.1 },
   MATICUSDT:{ minQty: 0.1,    stepSize: 0.1 },
+  PEPEUSDT: { minQty: 1000,   stepSize: 1000 },
+  WIFUSDT:  { minQty: 0.1,    stepSize: 0.1 },
+  INJUSDT:  { minQty: 0.01,   stepSize: 0.01 },
 };
 
 // Normalize qty to Bybit linear lot size: floor to stepSize, enforce minQty
@@ -3587,7 +3590,7 @@ let wsReconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let wsInitialized = false;
 
 const SPOT_SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT"];
-const LINEAR_SYMBOLS = ["XAUUSDT", "BTCUSDT", "ETHUSDT", "SOLUSDT"];
+const LINEAR_SYMBOLS = ["XAUUSDT", "BTCUSDT", "ETHUSDT", "SOLUSDT", "PEPEUSDT", "WIFUSDT", "DOGEUSDT", "SUIUSDT", "AVAXUSDT", "LINKUSDT", "INJUSDT", "ARBUSDT"];
 
 function parseWsTickerMsg(data: Buffer | string): void {
   try {

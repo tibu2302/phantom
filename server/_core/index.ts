@@ -100,22 +100,46 @@ setTimeout(async () => {
           console.log(`[AutoStart] Forced LIVE mode (API keys found for owner ${owner.id})`);
         }
 
-        // v12.0: Concentrated strategies — BTC+ETH+SOL+XAU × Grid+Scalping
+        // v12.4: All strategies — BTC+ETH+SOL+XAU + volatile altcoins
         const { getUserStrategies, upsertStrategy } = await import("../db");
         const existingStrats = await getUserStrategies(owner.id);
         const v12Strategies = [
           // Grid: BTC, ETH, SOL
-          { symbol: "BTCUSDT", strategyType: "grid", market: "crypto", category: "linear", allocationPct: 35, enabled: true },
-          { symbol: "ETHUSDT", strategyType: "grid", market: "crypto", category: "linear", allocationPct: 30, enabled: true },
-          { symbol: "SOLUSDT", strategyType: "grid", market: "crypto", category: "linear", allocationPct: 25, enabled: true },
-          // Scalping: XAU, BTC, ETH, SOL
-          { symbol: "XAUUSDT", strategyType: "scalping", market: "tradfi", category: "linear", allocationPct: 40, enabled: true },
-          { symbol: "BTCUSDT", strategyType: "scalping", market: "crypto", category: "linear", allocationPct: 25, enabled: true },
-          { symbol: "ETHUSDT", strategyType: "scalping", market: "crypto", category: "linear", allocationPct: 20, enabled: true },
-          { symbol: "SOLUSDT", strategyType: "scalping", market: "crypto", category: "linear", allocationPct: 20, enabled: true },
+          { symbol: "BTCUSDT", strategyType: "grid", market: "crypto", category: "linear", allocationPct: 30, enabled: true },
+          { symbol: "ETHUSDT", strategyType: "grid", market: "crypto", category: "linear", allocationPct: 25, enabled: true },
+          { symbol: "SOLUSDT", strategyType: "grid", market: "crypto", category: "linear", allocationPct: 20, enabled: true },
+          // Scalping: XAU, BTC, ETH, SOL + volatile altcoins
+          { symbol: "XAUUSDT", strategyType: "scalping", market: "tradfi", category: "linear", allocationPct: 35, enabled: true },
+          { symbol: "BTCUSDT", strategyType: "scalping", market: "crypto", category: "linear", allocationPct: 20, enabled: true },
+          { symbol: "ETHUSDT", strategyType: "scalping", market: "crypto", category: "linear", allocationPct: 15, enabled: true },
+          { symbol: "SOLUSDT", strategyType: "scalping", market: "crypto", category: "linear", allocationPct: 15, enabled: true },
+          { symbol: "PEPEUSDT", strategyType: "scalping", market: "crypto", category: "linear", allocationPct: 10, enabled: true },
+          { symbol: "WIFUSDT", strategyType: "scalping", market: "crypto", category: "linear", allocationPct: 10, enabled: true },
+          { symbol: "DOGEUSDT", strategyType: "scalping", market: "crypto", category: "linear", allocationPct: 10, enabled: true },
+          { symbol: "SUIUSDT", strategyType: "scalping", market: "crypto", category: "linear", allocationPct: 10, enabled: true },
+          { symbol: "AVAXUSDT", strategyType: "scalping", market: "crypto", category: "linear", allocationPct: 10, enabled: true },
+          { symbol: "LINKUSDT", strategyType: "scalping", market: "crypto", category: "linear", allocationPct: 10, enabled: true },
+          { symbol: "INJUSDT", strategyType: "scalping", market: "crypto", category: "linear", allocationPct: 10, enabled: true },
+          { symbol: "ARBUSDT", strategyType: "scalping", market: "crypto", category: "linear", allocationPct: 10, enabled: true },
+          // Short Scalping
+          { symbol: "BTCUSDT", strategyType: "short_scalping", market: "crypto", category: "linear", allocationPct: 20, enabled: true },
+          { symbol: "ETHUSDT", strategyType: "short_scalping", market: "crypto", category: "linear", allocationPct: 15, enabled: true },
+          { symbol: "SOLUSDT", strategyType: "short_scalping", market: "crypto", category: "linear", allocationPct: 15, enabled: true },
+          { symbol: "PEPEUSDT", strategyType: "short_scalping", market: "crypto", category: "linear", allocationPct: 10, enabled: true },
+          { symbol: "WIFUSDT", strategyType: "short_scalping", market: "crypto", category: "linear", allocationPct: 10, enabled: true },
+          { symbol: "DOGEUSDT", strategyType: "short_scalping", market: "crypto", category: "linear", allocationPct: 10, enabled: true },
+          { symbol: "SUIUSDT", strategyType: "short_scalping", market: "crypto", category: "linear", allocationPct: 10, enabled: true },
+          { symbol: "AVAXUSDT", strategyType: "short_scalping", market: "crypto", category: "linear", allocationPct: 10, enabled: true },
+          // Mean Reversion
+          { symbol: "BTCUSDT", strategyType: "mean_reversion", market: "crypto", category: "linear", allocationPct: 20, enabled: true },
+          { symbol: "ETHUSDT", strategyType: "mean_reversion", market: "crypto", category: "linear", allocationPct: 15, enabled: true },
+          { symbol: "XAUUSDT", strategyType: "mean_reversion", market: "tradfi", category: "linear", allocationPct: 20, enabled: true },
+          // Bidirectional Grid
+          { symbol: "BTCUSDT", strategyType: "bidirectional_grid", market: "crypto", category: "linear", allocationPct: 25, enabled: true },
+          { symbol: "ETHUSDT", strategyType: "bidirectional_grid", market: "crypto", category: "linear", allocationPct: 20, enabled: true },
         ];
 
-        // Disable any strategy not in v12.0 list (removes SP500, futures, old coins)
+        // Disable any strategy not in v12.4 list
         const allowedKeys = new Set(v12Strategies.map(s => `${s.symbol}_${s.strategyType}`));
         for (const existing of existingStrats) {
           const key = `${existing.symbol}_${existing.strategyType}`;
@@ -127,7 +151,7 @@ setTimeout(async () => {
         for (const strat of v12Strategies) {
           await upsertStrategy(owner.id, strat as any);
         }
-        console.log(`[AutoStart] v12.0: Synced ${v12Strategies.length} strategies (BTC+ETH+SOL+XAU × Grid+Scalping)`);
+        console.log(`[AutoStart] v12.4: Synced ${v12Strategies.length} strategies (BTC+ETH+SOL+XAU + altcoins × 5 strategies)`);
 
         console.log(`[AutoStart] Starting engine for owner (id=${owner.id})...`);
         const botState = await getOrCreateBotState(owner.id);
