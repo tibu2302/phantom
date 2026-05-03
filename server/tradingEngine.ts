@@ -120,7 +120,7 @@ const WARNING_THRESHOLD = -300;
 const XAU_REAL_MODE_BLOCKED = false; // XAU enabled in real mode (profitable with correct sizing)
 const GRID_MAX_ALLOCATION_PCT = 30; // Cap grid allocation to prevent fee destruction
 const SCALPING_BOOST_MULTIPLIER = 2.0; // Boost scalping 2x (best performer, 0 losses in 7 days)
-const AI_MIN_CONFIDENCE_REAL = 10; // Lowered to 10 - BTC with strong buy MTF was getting blocked at 20
+const AI_MIN_CONFIDENCE_REAL = 5; // Only block when confidence is near 0 (total conflict/no data)
 const AI_MIN_CONFIDENCE_SIM = 10; // Lower threshold for simulation
 // v12.2: NEVER SELL AT LOSS — DCA Recovery System
 const DCA_MAX_ENTRIES = 3;              // Max 3 DCA entries per position (original + 3 = 4 total)
@@ -694,7 +694,8 @@ async function runAISuperGate(
         sizeMultiplier *= mta.boost;
         if (mta.direction === "buy") buyPoints += mta.confidence * 0.3;
         else if (mta.direction === "sell") sellPoints += mta.confidence * 0.3;
-        reasons.push(`📊 MTF: ${mta.alignment} ${mta.direction} boost=${mta.boost.toFixed(1)}x`);
+        confidenceBoost += 8; // Partial alignment still gets confidence boost
+        reasons.push(`📊 MTF: ${mta.alignment} ${mta.direction} boost=${mta.boost.toFixed(1)}x +8conf`);
       }
     }
   } catch { /* silent */ }
