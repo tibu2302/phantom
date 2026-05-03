@@ -38,6 +38,7 @@ import {
 } from "./aiEngine";
 import { updatePairPrice, getAdvancedStrategySignal, calculateSmartExit, updateMomentumData, detectMomentumCascade } from "./advancedStrategies";
 import { kellyOptimalSize } from "./marketIntelligence";
+import { scanVolatileCoins, confirmShortWithKlines, type ScanResult } from "./volatilityScanner";
 
 // ─── Types ───
 interface TickerData {
@@ -65,15 +66,15 @@ interface ScalpPosition {
 }
 
 interface ShortPosition {
-  symbol: string; entryPrice: number; qty: string; orderId: string;
-  exchange: string; category: "linear";
-  openedAt: number; lowestPrice?: number; strategy: "short_scalping" | "bidirectional_grid" | "mean_reversion";
-  // v12.2: DCA Recovery for shorts
-  dcaEntries?: number;
-  avgCostPrice?: number;
-  totalQty?: string;
-  totalCost?: number;
-  lastDcaAt?: number;
+  symbol: string; entryPrice: number; qty: string; orderId?: string;
+  exchange?: string; category: "linear";
+  openedAt: number; lowestPrice?: number;
+  strategy?: "short_scalping" | "bidirectional_grid" | "mean_reversion" | "pump_short";
+  // DCA Recovery + Pump Short fields
+  dcaCount?: number; dcaEntries?: number;
+  avgPrice?: number; avgCostPrice?: number;
+  totalQty?: string; totalCost?: number;
+  tradeAmount?: number; lastDcaAt?: number;
 }
 
 interface GridLevel {
@@ -94,6 +95,7 @@ interface EngineState {
   dcaPositions: Record<string, DCAState>;
   scalpPositions: Record<string, ScalpPosition[]>;
   shortPositions: Record<string, ShortPosition[]>;
+  pumpShortPositions: Record<string, ShortPosition[]>;
   telegramBotToken?: string; telegramChatId?: string;
   intervalId?: ReturnType<typeof setInterval>;
   scannerIntervalId?: ReturnType<typeof setInterval>;
@@ -129,6 +131,15 @@ const BREAKEVEN_BUFFER_PCT = 0.003;    // Sell at breakeven + 0.3% (to cover fee
 const TRAILING_ACTIVATION_PCT = 0.003; // Activate trailing at +0.3% profit
 const TRAILING_DISTANCE_PCT = 0.002;   // Trail 0.2% behind peak
 const EMERGENCY_CUT_PCT = -0.08;       // ONLY cut at -8% (catastrophic protection, almost never hit)
+
+// ─── Pump Short Scanner v12.3 ───
+const PUMP_SHORT_SCAN_INTERVAL = 10; // Scan every 10 engine cycles (50 min)
+const PUMP_SHORT_MAX_POSITIONS = 3;  // Max 3 pump shorts at once
+const PUMP_SHORT_ALLOCATION = 0.08;  // 8% of balance per pump short
+const PUMP_SHORT_MIN_SCORE = 60;     // Min scanner score to open
+const PUMP_SHORT_TP_MULTIPLIER = 0.3; // Take 30% of the pump as profit
+const PUMP_SHORT_TRAILING_PCT = 0.015; // 1.5% trailing stop on pump shorts
+const PUMP_SHORT_MAX_HOLD_HOURS = 12; // Max hold 12 hours
 
 // ─── AI Performance Tracker (auto-adjusts allocations) ───
 interface StrategyPerformance {
@@ -2476,6 +2487,250 @@ async function runBidirectionalGridStrategy(engine: EngineState, symbol: string,
 }
 
 // ═══════════════════════════════════════════════════════════════
+// ─── PUMP SHORT SCANNER v12.3 ───
+// Scans ALL Bybit perpetuals for overextended coins and shorts them
+// ═══════════════════════════════════════════════════════════════
+async function runPumpShortStrategy(engine: EngineState) {
+  if (!engine.isRunning) return;
+
+  // Count current pump short positions
+  const currentPumpShorts = Object.values(engine.pumpShortPositions).reduce((a, b) => a + b.length, 0);
+  if (currentPumpShorts >= PUMP_SHORT_MAX_POSITIONS) {
+    console.log(`[PumpShort] Max positions reached (${currentPumpShorts}/${PUMP_SHORT_MAX_POSITIONS}) — skipping scan`);
+    return;
+  }
+
+  console.log(`[PumpShort] 🔍 Scanning all perpetuals for short opportunities...`);
+
+  try {
+    // 1. Scan all volatile coins
+    const candidates = await scanVolatileCoins(engine.client, {
+      minScore: PUMP_SHORT_MIN_SCORE,
+      maxResults: 5,
+      minChange24h: 8,
+      minVolume: 3_000_000,
+    });
+
+    if (candidates.length === 0) {
+      console.log(`[PumpShort] No opportunities found this scan`);
+      return;
+    }
+
+    // 2. Get balance for position sizing
+    const botState = await db.getOrCreateBotState(engine.userId);
+    const balance = parseFloat(botState?.currentBalance ?? "5000");
+    const maxPerPosition = balance * PUMP_SHORT_ALLOCATION;
+
+    // 3. Process top candidates
+    const slotsAvailable = PUMP_SHORT_MAX_POSITIONS - currentPumpShorts;
+    const toProcess = candidates.slice(0, slotsAvailable);
+
+    for (const candidate of toProcess) {
+      const { symbol } = candidate;
+
+      // Skip if we already have a position in this symbol
+      if ((engine.pumpShortPositions[symbol]?.length ?? 0) > 0) {
+        console.log(`[PumpShort] ${symbol} — already have position, skipping`);
+        continue;
+      }
+      if ((engine.shortPositions[symbol]?.length ?? 0) > 0) {
+        console.log(`[PumpShort] ${symbol} — already have short from other strategy, skipping`);
+        continue;
+      }
+
+      // 4. Confirm with kline analysis
+      const confirmation = await confirmShortWithKlines(engine.client, symbol);
+      if (!confirmation.confirmed) {
+        console.log(`[PumpShort] ${symbol} — kline NOT confirmed: ${confirmation.reason}`);
+        continue;
+      }
+
+      // 5. Calculate position size
+      const tradeAmount = Math.min(maxPerPosition, balance * 0.1); // Max 10% per trade
+      if (tradeAmount < MIN_TRADE_AMOUNT) {
+        console.log(`[PumpShort] ${symbol} — trade amount $${tradeAmount.toFixed(0)} < min $${MIN_TRADE_AMOUNT}`);
+        continue;
+      }
+
+      // 6. Set leverage
+      try {
+        await engine.client.setLeverage({
+          category: "linear", symbol,
+          buyLeverage: String(candidate.suggestedLeverage),
+          sellLeverage: String(candidate.suggestedLeverage),
+        });
+      } catch { /* may already be set */ }
+
+      // 7. Calculate quantity
+      const price = candidate.lastPrice;
+      const rawQty = (tradeAmount * candidate.suggestedLeverage) / price;
+      const norm = normalizeLinearQty(symbol, rawQty);
+      if (!norm.valid) {
+        console.log(`[PumpShort] ${symbol} — qty normalization failed`);
+        continue;
+      }
+
+      // 8. Open short position
+      if (engine.simulationMode) {
+        // Simulation mode
+        if (!engine.pumpShortPositions[symbol]) engine.pumpShortPositions[symbol] = [];
+        engine.pumpShortPositions[symbol].push({
+          symbol, entryPrice: price, qty: norm.qty,
+          tradeAmount, category: "linear",
+          openedAt: Date.now(), lowestPrice: price,
+          dcaCount: 0, avgPrice: price, totalQty: norm.qty, totalCost: tradeAmount,
+        });
+        console.log(`[PumpShort] ✅ SIM SHORT ${symbol} @ $${price.toFixed(4)} qty=${norm.qty} score=${candidate.shortScore} leverage=${candidate.suggestedLeverage}x`);
+        console.log(`  Reasons: ${candidate.reasons.slice(0, 3).join(" | ")}`);
+        console.log(`  Kline: ${confirmation.reason}`);
+        await db.insertTrade({ userId: engine.userId, symbol, side: "sell", price: price.toString(), qty: norm.qty, pnl: "0.00", strategy: "pump_short", orderId: "sim", simulated: true });
+      } else {
+        // REAL mode — place order
+        const success = await placeOrder(engine, symbol, "Sell", norm.qty, "linear", { isOpenShort: true });
+        if (success) {
+          if (!engine.pumpShortPositions[symbol]) engine.pumpShortPositions[symbol] = [];
+          engine.pumpShortPositions[symbol].push({
+            symbol, entryPrice: price, qty: norm.qty,
+            tradeAmount, category: "linear",
+            openedAt: Date.now(), lowestPrice: price,
+            dcaCount: 0, avgPrice: price, totalQty: norm.qty, totalCost: tradeAmount,
+          });
+          console.log(`[PumpShort] ✅ REAL SHORT ${symbol} @ $${price.toFixed(4)} qty=${norm.qty} score=${candidate.shortScore} leverage=${candidate.suggestedLeverage}x`);
+          console.log(`  Reasons: ${candidate.reasons.slice(0, 3).join(" | ")}`);
+          console.log(`  Kline: ${confirmation.reason}`);
+          await db.insertTrade({ userId: engine.userId, symbol, side: "sell", price: price.toString(), qty: norm.qty, pnl: "0.00", strategy: "pump_short", orderId: "real", simulated: false });
+          await sendTelegramNotification(engine,
+            `🩳 <b>PUMP SHORT OPENED</b>\n` +
+            `Coin: ${symbol}\n` +
+            `Entry: $${price.toFixed(4)}\n` +
+            `Score: ${candidate.shortScore}/100 (${candidate.riskLevel})\n` +
+            `24h Pump: +${candidate.change24h.toFixed(1)}%\n` +
+            `Leverage: ${candidate.suggestedLeverage}x\n` +
+            `Amount: $${tradeAmount.toFixed(0)}\n` +
+            `TP target: -${candidate.suggestedTP.toFixed(1)}%\n` +
+            `Reasons: ${candidate.reasons.slice(0, 2).join(", ")}`
+          );
+        }
+      }
+    }
+  } catch (err: any) {
+    console.error(`[PumpShort] Scanner error: ${err.message}`);
+  }
+}
+
+// ─── Pump Short Position Manager ───
+async function managePumpShortPositions(engine: EngineState) {
+  for (const [symbol, positions] of Object.entries(engine.pumpShortPositions)) {
+    if (!positions || positions.length === 0) continue;
+
+    const ticker = livePrices.get(symbol);
+    if (!ticker) continue;
+    const price = ticker.lastPrice;
+
+    for (let i = positions.length - 1; i >= 0; i--) {
+      const pos = positions[i];
+      const profitPct = ((pos.avgPrice ?? pos.entryPrice) - price) / (pos.avgPrice ?? pos.entryPrice); // Positive when price drops
+      const holdHours = (Date.now() - pos.openedAt) / (1000 * 60 * 60);
+
+      // Update lowest price (best for shorts)
+      if (price < (pos.lowestPrice ?? pos.entryPrice)) {
+        pos.lowestPrice = price;
+      }
+
+      // ── TAKE PROFIT: Trailing stop on profits ──
+      if (profitPct > PUMP_SHORT_TRAILING_PCT) {
+        const lowestPrice = pos.lowestPrice ?? price;
+        const bounceFromLow = (price - lowestPrice) / lowestPrice;
+
+        // If price bounced more than 1% from the low, take profit
+        if (bounceFromLow > 0.01 && profitPct > 0.005) {
+          // Close the short
+          const netPnl = (pos.avgPrice! - price) * parseFloat(pos.totalQty ?? pos.qty);
+          if (engine.simulationMode) {
+            console.log(`[PumpShort] ✅ TRAILING TP ${symbol} @ $${price.toFixed(4)} pnl=$${netPnl.toFixed(2)} (${(profitPct * 100).toFixed(2)}%) held ${holdHours.toFixed(1)}h`);
+            await db.insertTrade({ userId: engine.userId, symbol, side: "buy", price: price.toString(), qty: pos.totalQty ?? pos.qty, pnl: ((pos.avgPrice! - price) * parseFloat(pos.totalQty ?? pos.qty)).toFixed(2), strategy: "pump_short", orderId: "sim", simulated: true });
+          } else {
+            const success = await placeOrder(engine, symbol, "Buy", pos.totalQty ?? pos.qty, "linear", { reduceOnly: true });
+            if (success) {
+              console.log(`[PumpShort] ✅ TRAILING TP ${symbol} @ $${price.toFixed(4)} pnl=$${netPnl.toFixed(2)} (${(profitPct * 100).toFixed(2)}%) held ${holdHours.toFixed(1)}h`);
+              await db.insertTrade({ userId: engine.userId, symbol, side: "buy", price: price.toString(), qty: pos.totalQty ?? pos.qty, pnl: ((pos.avgPrice! - price) * parseFloat(pos.totalQty ?? pos.qty)).toFixed(2), strategy: "pump_short", orderId: "real", simulated: false });
+              await sendTelegramNotification(engine,
+                `💰 <b>PUMP SHORT CLOSED — PROFIT</b>\n` +
+                `Coin: ${symbol}\n` +
+                `Entry: $${(pos.avgPrice ?? pos.entryPrice).toFixed(4)}\n` +
+                `Exit: $${price.toFixed(4)}\n` +
+                `PnL: $${netPnl.toFixed(2)} (${(profitPct * 100).toFixed(2)}%)\n` +
+                `Hold time: ${holdHours.toFixed(1)}h`
+              );
+            }
+          }
+          recordTradeResult(symbol, "pump_short", netPnl > 0);
+          updateStrategyPerformance(`pump_short_${symbol}`, netPnl);
+          positions.splice(i, 1);
+          continue;
+        }
+      }
+
+      // ── BREAKEVEN EXIT: If held too long and barely profitable ──
+      if (holdHours > PUMP_SHORT_MAX_HOLD_HOURS && profitPct > 0) {
+        const netPnl = (pos.avgPrice! - price) * parseFloat(pos.totalQty ?? pos.qty);
+        if (engine.simulationMode) {
+          console.log(`[PumpShort] ⏰ TIME EXIT ${symbol} @ $${price.toFixed(4)} pnl=$${netPnl.toFixed(2)} held ${holdHours.toFixed(1)}h`);
+          await db.insertTrade({ userId: engine.userId, symbol, side: "buy", price: price.toString(), qty: pos.totalQty ?? pos.qty, pnl: ((pos.avgPrice! - price) * parseFloat(pos.totalQty ?? pos.qty)).toFixed(2), strategy: "pump_short", orderId: "sim", simulated: true });
+        } else {
+          const success = await placeOrder(engine, symbol, "Buy", pos.totalQty ?? pos.qty, "linear", { reduceOnly: true });
+          if (success) {
+            console.log(`[PumpShort] ⏰ TIME EXIT ${symbol} @ $${price.toFixed(4)} pnl=$${netPnl.toFixed(2)} held ${holdHours.toFixed(1)}h`);
+            await db.insertTrade({ userId: engine.userId, symbol, side: "buy", price: price.toString(), qty: pos.totalQty ?? pos.qty, pnl: ((pos.avgPrice! - price) * parseFloat(pos.totalQty ?? pos.qty)).toFixed(2), strategy: "pump_short", orderId: "real", simulated: false });
+          }
+        }
+        recordTradeResult(symbol, "pump_short", netPnl > 0);
+        updateStrategyPerformance(`pump_short_${symbol}`, netPnl);
+        positions.splice(i, 1);
+        continue;
+      }
+
+      // ── EMERGENCY: If going against us too much (price pumping more) ──
+      if (profitPct < EMERGENCY_CUT_PCT) {
+        const netPnl = (pos.avgPrice! - price) * parseFloat(pos.totalQty ?? pos.qty);
+        if (engine.simulationMode) {
+          console.log(`[PumpShort] 🚨 EMERGENCY CUT ${symbol} @ $${price.toFixed(4)} pnl=$${netPnl.toFixed(2)} (${(profitPct * 100).toFixed(2)}%)`);
+          await db.insertTrade({ userId: engine.userId, symbol, side: "buy", price: price.toString(), qty: pos.totalQty ?? pos.qty, pnl: ((pos.avgPrice! - price) * parseFloat(pos.totalQty ?? pos.qty)).toFixed(2), strategy: "pump_short", orderId: "sim", simulated: true });
+        } else {
+          const success = await placeOrder(engine, symbol, "Buy", pos.totalQty ?? pos.qty, "linear", { reduceOnly: true });
+          if (success) {
+            console.log(`[PumpShort] 🚨 EMERGENCY CUT ${symbol} @ $${price.toFixed(4)} pnl=$${netPnl.toFixed(2)} (${(profitPct * 100).toFixed(2)}%)`);
+            await db.insertTrade({ userId: engine.userId, symbol, side: "buy", price: price.toString(), qty: pos.totalQty ?? pos.qty, pnl: ((pos.avgPrice! - price) * parseFloat(pos.totalQty ?? pos.qty)).toFixed(2), strategy: "pump_short", orderId: "real", simulated: false });
+            await sendTelegramNotification(engine,
+              `🚨 <b>PUMP SHORT EMERGENCY CUT</b>\n` +
+              `Coin: ${symbol}\n` +
+              `Entry: $${(pos.avgPrice ?? pos.entryPrice).toFixed(4)}\n` +
+              `Exit: $${price.toFixed(4)}\n` +
+              `PnL: $${netPnl.toFixed(2)} (${(profitPct * 100).toFixed(2)}%)\n` +
+              `Reason: Price pumped beyond -8% threshold`
+            );
+          }
+        }
+        recordTradeResult(symbol, "pump_short", netPnl > 0);
+        updateStrategyPerformance(`pump_short_${symbol}`, netPnl);
+        positions.splice(i, 1);
+        continue;
+      }
+
+      // ── HOLD: Position is in range, keep monitoring ──
+      if (holdHours > 1 && profitPct > 0.005) {
+        console.log(`[PumpShort] 📊 ${symbol} in profit +${(profitPct * 100).toFixed(2)}% (low=$${(pos.lowestPrice ?? 0).toFixed(4)}) — trailing`);
+      }
+    }
+
+    // Clean up empty arrays
+    if (positions.length === 0) {
+      delete engine.pumpShortPositions[symbol];
+    }
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
 // ─── OPPORTUNITY SCANNER v12.0 ───
 // ═══════════════════════════════════════════════════════════════
 async function runOpportunityScanner(engine: EngineState) {
@@ -2681,7 +2936,7 @@ export async function startEngine(userId: number, options: {
     isRunning: true, simulationMode: options.simulationMode ?? false,
     gridLevels: {}, lastPrices: {},
     openBuyPositions: {}, dcaPositions: {},
-    scalpPositions: {}, shortPositions: {},
+    scalpPositions: {}, shortPositions: {}, pumpShortPositions: {},
     telegramBotToken: options.telegramBotToken,
     telegramChatId: options.telegramChatId,
     pnlAlertsSentToday: new Set<string>(),
@@ -2856,6 +3111,24 @@ export async function startEngine(userId: number, options: {
       console.error("[Engine] Trading loop error:", (e as Error).message);
     }
   }, 6_000); // 6s cycle
+
+  // ─── Pump Short Position Manager (every 10s) ───
+  setInterval(async () => {
+    if (!engine.isRunning) return;
+    await managePumpShortPositions(engine);
+  }, 10_000);
+
+  // ─── Pump Short Scanner (every 10 cycles = ~50 min) ───
+  let pumpShortCycle = 0;
+  setInterval(async () => {
+    if (!engine.isRunning) return;
+    pumpShortCycle++;
+    if (pumpShortCycle % PUMP_SHORT_SCAN_INTERVAL === 0) {
+      await runPumpShortStrategy(engine);
+    }
+  }, 5 * 60 * 1000); // Check every 5 min, run scan every 50 min
+  // First pump short scan after 2 minutes
+  setTimeout(() => runPumpShortStrategy(engine), 2 * 60 * 1000);
 
   // ─── Opportunity Scanner (every 45s) ───
   engine.scannerIntervalId = setInterval(async () => {
@@ -3282,7 +3555,20 @@ export function getOpenPositions(userId: number): { grid: { symbol: string; buyP
         unrealizedPnl: (pos.entryPrice - currentPrice) * parseFloat(pos.qty),
         holdTime: Date.now() - pos.openedAt,
         lowestPrice: pos.lowestPrice ?? currentPrice,
-        strategy: pos.strategy,
+        strategy: "short_scalping",
+      });
+    }
+  }
+  // Pump short positions
+  for (const [symbol, positions] of Object.entries(engine.pumpShortPositions)) {
+    const currentPrice = engine.lastPrices[symbol] ?? livePrices.get(symbol)?.lastPrice ?? 0;
+    for (const pos of positions) {
+      shortPositions.push({
+        symbol, entryPrice: pos.entryPrice, currentPrice, qty: pos.qty,
+        unrealizedPnl: (pos.avgPrice! - currentPrice) * parseFloat(pos.totalQty ?? pos.qty),
+        holdTime: Date.now() - pos.openedAt,
+        lowestPrice: pos.lowestPrice ?? currentPrice,
+        strategy: "pump_short",
       });
     }
   }
