@@ -110,7 +110,7 @@ interface EngineState {
 
 // ─── Constants ───
 const LEVERAGE = 5; // v12.0: Fixed 5x leverage for all linear positions
-const MIN_PROFIT_PCT = 0.0018; // 0.18% minimum net profit (covers fees + small profit)
+const MIN_PROFIT_PCT = 0.0012; // 0.12% minimum net profit (faster closes, more frequent wins)
 const MIN_TRADE_AMOUNT = 200; // $200 minimum trade size (small trades lose to fees)
 const MAX_HOLD_HOURS = 4; // Force close after 4 hours if underwater
 const EMERGENCY_STOP_THRESHOLD = -500;
@@ -129,7 +129,7 @@ const DCA_COOLDOWN_MS = 10 * 60 * 1000; // 10 min between DCA entries
 const DCA_MAX_TOTAL_EXPOSURE = 0.15;   // Max 15% of balance in one DCA chain
 const BREAKEVEN_BUFFER_PCT = 0.003;    // Sell at breakeven + 0.3% (to cover fees)
 const TRAILING_ACTIVATION_PCT = 0.003; // Activate trailing at +0.3% profit
-const TRAILING_DISTANCE_PCT = 0.002;   // Trail 0.2% behind peak
+const TRAILING_DISTANCE_PCT = 0.0015;  // Trail 0.15% behind peak (tighter for faster exits)
 const EMERGENCY_CUT_PCT = -0.08;       // ONLY cut at -8% (catastrophic protection, almost never hit)
 
 // ─── Pump Short Scanner v12.3 ───
@@ -923,7 +923,7 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
   let trendLabel = "neutral";
   let smartScore: SignalScore | null = null;
   let marketRegime: MarketRegime = "ranging";
-  let dynamicTrailingPct = 0.005;
+  let dynamicTrailingPct = 0.003; // Lowered from 0.5% to 0.3% for faster grid exits
   let positionSizeMultiplier = 1.0;
 
   try {
@@ -1084,9 +1084,9 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
 
   // ─── Protection System: Trailing Stop (profit only) + Time-Profit ───
   const stratConfig = config ?? {};
-  const configTrailingPct = (stratConfig.trailingStopPct ?? 0.5) / 100;
+  const configTrailingPct = (stratConfig.trailingStopPct ?? 0.3) / 100; // Lowered from 0.5% for faster exits
   const trailingPct = dynamicTrailingPct > 0 ? dynamicTrailingPct : configTrailingPct;
-  const trailingActivation = (stratConfig.trailingActivationPct ?? 0.5) / 100;
+  const trailingActivation = (stratConfig.trailingActivationPct ?? 0.3) / 100; // Lowered from 0.5% for faster activation
   const maxHoldTimeMs = (stratConfig.maxHoldHours ?? 2) * 60 * 60 * 1000;
   const maxOpenPositions = stratConfig.maxOpenPositions ?? 15;
   const positionsToSell: { pos: OpenBuyPosition; reason: string }[] = [];
@@ -1483,11 +1483,11 @@ async function runScalpingStrategy(engine: EngineState, symbol: string, category
   const strats = await db.getUserStrategies(engine.userId);
   const strat = strats.find(s => s.symbol === symbol && s.strategyType === "scalping");
   const config = strat?.config as any;
-  const minProfitPct = (config?.minProfitPct ?? 0.2) / 100;
-  const trailingPct = (config?.trailingStopPct ?? 0.3) / 100;
-  const trailingActivation = (config?.trailingActivationPct ?? 0.3) / 100;
-  const maxHoldMs = (config?.maxHoldMinutes ?? 30) * 60 * 1000;
-  const maxPositions = symbol === "XAUUSDT" ? 10 : 6;
+  const minProfitPct = (config?.minProfitPct ?? 0.12) / 100; // Lowered from 0.2% to 0.12% for faster TP
+  const trailingPct = (config?.trailingStopPct ?? 0.15) / 100; // Tighter trailing (was 0.3%)
+  const trailingActivation = (config?.trailingActivationPct ?? 0.15) / 100; // Activate trailing earlier (was 0.3%)
+  const maxHoldMs = (config?.maxHoldMinutes ?? 20) * 60 * 1000; // Shorter hold time (was 30min)
+  const maxPositions = symbol === "XAUUSDT" ? 10 : 8; // More positions allowed
 
   for (let i = positions.length - 1; i >= 0; i--) {
     const pos = positions[i];
@@ -1787,11 +1787,11 @@ async function runShortScalpingStrategy(engine: EngineState, symbol: string, cat
   const strats = await db.getUserStrategies(engine.userId);
   const strat = strats.find(s => s.symbol === symbol && s.strategyType === "short_scalping");
   const config = strat?.config as any;
-  const minProfitPct = (config?.minProfitPct ?? 0.2) / 100;
-  const trailingPct = (config?.trailingStopPct ?? 0.4) / 100;
-  const trailingActivation = (config?.trailingActivationPct ?? 0.3) / 100;
-  const maxHoldMs = (config?.maxHoldMinutes ?? 45) * 60 * 1000;
-  const maxPositions = symbol === "XAUUSDT" ? 8 : 5;
+  const minProfitPct = (config?.minProfitPct ?? 0.12) / 100; // Faster TP (was 0.2%)
+  const trailingPct = (config?.trailingStopPct ?? 0.2) / 100; // Tighter trailing (was 0.4%)
+  const trailingActivation = (config?.trailingActivationPct ?? 0.15) / 100; // Activate earlier (was 0.3%)
+  const maxHoldMs = (config?.maxHoldMinutes ?? 20) * 60 * 1000; // Shorter hold (was 45min)
+  const maxPositions = symbol === "XAUUSDT" ? 8 : 6; // More positions
 
   for (let i = shortPositionsForStrategy.length - 1; i >= 0; i--) {
     const pos = shortPositionsForStrategy[i];
@@ -2022,8 +2022,8 @@ async function runMeanReversionStrategy(engine: EngineState, symbol: string, cat
   const config = strat?.config as any;
   const maxLongPositions = config?.maxOpenPositions ?? 4;
   const maxShortPositions = config?.maxOpenPositions ?? 3;
-  const takeProfitPct = (config?.takeProfitPct ?? 0.4) / 100; // 0.4% default target
-  const maxHoldMs = (config?.maxHoldMinutes ?? 60) * 60 * 1000;
+  const takeProfitPct = (config?.takeProfitPct ?? 0.2) / 100; // Faster TP (was 0.4%)
+  const maxHoldMs = (config?.maxHoldMinutes ?? 30) * 60 * 1000; // Shorter hold (was 60min)
 
   // ─── Detect Mean Reversion Signal ───
   let meanRevSignal: any = null;
