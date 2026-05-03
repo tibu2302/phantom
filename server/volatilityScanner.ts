@@ -49,7 +49,7 @@ export interface ScannerConfig {
 const DEFAULT_CONFIG: ScannerConfig = {
   minChange24h: 8,          // At least 8% pump in 24h
   minVolume: 3_000_000,     // At least $3M volume
-  minScore: 55,             // Score threshold
+  minScore: 40,             // Lowered from 55 - more opportunities
   maxResults: 5,            // Top 5 opportunities
   blacklist: [
     "BTCUSDT", "ETHUSDT",   // Too big to dump hard
@@ -395,10 +395,10 @@ export async function confirmShortWithKlines(
     if (rsiOverbought) { confidence += 25; confirmReasons.push(`RSI overbought (${rsi.toFixed(0)})`); }
     if (farFromMean) { confidence += 25; confirmReasons.push(`far from mean (+${deviation.toFixed(1)}%)`); }
 
-    const confirmed = confidence >= 40;
+    const confirmed = confidence >= 25; // Lowered from 40 - too restrictive
     const reason = confirmed 
       ? `Confirmed: ${confirmReasons.join(", ")}` 
-      : `Not confirmed (score ${confidence}/40): ${confirmReasons.join(", ") || "no bearish signals"}`;
+      : `Not confirmed (score ${confidence}/25): ${confirmReasons.join(", ") || "no bearish signals"}`;
 
     return { confirmed, confidence, reason };
   } catch (err: any) {

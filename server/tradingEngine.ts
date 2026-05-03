@@ -110,7 +110,7 @@ interface EngineState {
 
 // ─── Constants ───
 const LEVERAGE = 5; // v12.0: Fixed 5x leverage for all linear positions
-const MIN_PROFIT_PCT = 0.0025; // 0.25% minimum net profit (must exceed 2x fees)
+const MIN_PROFIT_PCT = 0.0018; // 0.18% minimum net profit (covers fees + small profit)
 const MIN_TRADE_AMOUNT = 200; // $200 minimum trade size (small trades lose to fees)
 const MAX_HOLD_HOURS = 4; // Force close after 4 hours if underwater
 const EMERGENCY_STOP_THRESHOLD = -500;
@@ -119,9 +119,9 @@ const WARNING_THRESHOLD = -300;
 // ─── AI Profitability Constants v12.1 ───
 const XAU_REAL_MODE_BLOCKED = false; // XAU enabled in real mode (profitable with correct sizing)
 const GRID_MAX_ALLOCATION_PCT = 30; // Cap grid allocation to prevent fee destruction
-const SCALPING_BOOST_MULTIPLIER = 1.5; // Boost scalping (best performer)
-const AI_MIN_CONFIDENCE_REAL = 40; // Higher confidence threshold for real trades
-const AI_MIN_CONFIDENCE_SIM = 20; // Lower threshold for simulation
+const SCALPING_BOOST_MULTIPLIER = 2.0; // Boost scalping 2x (best performer, 0 losses in 7 days)
+const AI_MIN_CONFIDENCE_REAL = 20; // Lowered from 40 - bot was blocking too many profitable trades
+const AI_MIN_CONFIDENCE_SIM = 10; // Lower threshold for simulation
 // v12.2: NEVER SELL AT LOSS — DCA Recovery System
 const DCA_MAX_ENTRIES = 3;              // Max 3 DCA entries per position (original + 3 = 4 total)
 const DCA_MIN_DIP_PCT = 0.015;         // Min 1.5% further dip before DCA
@@ -133,7 +133,7 @@ const TRAILING_DISTANCE_PCT = 0.002;   // Trail 0.2% behind peak
 const EMERGENCY_CUT_PCT = -0.08;       // ONLY cut at -8% (catastrophic protection, almost never hit)
 
 // ─── Pump Short Scanner v12.3 ───
-const PUMP_SHORT_SCAN_INTERVAL = 10; // Scan every 10 engine cycles (50 min)
+const PUMP_SHORT_SCAN_INTERVAL = 5; // Scan every 5 engine cycles (25 min) - faster detection
 const PUMP_SHORT_MAX_POSITIONS = 3;  // Max 3 pump shorts at once
 const PUMP_SHORT_ALLOCATION = 0.08;  // 8% of balance per pump short
 const PUMP_SHORT_MIN_SCORE = 60;     // Min scanner score to open
@@ -687,8 +687,8 @@ async function runAISuperGate(
         else if (mta.direction === "sell") sellPoints += mta.confidence * 0.6;
         reasons.push(`📊 MTF: ${mta.alignment} ${mta.direction} (5m=${mta.timeframes.tf5m.direction} 15m=${mta.timeframes.tf15m.direction} 1h=${mta.timeframes.tf1h.direction}) boost=${mta.boost.toFixed(1)}x`);
       } else if (mta.alignment === "conflicting") {
-        sizeMultiplier *= 0.6;
-        reasons.push(`⚠️ MTF: conflicting signals → -40% size`);
+        sizeMultiplier *= 0.85; // Reduced penalty from -40% to -15% (was blocking too much)
+        reasons.push(`⚠️ MTF: conflicting signals → -15% size`);
       } else {
         sizeMultiplier *= mta.boost;
         if (mta.direction === "buy") buyPoints += mta.confidence * 0.3;
