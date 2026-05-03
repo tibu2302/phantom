@@ -46,7 +46,7 @@ services:
       # Variables de Manus (dejar vacías en VPS propio)
       VITE_APP_ID: ""
       OAUTH_SERVER_URL: ""
-      OWNER_OPEN_ID: ""
+      OWNER_OPEN_ID: "local-admin-vps"
       OWNER_NAME: ""
       BUILT_IN_FORGE_API_URL: ""
       BUILT_IN_FORGE_API_KEY: ""

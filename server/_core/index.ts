@@ -164,7 +164,7 @@ setTimeout(async () => {
           telegramBotToken: telegramKeys?.apiKey ?? undefined,
           telegramChatId: telegramKeys?.apiSecret ?? undefined,
         });
-        console.log(`[AutoStart] ${result.success ? 'Engine v12.0 started in LIVE mode' : 'Failed'}`);
+        console.log(`[AutoStart] ${result.success ? 'Engine v12.4 started in LIVE mode' : 'Failed: ' + (result as any).error}`);
       } else {
         console.log(`[AutoStart] Owner not found in DB, skipping`);
       }
