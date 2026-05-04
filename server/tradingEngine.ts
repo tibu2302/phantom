@@ -111,7 +111,7 @@ interface EngineState {
 // ─── Constants ───
 const LEVERAGE = 5; // v12.0: Fixed 5x leverage for all linear positions
 const MIN_PROFIT_PCT = 0.0012; // 0.12% minimum net profit (faster closes, more frequent wins)
-const MIN_TRADE_AMOUNT = 200; // $200 minimum trade size (small trades lose to fees)
+const MIN_TRADE_AMOUNT = 30; // $30 minimum (was $200 — lowered for small balance, fees are 0.055% so $30 trade = $0.03 fee)
 const MAX_HOLD_HOURS = 4; // Force close after 4 hours if underwater
 const EMERGENCY_STOP_THRESHOLD = -500;
 const WARNING_THRESHOLD = -300;
@@ -2791,10 +2791,21 @@ async function reconcilePositions(engine: EngineState) {
 
     console.log(`[Reconcile] Bybit has ${activeBybitSymbols.size} active long positions`);
 
+    // Also check short positions on Bybit
+    const activeBybitShorts = new Map<string, { size: number; avgPrice: number }>();
+    for (const pos of bybitPositions) {
+      const size = parseFloat(pos.size ?? "0");
+      if (size > 0 && pos.side === "Sell") {
+        activeBybitShorts.set(pos.symbol, { size, avgPrice: parseFloat(pos.avgPrice ?? "0") });
+      }
+    }
+    console.log(`[Reconcile] Bybit has ${activeBybitShorts.size} active short positions`);
+
     // Check each DB position against Bybit
     const allSymbols = new Set([
       ...Object.keys(engine.openBuyPositions),
       ...Object.keys(engine.scalpPositions),
+      ...Object.keys(engine.shortPositions),
     ]);
 
     for (const symbol of Array.from(allSymbols)) {
@@ -2813,6 +2824,14 @@ async function reconcilePositions(engine: EngineState) {
       if (scalpPositions.length > 0 && !bybitPos) {
         console.warn(`[Reconcile] ${symbol} has ${scalpPositions.length} scalp positions in DB but NO position on Bybit — clearing`);
         engine.scalpPositions[symbol] = [];
+      }
+
+      // Short positions (BiGrid, ShortScalp, MeanRev shorts)
+      const bybitShort = activeBybitShorts.get(symbol);
+      const shortPositions = engine.shortPositions[symbol] ?? [];
+      if (shortPositions.length > 0 && !bybitShort) {
+        console.warn(`[Reconcile] ${symbol} has ${shortPositions.length} short positions in DB but NO short on Bybit — clearing`);
+        engine.shortPositions[symbol] = [];
       }
     }
 
