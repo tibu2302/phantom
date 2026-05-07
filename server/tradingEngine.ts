@@ -109,7 +109,7 @@ interface EngineState {
 }
 
 // ─── Constants ───
-const LEVERAGE = 5; // v12.0: Fixed 5x leverage for all linear positions
+const LEVERAGE = 10; // v12.5: 10x leverage for bigger trades (scalping holds <20min, liquidation risk minimal)
 const MIN_PROFIT_PCT = 0.0012; // 0.12% minimum net profit (faster closes, more frequent wins)
 const MIN_TRADE_AMOUNT = 30; // $30 minimum (was $200 — lowered for small balance, fees are 0.055% so $30 trade = $0.03 fee)
 const MAX_HOLD_HOURS = 4; // Force close after 4 hours if underwater
@@ -120,7 +120,7 @@ const WARNING_THRESHOLD = -300;
 const XAU_REAL_MODE_BLOCKED = false; // XAU enabled in real mode (profitable with correct sizing)
 const GRID_MAX_ALLOCATION_PCT = 30; // Cap grid allocation to prevent fee destruction
 const SCALPING_BOOST_MULTIPLIER = 2.0; // Boost scalping 2x (best performer, 0 losses in 7 days)
-const AI_MIN_CONFIDENCE_REAL = 5; // Only block when confidence is near 0 (total conflict/no data)
+const AI_MIN_CONFIDENCE_REAL = 3; // v12.5: Lowered from 5 to enter more trades (scalping at 0.12% TP doesn't need high confidence)
 const AI_MIN_CONFIDENCE_SIM = 10; // Lower threshold for simulation
 // v12.2: NEVER SELL AT LOSS — DCA Recovery System
 const DCA_MAX_ENTRIES = 3;              // Max 3 DCA entries per position (original + 3 = 4 total)
@@ -1087,9 +1087,9 @@ async function runGridStrategy(engine: EngineState, symbol: string, category: "s
 
   // ─── Protection System: Trailing Stop (profit only) + Time-Profit ───
   const stratConfig = config ?? {};
-  const configTrailingPct = (stratConfig.trailingStopPct ?? 0.3) / 100; // Lowered from 0.5% for faster exits
+  const configTrailingPct = (stratConfig.trailingStopPct ?? 0.2) / 100; // v12.5: 0.2% trailing (was 0.3%)
   const trailingPct = dynamicTrailingPct > 0 ? dynamicTrailingPct : configTrailingPct;
-  const trailingActivation = (stratConfig.trailingActivationPct ?? 0.3) / 100; // Lowered from 0.5% for faster activation
+  const trailingActivation = (stratConfig.trailingActivationPct ?? 0.2) / 100; // v12.5: activate at 0.2% (was 0.3%)
   const maxHoldTimeMs = (stratConfig.maxHoldHours ?? 2) * 60 * 60 * 1000;
   const maxOpenPositions = stratConfig.maxOpenPositions ?? 15;
   const positionsToSell: { pos: OpenBuyPosition; reason: string }[] = [];
@@ -1486,10 +1486,10 @@ async function runScalpingStrategy(engine: EngineState, symbol: string, category
   const strats = await db.getUserStrategies(engine.userId);
   const strat = strats.find(s => s.symbol === symbol && s.strategyType === "scalping");
   const config = strat?.config as any;
-  const minProfitPct = (config?.minProfitPct ?? 0.12) / 100; // Lowered from 0.2% to 0.12% for faster TP
-  const trailingPct = (config?.trailingStopPct ?? 0.15) / 100; // Tighter trailing (was 0.3%)
-  const trailingActivation = (config?.trailingActivationPct ?? 0.15) / 100; // Activate trailing earlier (was 0.3%)
-  const maxHoldMs = (config?.maxHoldMinutes ?? 20) * 60 * 1000; // Shorter hold time (was 30min)
+  const minProfitPct = (config?.minProfitPct ?? 0.08) / 100; // v12.5: 0.08% TP (was 0.12%) — close faster, more wins
+  const trailingPct = (config?.trailingStopPct ?? 0.10) / 100; // v12.5: 0.10% trailing (was 0.15%) — lock profit sooner
+  const trailingActivation = (config?.trailingActivationPct ?? 0.08) / 100; // v12.5: activate at 0.08% (was 0.15%)
+  const maxHoldMs = (config?.maxHoldMinutes ?? 15) * 60 * 1000; // v12.5: 15min max hold (was 20min) — free capital faster
   const maxPositions = symbol === "XAUUSDT" ? 10 : 8; // More positions allowed
 
   for (let i = positions.length - 1; i >= 0; i--) {
@@ -1790,10 +1790,10 @@ async function runShortScalpingStrategy(engine: EngineState, symbol: string, cat
   const strats = await db.getUserStrategies(engine.userId);
   const strat = strats.find(s => s.symbol === symbol && s.strategyType === "short_scalping");
   const config = strat?.config as any;
-  const minProfitPct = (config?.minProfitPct ?? 0.12) / 100; // Faster TP (was 0.2%)
-  const trailingPct = (config?.trailingStopPct ?? 0.2) / 100; // Tighter trailing (was 0.4%)
-  const trailingActivation = (config?.trailingActivationPct ?? 0.15) / 100; // Activate earlier (was 0.3%)
-  const maxHoldMs = (config?.maxHoldMinutes ?? 20) * 60 * 1000; // Shorter hold (was 45min)
+  const minProfitPct = (config?.minProfitPct ?? 0.08) / 100; // v12.5: 0.08% TP (was 0.12%) — faster closes
+  const trailingPct = (config?.trailingStopPct ?? 0.12) / 100; // v12.5: 0.12% trailing (was 0.2%)
+  const trailingActivation = (config?.trailingActivationPct ?? 0.08) / 100; // v12.5: activate at 0.08% (was 0.15%)
+  const maxHoldMs = (config?.maxHoldMinutes ?? 15) * 60 * 1000; // v12.5: 15min max hold (was 20min)
   const maxPositions = symbol === "XAUUSDT" ? 8 : 6; // More positions
 
   for (let i = shortPositionsForStrategy.length - 1; i >= 0; i--) {
@@ -3134,7 +3134,7 @@ export async function startEngine(userId: number, options: {
     } catch (e) {
       console.error("[Engine] Trading loop error:", (e as Error).message);
     }
-  }, 6_000); // 6s cycle
+  }, 4_000); // v12.5: 4s cycle (was 6s) — faster reactions to price movements
 
   // ─── Pump Short Position Manager (every 10s) ───
   setInterval(async () => {
